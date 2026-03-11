@@ -1,0 +1,77 @@
+// 1. Configuración del cliente de Prisma (El conector con Node.js)
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 2. Configuración de la Base de Datos (PostgreSQL)
+// En las versiones modernas, la URL de conexión se gestiona desde prisma.config.ts
+datasource db {
+  provider = "postgresql"
+}
+
+// ------------------------------------------------------
+// MODELOS DE LA BASE DE DATOS (Arquitectura Multi-Sucursal)
+// ------------------------------------------------------
+
+// Tabla de Sucursales
+model Branch {
+  id          Int       @id @default(autoincrement())
+  name        String    // ej: "Sucursal Temperley"
+  location    String?   // Dirección física
+  users       User[]    // Empleados que trabajan acá
+  stocks      Stock[]   // Inventario específico de esta sucursal
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Tabla de Usuarios (Empleados/Administradores)
+model User {
+  id          Int       @id @default(autoincrement())
+  name        String
+  email       String    @unique
+  password    String    // Contraseña encriptada
+  role        String    @default("EMPLOYEE") // Puede ser "ADMIN" o "EMPLOYEE"
+  
+  // Relación: Un usuario pertenece a una sucursal
+  branchId    Int
+  branch      Branch    @relation(fields: [branchId], references: [id])
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Tabla del Catálogo Central de Productos (Igual para todas las sucursales)
+model Product {
+  id          Int       @id @default(autoincrement())
+  barcode     String    @unique // Código de barras o SKU
+  name        String    // ej: "Latex Interior Blanco 20L"
+  brand       String    // ej: "Alba", "Colorín"
+  category    String    // ej: "Latex", "Sintetico", "Accesorios"
+  description String?
+  
+  stocks      Stock[]   // Relación con el stock en distintas sucursales
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+}
+
+// Tabla de Stock (El puente que une un Producto con una Sucursal)
+model Stock {
+  id          Int       @id @default(autoincrement())
+  quantity    Int       @default(0) // Cantidad actual
+  minStock    Int       @default(5) // Límite para disparar la alerta al mail
+  
+  // Relaciones
+  productId   Int
+  product     Product   @relation(fields: [productId], references: [id])
+  
+  branchId    Int
+  branch      Branch    @relation(fields: [branchId], references: [id])
+  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Regla de escalabilidad: Un mismo producto no puede estar duplicado en la misma sucursal
+  @@unique([productId, branchId])
+}
