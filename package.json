@@ -16,12 +16,14 @@
     "cloudinary": "^2.9.0",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "multer": "^2.1.1",
     "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.1.0",
     "@types/node": "^25.4.0",
     "@types/pg": "^8.18.0",
