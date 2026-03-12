@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../config/db";
+import cloudinary from "../config/cloudinary";
 
 // Obtención del catálogo completo de productos
 // Ejecución de consulta a la base de datos y retorno de registros en formato JSON
@@ -155,5 +156,40 @@ export const deleteProduct = async (req: Request, res: Response) => {
     res
       .status(500)
       .json({ error: "No se pudo eliminar el producto. Verifique el ID." });
+  }
+};
+
+// Subida de imagen a la nube
+// Intercepción de archivo en memoria, conversión a Base64 y transmisión a Cloudinary
+export const uploadProductImage = async (req: Request, res: Response) => {
+  try {
+    // Validación de existencia de archivo adjunto
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ error: "No se proporcionó ningún archivo de imagen." });
+    }
+
+    // Conversión de Buffer a Base64 para transmisión segura
+    const b64 = Buffer.from(req.file.buffer).toString("base64");
+    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+
+    // Ejecución de carga en Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(dataURI, {
+      folder: "el-club-pintura/productos", // Organización automática en carpetas en la nube
+      resource_type: "auto",
+    });
+
+    // Emisión de respuesta con la URL pública generada
+    res.status(200).json({
+      message: "Imagen procesada y alojada exitosamente.",
+      imageUrl: uploadResult.secure_url,
+    });
+  } catch (error) {
+    console.error("Error en el servicio de almacenamiento:", error);
+    res.status(500).json({
+      error:
+        "Hubo un problema al procesar la imagen en el servidor en la nube.",
+    });
   }
 };

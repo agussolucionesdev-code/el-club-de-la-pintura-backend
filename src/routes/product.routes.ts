@@ -1,15 +1,21 @@
 import { Router } from "express";
+import { upload } from "../middlewares/upload.middleware";
 import {
   getProducts,
   createProduct,
   updateProduct,
   deleteProduct,
+  uploadProductImage,
 } from "../controllers/product.controller";
 
 const router = Router();
 
 // Definición de la ruta GET para la obtención del catálogo
 router.get("/", getProducts);
+
+// Definición de la ruta POST para la carga de imágenes en la nube
+// Inyección del middleware 'upload' para la intercepción de archivos 'multipart/form-data'
+router.post("/upload-image", upload.single("image"), uploadProductImage);
 
 // Definición de la ruta POST para la creación de un producto
 router.post("/", createProduct);
