@@ -1,12 +1,12 @@
 import { Router } from "express";
-import { upload } from "../middlewares/upload.middleware";
+import { upload } from "../../middlewares/upload.middleware";
 import {
   getProducts,
   createProduct,
   updateProduct,
   deleteProduct,
   uploadProductImage,
-} from "../controllers/product.controller";
+} from "./product.controller";
 
 const router = Router();
 

@@ -4,7 +4,7 @@ import {
   createBranch,
   updateBranch,
   deleteBranch,
-} from "../controllers/branch.controller";
+} from "./branch.controller";
 
 const router = Router();
 

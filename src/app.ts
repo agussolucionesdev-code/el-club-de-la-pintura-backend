@@ -4,9 +4,10 @@ import "dotenv/config";
 // Importación de módulos principales y tipos de Express
 import express, { Application, Request, Response } from "express";
 
-// Importación de enrutadores modulares
-import branchRoutes from "./routes/branch.routes";
-import productRoutes from "./routes/product.routes";
+// Importación de enrutadores modulares (Arquitectura Feature-First)
+import branchRoutes from "./modules/branch/branch.routes";
+import productRoutes from "./modules/product/product.routes";
+import userRoutes from "./modules/user/user.routes";
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -24,6 +25,8 @@ app.use(express.json());
 app.use("/api/branches", branchRoutes);
 // Conexión del módulo de catálogo de productos
 app.use("/api/products", productRoutes);
+// Conexión del módulo de seguridad e identidad (Usuarios)
+app.use("/api/users", userRoutes);
 
 // Definición de Endpoint de diagnóstico (Health Check)
 // Verificación de disponibilidad y entorno de ejecución del servidor

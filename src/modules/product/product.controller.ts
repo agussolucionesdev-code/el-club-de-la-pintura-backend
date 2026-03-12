@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
-import prisma from "../config/db";
-import cloudinary from "../config/cloudinary";
+import prisma from "../../config/db";
+import cloudinary from "../../config/cloudinary";
 
 // Obtención del catálogo completo de productos
 // Ejecución de consulta a la base de datos y retorno de registros en formato JSON

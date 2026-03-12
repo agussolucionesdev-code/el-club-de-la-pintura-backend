@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import prisma from "../config/db";
+import prisma from "../../config/db";
 
 // Obtención del listado de sucursales
 // Consulta a la base de datos y retorno de registros en formato JSON
