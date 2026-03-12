@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { upload } from "../../middlewares/upload.middleware";
+import { verifyToken } from "../../middlewares/auth.middleware";
 import {
   getProducts,
   createProduct,
@@ -10,20 +11,19 @@ import {
 
 const router = Router();
 
-// Definición de la ruta GET para la obtención del catálogo
+// Definición de la ruta GET pública para la obtención del catálogo
 router.get("/", getProducts);
 
-// Definición de la ruta POST para la carga de imágenes en la nube
-// Inyección del middleware 'upload' para la intercepción de archivos 'multipart/form-data'
-router.post("/upload-image", upload.single("image"), uploadProductImage);
-
-// Definición de la ruta POST para la creación de un producto
-router.post("/", createProduct);
-
-// Definición de la ruta PUT para la actualización de un producto por ID
-router.put("/:id", updateProduct);
-
-// Definición de la ruta DELETE para la eliminación de un producto por ID
-router.delete("/:id", deleteProduct);
+// Definición de rutas protegidas (Exigen validación de token JWT en cabecera)
+// Inyección concurrente de validación de seguridad e intercepción de archivos
+router.post(
+  "/upload-image",
+  verifyToken,
+  upload.single("image"),
+  uploadProductImage,
+);
+router.post("/", verifyToken, createProduct);
+router.put("/:id", verifyToken, updateProduct);
+router.delete("/:id", verifyToken, deleteProduct);
 
 export default router;

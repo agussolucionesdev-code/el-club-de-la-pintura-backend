@@ -15,30 +15,30 @@ datasource db {
 
 // Tabla de Sucursales
 model Branch {
-  id          Int      @id @default(autoincrement())
-  name        String   // ej: "Sucursal Temperley"
-  location    String?  // Dirección física
-  users       User[]   // Empleados que trabajan acá
-  stocks      Stock[]  // Inventario específico de esta sucursal
+  id        Int      @id @default(autoincrement())
+  name      String   // ej: "Sucursal Temperley"
+  location  String?  // Dirección física
+  users     User[]   // Empleados que trabajan acá
+  stocks    Stock[]  // Inventario específico de esta sucursal
   
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Tabla de Usuarios (Empleados/Administradores)
 model User {
-  id          Int      @id @default(autoincrement())
-  name        String
-  email       String   @unique
-  password    String   // Contraseña encriptada
-  role        String   @default("EMPLOYEE") // Puede ser "ADMIN" o "EMPLOYEE"
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String   @unique
+  password  String   // Contraseña encriptada
+  role      String   @default("EMPLOYEE") // Puede ser "ADMIN" o "EMPLOYEE"
   
   // Relación: Un usuario pertenece a una sucursal
-  branchId    Int
-  branch      Branch   @relation(fields: [branchId], references: [id])
+  branchId  Int
+  branch    Branch   @relation(fields: [branchId], references: [id])
   
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Tabla del Catálogo Central de Productos (Igual para todas las sucursales)
@@ -50,13 +50,16 @@ model Product {
   category      String   // ej: "Latex", "Sintetico", "Accesorios"
   description   String?
   
-  // Nuevos atributos específicos de pinturería
+  // Atributos específicos de pintura
   color         String?  // Nombre del color o Hexadecimal
   finish        String?  // ej: "Mate", "Satinado"
   volume        Float?   // ej: 20.0, 4.0, 0.5
   volumeUnit    String?  // ej: "L", "Kg"
   indoorOutdoor Boolean  @default(true)
   baseType      String?  // ej: "Al agua", "Sintético"
+  
+  // NUEVO: Atributos dinámicos para escalabilidad de catálogo (lijas, rodillos, etc.)
+  metadata      Json?
   
   // Alojamiento de URLs de Cloudinary
   images        String[] @default([]) 
@@ -69,20 +72,20 @@ model Product {
 
 // Tabla de Stock (El puente que une un Producto con una Sucursal)
 model Stock {
-  id          Int      @id @default(autoincrement())
-  quantity    Int      @default(0) // Cantidad actual
-  minStock    Int      @default(5) // Límite para disparar la alerta al mail
+  id        Int      @id @default(autoincrement())
+  quantity  Int      @default(0) // Cantidad actual física en el local
+  minStock  Int      @default(5) // Umbral crítico para alertas de reposición
   
   // Relaciones
-  productId   Int
-  product     Product  @relation(fields: [productId], references: [id])
+  productId Int
+  product   Product  @relation(fields: [productId], references: [id])
   
-  branchId    Int
-  branch      Branch   @relation(fields: [branchId], references: [id])
+  branchId  Int
+  branch    Branch   @relation(fields: [branchId], references: [id])
   
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  // Regla de escalabilidad: Un mismo producto no puede estar duplicado en la misma sucursal
+  // Regla de integridad: Un producto tiene un único registro de stock por sucursal
   @@unique([productId, branchId])
 }
