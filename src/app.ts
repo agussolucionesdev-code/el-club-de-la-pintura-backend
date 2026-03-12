@@ -1,26 +1,32 @@
-// 1. Carga automática de variables de entorno ANTES de cualquier otra ejecución
+// Carga automática de variables de entorno (Prioridad absoluta de ejecución)
 import "dotenv/config";
 
+// Importación de módulos principales y tipos de Express
 import express, { Application, Request, Response } from "express";
+
+// Importación de enrutadores modulares
 import branchRoutes from "./routes/branch.routes";
+import productRoutes from "./routes/product.routes";
 
 // Inicialización de la aplicación Express
 const app: Application = express();
 
 // Configuración del puerto del servidor
-// Se establece el puerto desde las variables de entorno o se asigna el 3000 como valor por defecto
+// Asignación del puerto mediante variable de entorno o fallback de seguridad al puerto 3000
 const PORT = process.env.PORT || 3000;
 
-// Middlewares globales
-// Se habilita el procesamiento de cuerpos de solicitud en formato JSON
+// Integración de Middlewares globales
+// Habilitación de la lectura de cuerpos de solicitud en formato JSON (Body Parser)
 app.use(express.json());
 
-// Enrutamiento principal de la API
-// Se asignan las rutas de gestión de sucursales al endpoint correspondiente
+// Registro de rutas principales de la API (Endpoints)
+// Conexión del módulo de gestión de sucursales
 app.use("/api/branches", branchRoutes);
+// Conexión del módulo de catálogo de productos
+app.use("/api/products", productRoutes);
 
-// Endpoint de verificación de estado (Health Check)
-// Se utiliza para comprobar la disponibilidad y el entorno de ejecución del servidor
+// Definición de Endpoint de diagnóstico (Health Check)
+// Verificación de disponibilidad y entorno de ejecución del servidor
 app.get("/api/health", (req: Request, res: Response) => {
   res.status(200).json({
     status: "success",
@@ -28,7 +34,7 @@ app.get("/api/health", (req: Request, res: Response) => {
   });
 });
 
-// Puesta en marcha del servidor
+// Puesta en marcha del servidor HTTP
 app.listen(PORT, () => {
   console.log(`Server is running smoothly on http://localhost:${PORT}`);
 });
