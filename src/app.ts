@@ -4,11 +4,13 @@ import "dotenv/config";
 // Importación de módulos principales y tipos de Express
 import express, { Application, Request, Response } from "express";
 
-// Importación de enrutadores modulares (Arquitectura Feature-First)
+// Importación de enrutadores modulares (Arquitectura Feature-First).
 import branchRoutes from "./modules/branch/branch.routes";
 import productRoutes from "./modules/product/product.routes";
 import userRoutes from "./modules/user/user.routes";
-import stockRoutes from "./modules/stock/stock.routes"; // <-- Integración del Módulo de Inventario
+import stockRoutes from "./modules/stock/stock.routes"; // <-- Integración del Módulo de Inventario.
+import saleRoutes from "./modules/sale/sale.routes"; // <-- Integración del Módulo de Ventas.
+import financeRoutes from "./modules/finance/finance.routes"; // <-- Integración del Módulo de Finanzas.
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -30,6 +32,8 @@ app.use("/api/products", productRoutes);
 app.use("/api/users", userRoutes);
 // Conexión del módulo de control de inventario (Stock físico)
 app.use("/api/stock", stockRoutes); // <-- Endpoint central de mercadería/inventario
+app.use("/api/sales", saleRoutes); // <-- Endpoint de ventas y financiera
+app.use("/api/finance", financeRoutes); // <-- Endpoint de análisis financiero
 
 // Definición de Endpoint de diagnóstico (Health Check)
 // Verificación de disponibilidad y entorno de ejecución del servidor

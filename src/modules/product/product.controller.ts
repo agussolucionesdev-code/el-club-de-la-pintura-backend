@@ -3,15 +3,51 @@ import prisma from "../../config/db";
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
 
-// Obtención del catálogo completo de productos
-// Ejecución de consulta a la base de datos y retorno de registros en formato JSON
+// Obtención del catálogo de productos con paginación, búsqueda y filtros dinámicos
 export const getProducts = async (req: Request, res: Response) => {
   try {
-    // Solicitud de todos los registros de la tabla Product
-    const products = await prisma.product.findMany();
+    const { page = 1, limit = 10, search, category, brand } = req.query;
 
-    // Emisión de respuesta con código HTTP 200 (Éxito)
-    res.status(200).json(products);
+    const pageNumber = Number(page);
+    const pageSize = Number(limit);
+    const skip = (pageNumber - 1) * pageSize;
+
+    const whereClause: any = {};
+
+    if (category) {
+      whereClause.category = String(category);
+    }
+
+    if (brand) {
+      whereClause.brand = String(brand);
+    }
+
+    if (search) {
+      const searchString = String(search);
+      whereClause.OR = [
+        { name: { contains: searchString, mode: "insensitive" } },
+        { sku: { contains: searchString, mode: "insensitive" } },
+        { barcode: { contains: searchString, mode: "insensitive" } },
+        { description: { contains: searchString, mode: "insensitive" } },
+      ];
+    }
+
+    const [totalRecords, products] = await prisma.$transaction([
+      prisma.product.count({ where: whereClause }),
+      prisma.product.findMany({
+        where: whereClause,
+        skip: skip,
+        take: pageSize,
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    const totalPages = Math.ceil(totalRecords / pageSize);
+
+    res.status(200).json({
+      metadata: { totalRecords, totalPages, currentPage: pageNumber, pageSize },
+      data: products,
+    });
   } catch (error) {
     console.error("Error al buscar los productos:", error);
     res
@@ -21,16 +57,21 @@ export const getProducts = async (req: Request, res: Response) => {
 };
 
 // Creación de un nuevo producto en el catálogo central
-// Recepción, validación de unicidad y empaquetado dinámico de metadatos (JSON)
 export const createProduct = async (req: Request, res: Response) => {
   try {
-    // Extracción de campos base y agrupación dinámica del resto de atributos (Rest Operator)
     const {
+      sku,
       barcode,
       name,
       brand,
       category,
       description,
+      // INYECCIÓN FINANCIERA
+      costPrice,
+      retailPrice,
+      wholesalePrice,
+      ivaPercentage,
+      // --------------------
       color,
       finish,
       volume,
@@ -38,35 +79,48 @@ export const createProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
-      ...metadata // <-- Magia de escalabilidad: Atrapa cualquier campo extra enviado en el JSON
+      ...metadata
     } = req.body;
 
-    // Validación de campos obligatorios base
-    if (!barcode || !name || !brand || !category) {
+    if (!sku || !name || !brand || !category) {
       return res.status(400).json({
-        error: "Los campos barcode, name, brand y category son requeridos.",
+        error: "Los campos sku, name, brand y category son requeridos.",
       });
     }
 
-    // Verificación de existencia previa del código de barras (Prevención de duplicados)
-    const existingProduct = await prisma.product.findUnique({
-      where: { barcode },
-    });
-
-    if (existingProduct) {
-      return res.status(400).json({
-        error: "El código de barras ingresado ya se encuentra registrado.",
-      });
+    const existingSku = await prisma.product.findUnique({ where: { sku } });
+    if (existingSku) {
+      return res
+        .status(400)
+        .json({ error: "El SKU ingresado ya se encuentra registrado." });
     }
 
-    // Ejecución de la inserción mediante Prisma con inyección de atributos dinámicos
+    if (barcode) {
+      const existingBarcode = await prisma.product.findUnique({
+        where: { barcode },
+      });
+      if (existingBarcode) {
+        return res.status(400).json({
+          error: "El código de barras ingresado ya se encuentra registrado.",
+        });
+      }
+    }
+
     const newProduct = await prisma.product.create({
       data: {
-        barcode,
+        sku,
+        barcode: barcode || null,
         name,
         brand,
         category,
         description,
+        // Almacenamiento numérico seguro de los costos
+        costPrice: costPrice !== undefined ? Number(costPrice) : null,
+        retailPrice: retailPrice !== undefined ? Number(retailPrice) : null,
+        wholesalePrice:
+          wholesalePrice !== undefined ? Number(wholesalePrice) : null,
+        ivaPercentage:
+          ivaPercentage !== undefined ? Number(ivaPercentage) : 21.0,
         color,
         finish,
         volume,
@@ -74,12 +128,10 @@ export const createProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
-        // Si hay campos extra, los guarda en la base de datos como un objeto JSON
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
 
-    // Emisión de respuesta exitosa con código HTTP 201 (Creado)
     res.status(201).json(newProduct);
   } catch (error) {
     console.error("Error al crear el producto:", error);
@@ -90,17 +142,20 @@ export const createProduct = async (req: Request, res: Response) => {
 };
 
 // Actualización de un producto existente
-// Identificación del registro por ID y modificación de campos fijos o metadatos dinámicos
 export const updateProduct = async (req: Request, res: Response) => {
   try {
-    // Extracción del parámetro ID y de los datos del cuerpo
     const { id } = req.params;
     const {
+      sku,
       barcode,
       name,
       brand,
       category,
       description,
+      costPrice,
+      retailPrice,
+      wholesalePrice,
+      ivaPercentage,
       color,
       finish,
       volume,
@@ -108,18 +163,24 @@ export const updateProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
-      ...metadata // <-- Atrapa modificaciones dinámicas
+      ...metadata
     } = req.body;
 
-    // Ejecución de la actualización en la base de datos
     const updatedProduct = await prisma.product.update({
       where: { id: Number(id) },
       data: {
-        barcode,
+        sku,
+        barcode: barcode || null,
         name,
         brand,
         category,
         description,
+        costPrice: costPrice !== undefined ? Number(costPrice) : null,
+        retailPrice: retailPrice !== undefined ? Number(retailPrice) : null,
+        wholesalePrice:
+          wholesalePrice !== undefined ? Number(wholesalePrice) : null,
+        ivaPercentage:
+          ivaPercentage !== undefined ? Number(ivaPercentage) : 21.0,
         color,
         finish,
         volume,
@@ -131,29 +192,21 @@ export const updateProduct = async (req: Request, res: Response) => {
       },
     });
 
-    // Emisión de respuesta con los datos actualizados
     res.status(200).json(updatedProduct);
   } catch (error) {
     console.error("Error al actualizar el producto:", error);
-    res
-      .status(500)
-      .json({ error: "No se pudo actualizar el producto. Verifique el ID." });
+    res.status(500).json({
+      error:
+        "No se pudo actualizar el producto. Verifique el ID o la unicidad de las claves.",
+    });
   }
 };
 
 // Eliminación de un producto del catálogo
-// Remoción física del registro de la base de datos mediante su identificador
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
-    // Extracción del parámetro ID de la solicitud
     const { id } = req.params;
-
-    // Ejecución de la eliminación en la base de datos
-    await prisma.product.delete({
-      where: { id: Number(id) },
-    });
-
-    // Emisión de confirmación de eliminación exitosa
+    await prisma.product.delete({ where: { id: Number(id) } });
     res
       .status(200)
       .json({ message: "Producto eliminado correctamente del catálogo." });
@@ -166,27 +219,22 @@ export const deleteProduct = async (req: Request, res: Response) => {
 };
 
 // Subida de imagen a la nube
-// Intercepción de archivo en memoria, conversión a Base64 y transmisión a Cloudinary
 export const uploadProductImage = async (req: Request, res: Response) => {
   try {
-    // Validación de existencia de archivo adjunto
     if (!req.file) {
       return res
         .status(400)
         .json({ error: "No se proporcionó ningún archivo de imagen." });
     }
 
-    // Conversión de Buffer a Base64 para transmisión segura
     const b64 = Buffer.from(req.file.buffer).toString("base64");
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
 
-    // Ejecución de carga en Cloudinary
     const uploadResult = await cloudinary.uploader.upload(dataURI, {
-      folder: "el-club-pintura/productos", // Organización automática en carpetas en la nube
+      folder: "el-club-pintura/productos",
       resource_type: "auto",
     });
 
-    // Emisión de respuesta con la URL pública generada
     res.status(200).json({
       message: "Imagen procesada y alojada exitosamente.",
       imageUrl: uploadResult.secure_url,
@@ -201,24 +249,17 @@ export const uploadProductImage = async (req: Request, res: Response) => {
 };
 
 // Importación masiva de productos vía hoja de cálculo (Excel/CSV)
-// Lectura directa en memoria (Buffer), parseo de filas y carga transaccional optimizada
 export const importProductsFromExcel = async (req: Request, res: Response) => {
   try {
-    // Validación de seguridad: Verificación de existencia del archivo en la petición
     if (!req.file) {
       return res.status(400).json({
         error: "Aduana rechazada: No se adjuntó ningún archivo Excel.",
       });
     }
 
-    // Lectura del archivo directamente desde la memoria RAM para máxima velocidad
     const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
-
-    // Selección de la primera hoja de cálculo del documento
     const sheetName = workbook.SheetNames[0];
 
-    // BARRERA DE SEGURIDAD 1 (Solución a ts(2538))
-    // Verifica que el archivo tenga al menos una hoja válida antes de indexar
     if (!sheetName) {
       return res.status(400).json({
         error:
@@ -228,8 +269,6 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
 
     const sheet = workbook.Sheets[sheetName];
 
-    // BARRERA DE SEGURIDAD 2 (Solución a ts(2345))
-    // Verifica que la hoja exista físicamente en la memoria antes de parsearla
     if (!sheet) {
       return res.status(400).json({
         error:
@@ -237,10 +276,8 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       });
     }
 
-    // Conversión estructural: De celdas de Excel a un arreglo de objetos JSON
     const rawProducts = xlsx.utils.sheet_to_json<any>(sheet);
 
-    // Barrera de validación por archivo vacío
     if (rawProducts.length === 0) {
       return res.status(400).json({
         error:
@@ -248,14 +285,33 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       });
     }
 
-    // Mapeo y estandarización de columnas
-    // Se adaptan posibles nombres de columnas en español al esquema estricto de Prisma
     const productsToInsert = rawProducts.map((row) => ({
-      barcode: String(row.barcode || row.codigo_barras),
+      sku: String(row.sku || row.codigo_interno),
+      barcode:
+        row.barcode || row.codigo_barras
+          ? String(row.barcode || row.codigo_barras)
+          : null,
       name: String(row.name || row.nombre),
       brand: String(row.brand || row.marca),
       category: String(row.category || row.categoria),
       description: row.description || row.descripcion || null,
+
+      // EXCEL FINANCIAL MAPPING: Interpreta las columnas financieras de tu Excel si existen
+      costPrice:
+        row.costPrice || row.costo ? Number(row.costPrice || row.costo) : null,
+      retailPrice:
+        row.retailPrice || row.precio_minorista || row.precio
+          ? Number(row.retailPrice || row.precio_minorista || row.precio)
+          : null,
+      wholesalePrice:
+        row.wholesalePrice || row.precio_mayorista
+          ? Number(row.wholesalePrice || row.precio_mayorista)
+          : null,
+      ivaPercentage:
+        row.ivaPercentage || row.iva !== undefined
+          ? Number(row.ivaPercentage || row.iva)
+          : 21.0,
+
       color: row.color || null,
       finish: row.finish || row.acabado || null,
       volume:
@@ -266,13 +322,11 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       baseType: row.baseType || row.tipo_base || null,
     }));
 
-    // Ejecución de Inserción Masiva (Bulk Insert)
     const result = await prisma.product.createMany({
       data: productsToInsert,
-      skipDuplicates: true, // Arquitectura robusta: Ignora registros que ya existan para evitar colapso de lote
+      skipDuplicates: true,
     });
 
-    // Emisión de comprobante de auditoría de la operación
     res.status(201).json({
       message: "Proceso de importación masiva finalizado exitosamente.",
       recordsFound: rawProducts.length,
