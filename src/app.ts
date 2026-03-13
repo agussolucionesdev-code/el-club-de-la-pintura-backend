@@ -8,6 +8,7 @@ import express, { Application, Request, Response } from "express";
 import branchRoutes from "./modules/branch/branch.routes";
 import productRoutes from "./modules/product/product.routes";
 import userRoutes from "./modules/user/user.routes";
+import stockRoutes from "./modules/stock/stock.routes"; // <-- Integración del Módulo de Inventario
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -27,6 +28,8 @@ app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);
 // Conexión del módulo de seguridad e identidad (Usuarios)
 app.use("/api/users", userRoutes);
+// Conexión del módulo de control de inventario (Stock físico)
+app.use("/api/stock", stockRoutes); // <-- Endpoint central de mercadería/inventario
 
 // Definición de Endpoint de diagnóstico (Health Check)
 // Verificación de disponibilidad y entorno de ejecución del servidor
