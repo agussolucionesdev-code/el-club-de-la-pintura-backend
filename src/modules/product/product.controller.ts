@@ -20,10 +20,10 @@ export const getProducts = async (req: Request, res: Response) => {
 };
 
 // Creación de un nuevo producto en el catálogo central
-// Recepción, validación de unicidad y persistencia de datos
+// Recepción, validación de unicidad y empaquetado dinámico de metadatos (JSON)
 export const createProduct = async (req: Request, res: Response) => {
   try {
-    // Extracción de campos desde el cuerpo de la solicitud
+    // Extracción de campos base y agrupación dinámica del resto de atributos (Rest Operator)
     const {
       barcode,
       name,
@@ -37,6 +37,7 @@ export const createProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
+      ...metadata // <-- Magia de escalabilidad: Atrapa cualquier campo extra enviado en el JSON
     } = req.body;
 
     // Validación de campos obligatorios base
@@ -57,7 +58,7 @@ export const createProduct = async (req: Request, res: Response) => {
       });
     }
 
-    // Ejecución de la inserción mediante Prisma
+    // Ejecución de la inserción mediante Prisma con inyección de atributos dinámicos
     const newProduct = await prisma.product.create({
       data: {
         barcode,
@@ -72,6 +73,8 @@ export const createProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
+        // Si hay campos extra, los guarda en la base de datos como un objeto JSON
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
 
@@ -86,7 +89,7 @@ export const createProduct = async (req: Request, res: Response) => {
 };
 
 // Actualización de un producto existente
-// Identificación del registro por ID y modificación de campos específicos
+// Identificación del registro por ID y modificación de campos fijos o metadatos dinámicos
 export const updateProduct = async (req: Request, res: Response) => {
   try {
     // Extracción del parámetro ID y de los datos del cuerpo
@@ -104,6 +107,7 @@ export const updateProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
+      ...metadata // <-- Atrapa modificaciones dinámicas
     } = req.body;
 
     // Ejecución de la actualización en la base de datos
@@ -122,6 +126,7 @@ export const updateProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
 
