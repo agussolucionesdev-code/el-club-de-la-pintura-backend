@@ -4,7 +4,6 @@ generator client {
 }
 
 // 2. Configuración de la Base de Datos (PostgreSQL)
-// En las versiones modernas, la URL de conexión se gestiona desde prisma.config.ts
 datasource db {
   provider = "postgresql"
 }
@@ -15,68 +14,70 @@ datasource db {
 
 // Tabla de Sucursales
 model Branch {
-  id        Int      @id @default(autoincrement())
-  name      String   // ej: "Sucursal Temperley"
-  location  String?  // Dirección física
-  users     User[]   // Empleados que trabajan acá
-  stocks    Stock[]  // Inventario específico de esta sucursal
+  id        Int        @id @default(autoincrement())
+  name      String     // ej: "Sucursal Temperley"
+  location  String?    // Dirección física
+  users     User[]     // Empleados que trabajan acá
+  stocks    Stock[]    // Inventario específico de esta sucursal
+  movements Movement[] // NUEVO: Historial de movimientos de la sucursal
   
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }
 
 // Tabla de Usuarios (Empleados/Administradores)
 model User {
-  id        Int      @id @default(autoincrement())
+  id        Int        @id @default(autoincrement())
   name      String
-  email     String   @unique
-  password  String   // Contraseña encriptada
-  role      String   @default("EMPLOYEE") // Puede ser "ADMIN" o "EMPLOYEE"
+  email     String     @unique
+  password  String     // Contraseña encriptada
+  role      String     @default("EMPLOYEE") // Puede ser "ADMIN" o "EMPLOYEE"
   
   // Relación: Un usuario pertenece a una sucursal
   branchId  Int
-  branch    Branch   @relation(fields: [branchId], references: [id])
+  branch    Branch     @relation(fields: [branchId], references: [id])
+  movements Movement[] // NUEVO: Registro de qué movimientos hizo este usuario
   
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }
 
-// Tabla del Catálogo Central de Productos (Igual para todas las sucursales)
+// Tabla del Catálogo Central de Productos
 model Product {
-  id            Int      @id @default(autoincrement())
-  barcode       String   @unique // Código de barras o SKU
-  name          String   // ej: "Latex Interior Blanco 20L"
-  brand         String   // ej: "Alba", "Colorín"
-  category      String   // ej: "Latex", "Sintetico", "Accesorios"
+  id            Int        @id @default(autoincrement())
+  barcode       String     @unique // Código de barras o SKU
+  name          String     // ej: "Latex Interior Blanco 20L"
+  brand         String     // ej: "Alba", "Colorín"
+  category      String     // ej: "Latex", "Sintetico", "Accesorios"
   description   String?
   
   // Atributos específicos de pintura
-  color         String?  // Nombre del color o Hexadecimal
-  finish        String?  // ej: "Mate", "Satinado"
-  volume        Float?   // ej: 20.0, 4.0, 0.5
-  volumeUnit    String?  // ej: "L", "Kg"
-  indoorOutdoor Boolean  @default(true)
-  baseType      String?  // ej: "Al agua", "Sintético"
+  color         String?  
+  finish        String?  
+  volume        Float?   
+  volumeUnit    String?  
+  indoorOutdoor Boolean    @default(true)
+  baseType      String?  
   
-  // NUEVO: Atributos dinámicos para escalabilidad de catálogo (lijas, rodillos, etc.)
+  // Atributos dinámicos para escalabilidad
   metadata      Json?
   
   // Alojamiento de URLs de Cloudinary
-  images        String[] @default([]) 
+  images        String[]   @default([]) 
   
-  stocks        Stock[]  // Relación con el stock en distintas sucursales
+  stocks        Stock[]    
+  movements     Movement[] // NUEVO: Historial de movimientos de este producto
   
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
 }
 
-// Tabla de Stock (El puente que une un Producto con una Sucursal)
+// Tabla de Stock (El puente físico)
 model Stock {
   id        Int      @id @default(autoincrement())
   quantity  Int      @default(0) // Cantidad actual física en el local
-  minStock  Int      @default(5) // Umbral crítico para alertas de reposición
+  minStock  Int      @default(5) // Umbral crítico para alertas
   
-  // Relaciones
   productId Int
   product   Product  @relation(fields: [productId], references: [id])
   
@@ -86,6 +87,27 @@ model Stock {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Regla de integridad: Un producto tiene un único registro de stock por sucursal
   @@unique([productId, branchId])
+}
+
+// ------------------------------------------------------
+// MÓDULO DE AUDITORÍA Y TRAZABILIDAD
+// ------------------------------------------------------
+model Movement {
+  id          Int      @id @default(autoincrement())
+  type        String   // Ej: "IN" (Ingreso), "OUT" (Egreso), "ADJUST" (Ajuste/Rotura)
+  quantity    Int      // Cantidad de unidades movidas en esta operación
+  reason      String?  // Ej: "Venta Ticket #1234", "Ingreso Proveedor", "Mercadería dañada"
+  
+  // Relaciones obligatorias para trazabilidad total
+  productId   Int
+  product     Product  @relation(fields: [productId], references: [id])
+  
+  branchId    Int
+  branch      Branch   @relation(fields: [branchId], references: [id])
+  
+  userId      Int      // El empleado responsable del movimiento
+  user        User     @relation(fields: [userId], references: [id])
+
+  createdAt   DateTime @default(now()) // Fecha y hora exacta de la operación
 }

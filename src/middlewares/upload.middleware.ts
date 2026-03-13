@@ -11,12 +11,17 @@ const fileFilter = (
   file: Express.Multer.File,
   cb: multer.FileFilterCallback,
 ) => {
-  // Declaración de los tipos MIME autorizados (Estándares web de imágenes)
+  // Declaración de los tipos MIME autorizados (Estándares web de imágenes y documentos Excel/CSV)
   const allowedMimeTypes = [
+    // Formatos de Imagen
     "image/jpeg",
     "image/png",
     "image/webp",
     "image/jpg",
+    // Formatos de Hoja de Cálculo
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+    "application/vnd.ms-excel", // .xls
+    "text/csv", // .csv
   ];
 
   // Verificación de compatibilidad del archivo entrante
@@ -27,16 +32,16 @@ const fileFilter = (
     // Rechazo del archivo con emisión de error de validación
     cb(
       new Error(
-        "Formato de archivo no soportado. Se requieren imágenes JPG, PNG o WEBP.",
+        "Formato de archivo no soportado. Se requieren imágenes (JPG, PNG, WEBP) o documentos Excel/CSV.",
       ),
     );
   }
 };
 
 // Instanciación y exportación del middleware de intercepción
-// Configuración de límites de tamaño (5MB) para la optimización del ancho de banda y protección del servidor
+// Configuración de límites de tamaño (10MB) para la optimización del ancho de banda y protección del servidor
 export const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // Límite de 5 Megabytes por archivo
+  limits: { fileSize: 10 * 1024 * 1024 }, // Límite ampliado a 10 Megabytes por archivo para catálogos pesados
 });

@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
 
 // Obtención del catálogo completo de productos
@@ -195,6 +196,93 @@ export const uploadProductImage = async (req: Request, res: Response) => {
     res.status(500).json({
       error:
         "Hubo un problema al procesar la imagen en el servidor en la nube.",
+    });
+  }
+};
+
+// Importación masiva de productos vía hoja de cálculo (Excel/CSV)
+// Lectura directa en memoria (Buffer), parseo de filas y carga transaccional optimizada
+export const importProductsFromExcel = async (req: Request, res: Response) => {
+  try {
+    // Validación de seguridad: Verificación de existencia del archivo en la petición
+    if (!req.file) {
+      return res.status(400).json({
+        error: "Aduana rechazada: No se adjuntó ningún archivo Excel.",
+      });
+    }
+
+    // Lectura del archivo directamente desde la memoria RAM para máxima velocidad
+    const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
+
+    // Selección de la primera hoja de cálculo del documento
+    const sheetName = workbook.SheetNames[0];
+
+    // BARRERA DE SEGURIDAD 1 (Solución a ts(2538))
+    // Verifica que el archivo tenga al menos una hoja válida antes de indexar
+    if (!sheetName) {
+      return res.status(400).json({
+        error:
+          "Estructura inválida: El archivo Excel no contiene hojas legibles.",
+      });
+    }
+
+    const sheet = workbook.Sheets[sheetName];
+
+    // BARRERA DE SEGURIDAD 2 (Solución a ts(2345))
+    // Verifica que la hoja exista físicamente en la memoria antes de parsearla
+    if (!sheet) {
+      return res.status(400).json({
+        error:
+          "Error de lectura: La hoja de cálculo está corrupta o es inaccesible.",
+      });
+    }
+
+    // Conversión estructural: De celdas de Excel a un arreglo de objetos JSON
+    const rawProducts = xlsx.utils.sheet_to_json<any>(sheet);
+
+    // Barrera de validación por archivo vacío
+    if (rawProducts.length === 0) {
+      return res.status(400).json({
+        error:
+          "El archivo Excel proporcionado no contiene datos en sus celdas.",
+      });
+    }
+
+    // Mapeo y estandarización de columnas
+    // Se adaptan posibles nombres de columnas en español al esquema estricto de Prisma
+    const productsToInsert = rawProducts.map((row) => ({
+      barcode: String(row.barcode || row.codigo_barras),
+      name: String(row.name || row.nombre),
+      brand: String(row.brand || row.marca),
+      category: String(row.category || row.categoria),
+      description: row.description || row.descripcion || null,
+      color: row.color || null,
+      finish: row.finish || row.acabado || null,
+      volume:
+        row.volume || row.volumen ? Number(row.volume || row.volumen) : null,
+      volumeUnit: row.volumeUnit || row.unidad_volumen || null,
+      indoorOutdoor:
+        row.indoorOutdoor !== undefined ? Boolean(row.indoorOutdoor) : true,
+      baseType: row.baseType || row.tipo_base || null,
+    }));
+
+    // Ejecución de Inserción Masiva (Bulk Insert)
+    const result = await prisma.product.createMany({
+      data: productsToInsert,
+      skipDuplicates: true, // Arquitectura robusta: Ignora registros que ya existan para evitar colapso de lote
+    });
+
+    // Emisión de comprobante de auditoría de la operación
+    res.status(201).json({
+      message: "Proceso de importación masiva finalizado exitosamente.",
+      recordsFound: rawProducts.length,
+      recordsInserted: result.count,
+    });
+  } catch (error) {
+    console.error("Error crítico en el motor de importación masiva:", error);
+    res.status(500).json({
+      error:
+        "Fallo estructural al procesar el documento. Verifique que el formato sea Excel o CSV válido.",
     });
   }
 };
