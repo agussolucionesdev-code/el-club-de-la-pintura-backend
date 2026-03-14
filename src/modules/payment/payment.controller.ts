@@ -22,7 +22,20 @@ export const payDebt = async (req: Request, res: Response) => {
 
     // Ejecución Transaccional (ACID)
     const transactionResult = await prisma.$transaction(async (tx) => {
-      // 1. Buscamos la factura original
+      // ============================================================================
+      // 1. INYECCIÓN DE CAJA: Verificación de Turno Abierto
+      // ============================================================================
+      const activeShift = await tx.cashRegister.findFirst({
+        where: { userId: authUser.id, branchId: branchId, status: "OPEN" },
+      });
+
+      if (!activeShift) {
+        throw new Error(
+          "Operación denegada: Debes abrir tu turno de caja antes de cobrar deudas.",
+        );
+      }
+
+      // 2. Buscamos la factura original
       const sale = await tx.sale.findUnique({
         where: { id: Number(saleId) },
       });
@@ -41,11 +54,11 @@ export const payDebt = async (req: Request, res: Response) => {
         );
       }
 
-      // 2. Calculamos el nuevo saldo
+      // 3. Calculamos el nuevo saldo
       const newBalance = sale.balance - amount;
       const newStatus = newBalance === 0 ? "PAID" : "PARTIAL";
 
-      // 3. Generamos el recibo de ingreso de dinero físico a la caja
+      // 4. Generamos el recibo de ingreso de dinero físico a la caja
       const paymentReceipt = await tx.payment.create({
         data: {
           amount,
@@ -53,10 +66,11 @@ export const payDebt = async (req: Request, res: Response) => {
           saleId: sale.id,
           userId: authUser.id,
           branchId,
+          cashRegisterId: activeShift.id, // <-- VINCULACIÓN DE CAJA
         },
       });
 
-      // 4. Actualizamos el estado de la factura original
+      // 5. Actualizamos el estado de la factura original
       const updatedSale = await tx.sale.update({
         where: { id: sale.id },
         data: {

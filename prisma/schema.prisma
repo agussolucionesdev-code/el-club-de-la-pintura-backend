@@ -24,6 +24,9 @@ model Branch {
   sales     Sale[]     
   payments  Payment[]  // Track physical money entering this branch
   
+  // NEW: Track shifts in this branch
+  cashRegisters CashRegister[] 
+  
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
@@ -41,6 +44,9 @@ model User {
   movements Movement[] 
   sales     Sale[]     
   payments  Payment[]  // Track which employee collected the money
+  
+  // NEW: Track shifts opened by this user
+  cashRegisters CashRegister[] 
   
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
@@ -66,7 +72,7 @@ model Customer {
 }
 
 // ==========================================
-// NEW: SUPPLIER MODULE (Proveedores)
+// SUPPLIER MODULE (Proveedores)
 // ==========================================
 // Store supplier companies and contact representatives for WhatsApp orders
 model Supplier {
@@ -110,7 +116,7 @@ model Product {
   metadata       Json?
   images         String[]   @default([]) 
   
-  // NEW: Link product to its primary supplier
+  // Link product to its primary supplier
   supplierId     Int?
   supplier       Supplier?  @relation(fields: [supplierId], references: [id])
 
@@ -159,6 +165,35 @@ model Movement {
   createdAt DateTime @default(now()) 
 }
 
+// ==========================================
+// NEW: SHIFT & CASH REGISTER MODULE
+// ==========================================
+model CashRegister {
+  id              Int       @id @default(autoincrement())
+  openingTime     DateTime  @default(now())
+  closingTime     DateTime? // Null means the shift is currently OPEN
+  
+  initialBalance  Float     // Fondo de caja (Sencillo para dar vuelto)
+  expectedBalance Float?    // Calculado por el sistema al cerrar
+  actualBalance   Float?    // Contado por el empleado al cerrar
+  discrepancy     Float?    // Diferencia (Sobrante o Faltante)
+  
+  status          String    @default("OPEN") // OPEN, CLOSED
+  observations    String?   // Notas sobre faltantes o retiros
+  
+  userId          Int       // Empleado que abrió la caja
+  user            User      @relation(fields: [userId], references: [id])
+  
+  branchId        Int       // Sucursal donde se operó
+  branch          Branch    @relation(fields: [branchId], references: [id])
+
+  sales           Sale[]    // Ventas vinculadas a este turno
+  payments        Payment[] // Cobranzas vinculadas a este turno
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
 // ------------------------------------------------------
 // SALES, DEBT & CASH FLOW MODULE
 // ------------------------------------------------------
@@ -181,6 +216,10 @@ model Sale {
   
   userId        Int        
   user          User       @relation(fields: [userId], references: [id])
+  
+  // NEW: Link to the active shift
+  cashRegisterId Int?
+  cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
   
   items         SaleItem[] 
   payments      Payment[]  // Link partial or full payments to this ticket
@@ -217,6 +256,10 @@ model Payment {
 
   branchId      Int
   branch        Branch   @relation(fields: [branchId], references: [id])
+
+  // NEW: Link to the active shift
+  cashRegisterId Int?
+  cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
 
   createdAt     DateTime @default(now())
 }

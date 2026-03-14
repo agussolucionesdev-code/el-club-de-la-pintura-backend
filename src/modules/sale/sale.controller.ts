@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
-// Process POS Transaction with Accounts Receivable logic
+// Process POS Transaction with Accounts Receivable logic and Cash Register tracking
 export const processSale = async (req: Request, res: Response) => {
   try {
     const {
@@ -23,10 +23,23 @@ export const processSale = async (req: Request, res: Response) => {
     }
 
     const transactionResult = await prisma.$transaction(async (tx) => {
+      // ============================================================================
+      // 1. INYECCIÓN DE CAJA: Verificación de Turno Abierto
+      // ============================================================================
+      const activeShift = await tx.cashRegister.findFirst({
+        where: { userId: authUser.id, branchId: branchId, status: "OPEN" },
+      });
+
+      if (!activeShift) {
+        throw new Error(
+          "Operación denegada: Debes abrir tu turno de caja antes de facturar.",
+        );
+      }
+
       let totalAmount = 0;
       const enrichedItems = [];
 
-      // 1. Process items, calculate totals, freeze costs, and deduct physical stock
+      // 2. Process items, calculate totals, freeze costs, and deduct physical stock
       for (const item of items) {
         const subtotal = item.quantity * item.unitPrice;
         totalAmount += subtotal;
@@ -76,8 +89,7 @@ export const processSale = async (req: Request, res: Response) => {
         });
       }
 
-      // 2. Financial Debt & Status Calculation
-      // If amountPaid is not provided, we assume it's fully paid to maintain backward compatibility
+      // 3. Financial Debt & Status Calculation
       const actualAmountPaid =
         amountPaid !== undefined ? Number(amountPaid) : totalAmount;
       const balance = totalAmount - actualAmountPaid;
@@ -86,7 +98,7 @@ export const processSale = async (req: Request, res: Response) => {
       if (actualAmountPaid === 0) status = "PENDING";
       else if (balance > 0) status = "PARTIAL";
 
-      // 3. Generate Master Sale Ticket with Debt tracking
+      // 4. Generate Master Sale Ticket with Debt tracking AND Cash Register link
       const saleRecord = await tx.sale.create({
         data: {
           totalAmount,
@@ -97,6 +109,7 @@ export const processSale = async (req: Request, res: Response) => {
           pickedUpBy: pickedUpBy || null,
           status,
           balance,
+          cashRegisterId: activeShift.id, // <-- VINCULACIÓN DE CAJA
           items: {
             create: enrichedItems,
           },
@@ -104,7 +117,7 @@ export const processSale = async (req: Request, res: Response) => {
         include: { items: true },
       });
 
-      // 4. Register Physical Cash Flow (Only if money actually entered the drawer)
+      // 5. Register Physical Cash Flow AND Link to Cash Register
       if (actualAmountPaid > 0) {
         await tx.payment.create({
           data: {
@@ -113,6 +126,7 @@ export const processSale = async (req: Request, res: Response) => {
             saleId: saleRecord.id,
             userId: authUser.id,
             branchId: branchId,
+            cashRegisterId: activeShift.id, // <-- VINCULACIÓN DE CAJA
           },
         });
       }
@@ -147,9 +161,9 @@ export const getSales = async (req: Request, res: Response) => {
       where: whereClause,
       include: {
         user: { select: { name: true, role: true } },
-        customer: { select: { name: true, document: true, type: true } }, // NEW: Include Customer info
+        customer: { select: { name: true, document: true, type: true } },
         items: { include: { product: { select: { name: true, sku: true } } } },
-        payments: true, // NEW: Include related payment receipts
+        payments: true,
       },
       orderBy: { createdAt: "desc" },
     });
