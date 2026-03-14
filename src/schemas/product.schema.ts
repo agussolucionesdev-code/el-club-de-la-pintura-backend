@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // Declaración del Esquema de Productos
-// Blindaje de datos del catálogo y variables financieras
+// Blindaje de datos del catálogo, variables financieras y relaciones de aprovisionamiento
 export const createProductSchema = z.object({
   body: z.object({
     // Identificadores lógicos y físicos
@@ -43,5 +43,15 @@ export const createProductSchema = z.object({
     volumeUnit: z.string().optional().nullable(),
     indoorOutdoor: z.boolean().optional().default(true),
     baseType: z.string().optional().nullable(),
+
+    // ==========================================
+    // NUEVO: RELACIÓN LOGÍSTICA (PROVEEDORES)
+    // ==========================================
+    supplierId: z
+      .number()
+      .int("El identificador del proveedor debe ser un número entero.")
+      .positive("El identificador del proveedor debe ser positivo.")
+      .optional()
+      .nullable(),
   }),
 });

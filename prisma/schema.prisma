@@ -22,7 +22,7 @@ model Branch {
   stocks    Stock[]    
   movements Movement[] 
   sales     Sale[]     
-  payments  Payment[]  // NEW: Track physical money entering this branch
+  payments  Payment[]  // Track physical money entering this branch
   
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
@@ -40,14 +40,14 @@ model User {
   
   movements Movement[] 
   sales     Sale[]     
-  payments  Payment[]  // NEW: Track which employee collected the money
+  payments  Payment[]  // Track which employee collected the money
   
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
 
 // ==========================================
-// NEW: CUSTOMER & ACCOUNTS RECEIVABLE MODULE
+// CUSTOMER & ACCOUNTS RECEIVABLE MODULE
 // ==========================================
 // Store client profiles, contractors, and companies
 model Customer {
@@ -63,6 +63,26 @@ model Customer {
 
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
+}
+
+// ==========================================
+// NEW: SUPPLIER MODULE (Proveedores)
+// ==========================================
+// Store supplier companies and contact representatives for WhatsApp orders
+model Supplier {
+  id            Int       @id @default(autoincrement())
+  companyName   String    // Name of the company (e.g., Alba, Sherwin Williams)
+  cuit          String?   @unique
+  contactName   String?   // Representative (e.g., "Juan Perez - Corredor")
+  phone         String    // CRITICAL: Used for WhatsApp integration
+  email         String?
+  address       String?
+  isActive      Boolean   @default(true) // Soft delete
+
+  products      Product[] // M:1: Products supplied by this company
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 }
 
 // Manage central product catalog and financial pricing
@@ -90,6 +110,10 @@ model Product {
   metadata       Json?
   images         String[]   @default([]) 
   
+  // NEW: Link product to its primary supplier
+  supplierId     Int?
+  supplier       Supplier?  @relation(fields: [supplierId], references: [id])
+
   stocks         Stock[]    
   movements      Movement[] 
   saleItems      SaleItem[] 
@@ -145,7 +169,6 @@ model Sale {
   totalAmount   Float      
   paymentMethod String     // CASH, CARD, CREDIT_ACCOUNT
   
-  // NEW: Debt and Logistics Tracking
   status        String     @default("PAID") // PAID, PENDING, PARTIAL
   balance       Float      @default(0)      // Pending amount to be paid
   pickedUpBy    String?    // Name/ID of the person who physically took the items
@@ -160,7 +183,7 @@ model Sale {
   user          User       @relation(fields: [userId], references: [id])
   
   items         SaleItem[] 
-  payments      Payment[]  // NEW: Link partial or full payments to this ticket
+  payments      Payment[]  // Link partial or full payments to this ticket
   
   createdAt     DateTime   @default(now())
 }
@@ -180,7 +203,7 @@ model SaleItem {
   product     Product  @relation(fields: [productId], references: [id])
 }
 
-// NEW: Register physical money entering the drawer (Cash Flow)
+// Register physical money entering the drawer (Cash Flow)
 model Payment {
   id            Int      @id @default(autoincrement())
   amount        Float    // Physical money collected

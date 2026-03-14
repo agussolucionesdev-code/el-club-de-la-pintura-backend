@@ -13,6 +13,7 @@ import saleRoutes from "./modules/sale/sale.routes"; // <-- Integración del Mó
 import financeRoutes from "./modules/finance/finance.routes"; // <-- Integración del Módulo de Finanzas.
 import customerRoutes from "./modules/customer/customer.routes"; // <-- Integración del Módulo de Clientes.
 import paymentRoutes from "./modules/payment/payment.routes"; // <-- Integración del Módulo de Cobranzas.
+import supplierRoutes from "./modules/supplier/supplier.routes"; // <-- Integración del Módulo de Proveedores.
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -38,6 +39,7 @@ app.use("/api/sales", saleRoutes); // <-- Endpoint de ventas y financiera
 app.use("/api/finance", financeRoutes); // <-- Endpoint de análisis financiero
 app.use("/api/customers", customerRoutes); // <-- Endpoint de clientes y cajas
 app.use("/api/payments", paymentRoutes); // <-- Endpoint de cobranzas y saldos
+app.use("/api/suppliers", supplierRoutes); // <-- Endpoint de proveedores y contactos
 
 // Definición de Endpoint de diagnóstico (Health Check)
 // Verificación de disponibilidad y entorno de ejecución del servidor

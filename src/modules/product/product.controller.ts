@@ -3,7 +3,7 @@ import prisma from "../../config/db";
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
 
-// Obtención del catálogo de productos con paginación, búsqueda y filtros dinámicos
+// Obtención del catálogo de productos con paginación, búsqueda, filtros dinámicos y relación de proveedor
 export const getProducts = async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = 10, search, category, brand } = req.query;
@@ -39,6 +39,12 @@ export const getProducts = async (req: Request, res: Response) => {
         skip: skip,
         take: pageSize,
         orderBy: { createdAt: "desc" },
+        // INYECCIÓN RELACIONAL: Adjuntamos los datos del proveedor para la vista del catálogo
+        include: {
+          supplier: {
+            select: { id: true, companyName: true },
+          },
+        },
       }),
     ]);
 
@@ -66,12 +72,10 @@ export const createProduct = async (req: Request, res: Response) => {
       brand,
       category,
       description,
-      // INYECCIÓN FINANCIERA
       costPrice,
       retailPrice,
       wholesalePrice,
       ivaPercentage,
-      // --------------------
       color,
       finish,
       volume,
@@ -79,6 +83,7 @@ export const createProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
+      supplierId, // <-- NUEVO: Identificador de la empresa proveedora
       ...metadata
     } = req.body;
 
@@ -114,7 +119,6 @@ export const createProduct = async (req: Request, res: Response) => {
         brand,
         category,
         description,
-        // Almacenamiento numérico seguro de los costos
         costPrice: costPrice !== undefined ? Number(costPrice) : null,
         retailPrice: retailPrice !== undefined ? Number(retailPrice) : null,
         wholesalePrice:
@@ -128,6 +132,7 @@ export const createProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
+        supplierId: supplierId ? Number(supplierId) : null, // Mapeo relacional seguro
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
@@ -163,6 +168,7 @@ export const updateProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
+      supplierId, // <-- NUEVO
       ...metadata
     } = req.body;
 
@@ -188,6 +194,7 @@ export const updateProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
+        supplierId: supplierId ? Number(supplierId) : null,
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
@@ -296,7 +303,6 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       category: String(row.category || row.categoria),
       description: row.description || row.descripcion || null,
 
-      // EXCEL FINANCIAL MAPPING: Interpreta las columnas financieras de tu Excel si existen
       costPrice:
         row.costPrice || row.costo ? Number(row.costPrice || row.costo) : null,
       retailPrice:
@@ -320,6 +326,12 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       indoorOutdoor:
         row.indoorOutdoor !== undefined ? Boolean(row.indoorOutdoor) : true,
       baseType: row.baseType || row.tipo_base || null,
+
+      // NUEVO: Mapeo del ID de proveedor si viene en el Excel
+      supplierId:
+        row.supplierId || row.proveedor_id
+          ? Number(row.supplierId || row.proveedor_id)
+          : null,
     }));
 
     const result = await prisma.product.createMany({

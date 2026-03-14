@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 
 // Retrieve daily financial metrics
-// Calculate gross revenue, total costs, and net profit for the current day
+// Calculate gross revenue (billed), actual cash flow (liquidity), total costs, and net profit
 export const getDailyRevenue = async (req: Request, res: Response) => {
   try {
     // Define time range: From 00:00:00 to 23:59:59 of the current day
@@ -12,7 +12,7 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
-    // Fetch all sales and their associated items within the time range
+    // 1. Fetch all sales and their associated items (Accrual Accounting / Facturación)
     const dailySales = await prisma.sale.findMany({
       where: {
         createdAt: {
@@ -25,13 +25,27 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
       },
     });
 
+    // 2. Fetch actual physical cash flow (Liquidity / Caja Real)
+    // Agrupa todos los pagos (señas, ventas de contado y cobranzas de deudas viejas) realizados hoy
+    const dailyPayments = await prisma.payment.aggregate({
+      _sum: {
+        amount: true,
+      },
+      where: {
+        createdAt: {
+          gte: startOfDay,
+          lte: endOfDay,
+        },
+      },
+    });
+
     // Initialize financial accumulators
-    let totalRevenue = 0;
+    let grossBilled = 0; // Total facturado (incluso si no se pagó)
     let totalCost = 0;
 
     // Iterate through sales and items to aggregate financial data
     dailySales.forEach((sale) => {
-      totalRevenue += sale.totalAmount;
+      grossBilled += sale.totalAmount;
 
       sale.items.forEach((item) => {
         // Aggregate cost based on frozen historical unitCost
@@ -40,19 +54,23 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
       });
     });
 
-    // Calculate net profit and profit margin percentage
-    const netProfit = totalRevenue - totalCost;
+    // Extract actual physical cash entered today
+    const actualCashFlow = dailyPayments._sum.amount || 0;
+
+    // Calculate net profit and profit margin percentage based on billed amounts
+    const netProfit = grossBilled - totalCost;
     const profitMarginPercentage =
-      totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0;
+      grossBilled > 0 ? (netProfit / grossBilled) * 100 : 0;
 
     // Send successful response with calculated financial metrics
     res.status(200).json({
-      message: "Daily financial report generated successfully.",
+      message: "Daily financial report and cash flow generated successfully.",
       date: startOfDay.toISOString().split("T")[0],
       metrics: {
-        totalRevenue,
-        totalCost,
-        netProfit,
+        grossBilled, // Total value of merchandise sold today
+        actualCashFlow, // Physical money entered in the drawer today
+        totalCost, // Total frozen cost of the merchandise sold
+        netProfit, // Expected profit once all debts are paid
         profitMarginPercentage: Number(profitMarginPercentage.toFixed(2)),
       },
     });
