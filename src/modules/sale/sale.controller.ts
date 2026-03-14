@@ -1,13 +1,20 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
+// Process POS Transaction with Accounts Receivable logic
 export const processSale = async (req: Request, res: Response) => {
   try {
-    const { branchId, paymentMethod, items } = req.body;
+    const {
+      branchId,
+      paymentMethod,
+      items,
+      customerId,
+      pickedUpBy,
+      amountPaid,
+    } = req.body;
     const authUser = (req as any).user;
 
-    // BARRERA MULTI-SUCURSAL
-    // Verificamos si el arreglo de permisos del token incluye la sucursal donde quiere facturar
+    // MULTI-BRANCH BARRIER
     if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
       return res.status(403).json({
         error:
@@ -17,10 +24,17 @@ export const processSale = async (req: Request, res: Response) => {
 
     const transactionResult = await prisma.$transaction(async (tx) => {
       let totalAmount = 0;
+      const enrichedItems = [];
 
+      // 1. Process items, calculate totals, freeze costs, and deduct physical stock
       for (const item of items) {
         const subtotal = item.quantity * item.unitPrice;
         totalAmount += subtotal;
+
+        const productData = await tx.product.findUnique({
+          where: { id: item.productId },
+          select: { costPrice: true },
+        });
 
         const currentStock = await tx.stock.findUnique({
           where: {
@@ -52,31 +66,62 @@ export const processSale = async (req: Request, res: Response) => {
             userId: authUser.id,
           },
         });
+
+        enrichedItems.push({
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          unitCost: productData?.costPrice || 0,
+          subtotal: item.quantity * item.unitPrice,
+        });
       }
 
+      // 2. Financial Debt & Status Calculation
+      // If amountPaid is not provided, we assume it's fully paid to maintain backward compatibility
+      const actualAmountPaid =
+        amountPaid !== undefined ? Number(amountPaid) : totalAmount;
+      const balance = totalAmount - actualAmountPaid;
+
+      let status = "PAID";
+      if (actualAmountPaid === 0) status = "PENDING";
+      else if (balance > 0) status = "PARTIAL";
+
+      // 3. Generate Master Sale Ticket with Debt tracking
       const saleRecord = await tx.sale.create({
         data: {
           totalAmount,
           paymentMethod,
           branchId,
           userId: authUser.id,
+          customerId: customerId ? Number(customerId) : null,
+          pickedUpBy: pickedUpBy || null,
+          status,
+          balance,
           items: {
-            create: items.map((item: any) => ({
-              productId: item.productId,
-              quantity: item.quantity,
-              unitPrice: item.unitPrice,
-              subtotal: item.quantity * item.unitPrice,
-            })),
+            create: enrichedItems,
           },
         },
         include: { items: true },
       });
 
+      // 4. Register Physical Cash Flow (Only if money actually entered the drawer)
+      if (actualAmountPaid > 0) {
+        await tx.payment.create({
+          data: {
+            amount: actualAmountPaid,
+            paymentMethod: paymentMethod,
+            saleId: saleRecord.id,
+            userId: authUser.id,
+            branchId: branchId,
+          },
+        });
+      }
+
       return saleRecord;
     });
 
     res.status(201).json({
-      message: "Transacción comercial procesada y auditada con éxito.",
+      message: "Transacción comercial y flujo de caja procesados con éxito.",
       ticket: transactionResult,
     });
   } catch (error: any) {
@@ -90,11 +135,11 @@ export const processSale = async (req: Request, res: Response) => {
   }
 };
 
+// Retrieve Sales History with Customer details
 export const getSales = async (req: Request, res: Response) => {
   try {
     const authUser = (req as any).user;
 
-    // Filtro Multi-Sucursal: El empleado solo ve el historial de los locales donde trabaja
     const whereClause =
       authUser.role === "ADMIN" ? {} : { branchId: { in: authUser.branchIds } };
 
@@ -102,7 +147,9 @@ export const getSales = async (req: Request, res: Response) => {
       where: whereClause,
       include: {
         user: { select: { name: true, role: true } },
+        customer: { select: { name: true, document: true, type: true } }, // NEW: Include Customer info
         items: { include: { product: { select: { name: true, sku: true } } } },
+        payments: true, // NEW: Include related payment receipts
       },
       orderBy: { createdAt: "desc" },
     });

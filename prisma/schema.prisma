@@ -1,33 +1,34 @@
-// 1. Configuración del cliente de Prisma
+// 1. Database Client Configuration
 generator client {
   provider = "prisma-client-js"
 }
 
-// 2. Configuración de la Base de Datos (PostgreSQL)
+// 2. Database Connection (PostgreSQL)
 datasource db {
   provider = "postgresql"
 }
 
 // ------------------------------------------------------
-// MODELOS DE LA BASE DE DATOS (Arquitectura Multi-Sucursal)
+// DATABASE MODELS (Multi-Branch Architecture & ERP)
 // ------------------------------------------------------
 
-// Tabla de Sucursales
+// Manage physical branches and locations
 model Branch {
   id        Int        @id @default(autoincrement())
   name      String     
   location  String?    
   
-  users     User[]     // CAMBIO M:N: Empleados que tienen permiso en esta sucursal
+  users     User[]     // M:N: Employees assigned to this branch
   stocks    Stock[]    
   movements Movement[] 
   sales     Sale[]     
+  payments  Payment[]  // NEW: Track physical money entering this branch
   
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
 
-// Tabla de Usuarios
+// Manage system users, credentials and roles
 model User {
   id        Int        @id @default(autoincrement())
   name      String
@@ -35,52 +36,69 @@ model User {
   password  String     
   role      String     @default("EMPLOYEE") 
   
-  branches  Branch[]   // CAMBIO M:N: Sucursales a las que este usuario tiene acceso
+  branches  Branch[]   // M:N: Branches this user can operate in
   
   movements Movement[] 
   sales     Sale[]     
+  payments  Payment[]  // NEW: Track which employee collected the money
   
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 }
 
-// Tabla del Catálogo Central de Productos
-model Product {
-  id            Int        @id @default(autoincrement())
-  sku           String     @unique 
-  barcode       String?    @unique 
-  
-  name          String     
-  brand         String     
-  category      String     
-  description   String?
-  
-  // ==========================================
-  // NUEVO: NÚCLEO FINANCIERO E IMPUESTOS
-  // ==========================================
-  costPrice      Float?    // Costo de compra al proveedor (Sin IVA)
-  retailPrice    Float?    // Precio de venta Minorista (Mostrador)
-  wholesalePrice Float?    // Precio de venta Mayorista (Gremio)
-  ivaPercentage  Float     @default(21.0) // Porcentaje de IVA aplicable
-  // ==========================================
+// ==========================================
+// NEW: CUSTOMER & ACCOUNTS RECEIVABLE MODULE
+// ==========================================
+// Store client profiles, contractors, and companies
+model Customer {
+  id          Int       @id @default(autoincrement())
+  name        String
+  document    String?   @unique // DNI or CUIT
+  type        String    @default("CONSUMER") // e.g., CONSUMER, CONTRACTOR, COMPANY, FAMILY
+  phone       String?
+  email       String?
+  address     String?
 
-  color         String?  
-  finish        String?  
-  volume        Float?   
-  volumeUnit    String?  
-  indoorOutdoor Boolean    @default(true)
-  baseType      String?  
-  metadata      Json?
-  images        String[]   @default([]) 
-  
-  stocks        Stock[]    
-  movements     Movement[] 
-  saleItems     SaleItem[] 
-  
-  createdAt     DateTime   @default(now())
-  updatedAt     DateTime   @updatedAt
+  sales       Sale[]    // Relate billing and debts to this specific customer
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 }
-// Tabla de Stock (El puente físico)
+
+// Manage central product catalog and financial pricing
+model Product {
+  id             Int        @id @default(autoincrement())
+  sku            String     @unique 
+  barcode        String?    @unique 
+  
+  name           String     
+  brand          String     
+  category       String     
+  description    String?
+  
+  costPrice      Float?    // Supplier cost (No IVA)
+  retailPrice    Float?    // Retail price
+  wholesalePrice Float?    // Wholesale/Contractor price
+  ivaPercentage  Float     @default(21.0) 
+
+  color          String?  
+  finish         String?  
+  volume         Float?   
+  volumeUnit     String?  
+  indoorOutdoor  Boolean    @default(true)
+  baseType       String?  
+  metadata       Json?
+  images         String[]   @default([]) 
+  
+  stocks         Stock[]    
+  movements      Movement[] 
+  saleItems      SaleItem[] 
+  
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+}
+
+// Manage physical inventory levels per branch
 model Stock {
   id        Int      @id @default(autoincrement())
   quantity  Int      @default(0) 
@@ -98,10 +116,10 @@ model Stock {
   @@unique([productId, branchId])
 }
 
-// MÓDULO DE AUDITORÍA Y TRAZABILIDAD
+// Track every physical movement of goods (Audit Trail)
 model Movement {
   id        Int      @id @default(autoincrement())
-  type      String   // Ej: "IN", "OUT", "ADJUST"
+  type      String   // IN, OUT, ADJUST
   quantity  Int      
   reason    String?  
   
@@ -118,14 +136,23 @@ model Movement {
 }
 
 // ------------------------------------------------------
-// MÓDULO DE VENTAS Y FINANZAS (Caja Registradora)
+// SALES, DEBT & CASH FLOW MODULE
 // ------------------------------------------------------
 
+// Generate billing tickets and track pending balances (Fiados)
 model Sale {
   id            Int        @id @default(autoincrement())
   totalAmount   Float      
-  paymentMethod String     
+  paymentMethod String     // CASH, CARD, CREDIT_ACCOUNT
   
+  // NEW: Debt and Logistics Tracking
+  status        String     @default("PAID") // PAID, PENDING, PARTIAL
+  balance       Float      @default(0)      // Pending amount to be paid
+  pickedUpBy    String?    // Name/ID of the person who physically took the items
+  
+  customerId    Int?
+  customer      Customer?  @relation(fields: [customerId], references: [id])
+
   branchId      Int
   branch        Branch     @relation(fields: [branchId], references: [id])
   
@@ -133,19 +160,40 @@ model Sale {
   user          User       @relation(fields: [userId], references: [id])
   
   items         SaleItem[] 
+  payments      Payment[]  // NEW: Link partial or full payments to this ticket
   
   createdAt     DateTime   @default(now())
 }
 
+// Record individual billing rows with frozen historical costs
 model SaleItem {
   id          Int      @id @default(autoincrement())
   quantity    Int      
   unitPrice   Float    
   subtotal    Float    
+  unitCost    Float?   // Frozen cost snapshot
   
   saleId      Int
   sale        Sale     @relation(fields: [saleId], references: [id])
   
   productId   Int
   product     Product  @relation(fields: [productId], references: [id])
+}
+
+// NEW: Register physical money entering the drawer (Cash Flow)
+model Payment {
+  id            Int      @id @default(autoincrement())
+  amount        Float    // Physical money collected
+  paymentMethod String   // CASH, TRANSFER, etc.
+
+  saleId        Int
+  sale          Sale     @relation(fields: [saleId], references: [id])
+
+  userId        Int      // Cashier who collected the money
+  user          User     @relation(fields: [userId], references: [id])
+
+  branchId      Int
+  branch        Branch   @relation(fields: [branchId], references: [id])
+
+  createdAt     DateTime @default(now())
 }
