@@ -10,7 +10,7 @@ export const getStockByBranch = async (req: Request, res: Response) => {
       where: { branchId: Number(branchId) },
       include: {
         product: {
-          select: { name: true, barcode: true, category: true },
+          select: { name: true, sku: true, category: true, costPrice: true },
         },
       },
     });
@@ -22,43 +22,17 @@ export const getStockByBranch = async (req: Request, res: Response) => {
   }
 };
 
-// Actualización de inventario con Motor de Auditoría y Trazabilidad (Transacción ACID)
+// Ingreso/Egreso de mercadería con Actualización Automática de Costos (ERP)
 export const updateStock = async (req: Request, res: Response) => {
   try {
-    // Extracción del usuario autenticado (Inyectado por el middleware verifyToken)
     const userId = (req as any).user.id;
+    const { productId, branchId, quantity, type, reason, newCostPrice } =
+      req.body;
 
-    // Extracción de parámetros de movimiento y metadatos de auditoría
-    const { productId, branchId, quantity, type, reason } = req.body;
-
-    // Validación estricta de variables obligatorias
-    if (!productId || !branchId || quantity === undefined) {
-      return res.status(400).json({
-        error: "Los campos productId, branchId y quantity son obligatorios.",
-      });
-    }
-
-    // Validación de campos de auditoría obligatorios
-    if (!type || !reason) {
-      return res.status(400).json({
-        error:
-          "Auditoría requerida: Debe especificar el tipo de movimiento ('IN', 'OUT', 'ADJUST') y el motivo ('reason').",
-      });
-    }
-
-    // REGLA DE NEGOCIO 1: Prevención de inconsistencias físicas
-    if (Number(quantity) < 0) {
-      return res.status(400).json({
-        error:
-          "Operación rechazada. La cantidad física en stock no puede ser negativa.",
-      });
-    }
-
-    // EJECUCIÓN TRANSACCIONAL: Se actualiza el stock y se guarda el comprobante en la misma operación
-    // Si una de las dos falla, se revierte todo para mantener la integridad de la base de datos
-    const [stockRecord, movementRecord] = await prisma.$transaction([
+    // EJECUCIÓN TRANSACCIONAL ACID
+    const transactionResult = await prisma.$transaction(async (tx) => {
       // 1. Operación de actualización de stock físico
-      prisma.stock.upsert({
+      const stockRecord = await tx.stock.upsert({
         where: {
           productId_branchId: {
             productId: Number(productId),
@@ -72,46 +46,67 @@ export const updateStock = async (req: Request, res: Response) => {
           quantity: Number(quantity),
         },
         include: { product: true },
-      }),
+      });
 
       // 2. Operación de registro de auditoría en el Libro Diario Inmutable
-      prisma.movement.create({
+      const movementRecord = await tx.movement.create({
         data: {
-          type: String(type), // Ej: "OUT"
+          type: String(type),
           quantity: Number(quantity),
-          reason: String(reason), // Ej: "Retiro de Socio - Facundo"
+          reason: String(reason),
           productId: Number(productId),
           branchId: Number(branchId),
           userId: Number(userId),
         },
-      }),
-    ]);
+      });
 
-    // REGLA DE NEGOCIO 2 y 3: Motor de Alertas de Reposición
+      // 3. NUEVO: MOTOR DE ACTUALIZACIÓN FINANCIERA AUTOMÁTICA
+      // Si entró mercadería (IN) y nos declaran un nuevo costo, actualizamos el catálogo central
+      let updatedProduct = null;
+      if (
+        type === "IN" &&
+        newCostPrice !== undefined &&
+        newCostPrice !== null
+      ) {
+        updatedProduct = await tx.product.update({
+          where: { id: Number(productId) },
+          data: { costPrice: Number(newCostPrice) },
+        });
+      }
+
+      return { stockRecord, movementRecord, updatedProduct };
+    });
+
+    // REGLAS DE NEGOCIO: Motor de Alertas de Reposición (Mantenemos tu lógica impecable)
     let alertMessage = null;
     let alertType = "OK";
+    const currentStock = transactionResult.stockRecord;
 
-    if (stockRecord.quantity === 0) {
+    if (currentStock.quantity === 0) {
       alertType = "CRITICAL";
-      alertMessage = `ALERTA ROJA: El producto "${stockRecord.product.name}" se ha agotado por completo en esta sucursal.`;
-    } else if (stockRecord.quantity <= stockRecord.minStock) {
+      alertMessage = `ALERTA ROJA: El producto "${currentStock.product.name}" se ha agotado por completo en esta sucursal.`;
+    } else if (currentStock.quantity <= currentStock.minStock) {
       alertType = "WARNING";
-      alertMessage = `ALERTA AMARILLA: El producto "${stockRecord.product.name}" ha alcanzado su nivel crítico de stock (${stockRecord.quantity} unidades restantes).`;
+      alertMessage = `ALERTA AMARILLA: El producto "${currentStock.product.name}" ha alcanzado su nivel crítico de stock (${currentStock.quantity} unidades restantes).`;
     }
 
-    // Emisión de comprobante de la transacción completa
     res.status(200).json({
-      message: "Movimiento registrado y auditado exitosamente.",
+      message: transactionResult.updatedProduct
+        ? "Mercadería ingresada, auditoría generada y Costo Financiero actualizado con éxito."
+        : "Movimiento físico registrado y auditado exitosamente.",
       inventoryStatus: alertType,
       alert: alertMessage,
-      stock: stockRecord,
-      auditorReceipt: movementRecord, // Entrega del comprobante fiscal/auditoría en la respuesta
+      stock: currentStock,
+      auditorReceipt: transactionResult.movementRecord,
+      financialUpdate: transactionResult.updatedProduct
+        ? "Costo actualizado"
+        : "Sin cambios financieros",
     });
   } catch (error) {
     console.error("Error al actualizar el stock y generar auditoría:", error);
     res.status(500).json({
       error:
-        "Hubo un problema crítico al procesar la transacción de mercadería.",
+        "Hubo un problema crítico al procesar la transacción de logística.",
     });
   }
 };
