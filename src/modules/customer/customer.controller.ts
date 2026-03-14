@@ -1,12 +1,13 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
-// Retrieve all customers with their pending balances (Digital Ledger / Cuadernito)
-export const getCustomers = async (req: Request, res: Response) => {
+// ============================================================================
+// CONSOLIDAR LIBRO MAYOR: Obtener todos los clientes y su deuda total
+// ============================================================================
+export const retrieveCustomersLedger = async (req: Request, res: Response) => {
   try {
     const customers = await prisma.customer.findMany({
       include: {
-        // Fetch only sales that are not fully paid to calculate current debt
         sales: {
           where: { status: { in: ["PENDING", "PARTIAL"] } },
           select: { balance: true, status: true, createdAt: true },
@@ -15,47 +16,84 @@ export const getCustomers = async (req: Request, res: Response) => {
       orderBy: { name: "asc" },
     });
 
-    // Map customers to inject their calculated total debt
     const customersWithDebt = customers.map((customer) => {
-      const totalDebt = customer.sales.reduce(
+      const totalConsolidatedDebt = customer.sales.reduce(
         (sum, sale) => sum + sale.balance,
         0,
       );
-      return {
-        ...customer,
-        totalDebt,
-      };
+      return { ...customer, totalConsolidatedDebt };
     });
 
     res.status(200).json(customersWithDebt);
   } catch (error) {
-    console.error("Error retrieving customers:", error);
-    res.status(500).json({ error: "Failed to retrieve the customer list." });
+    console.error("Error retrieving customers ledger:", error);
+    res
+      .status(500)
+      .json({ error: "Fallo estructural al consultar el libro de clientes." });
   }
 };
 
-// Register a new customer, contractor, or company
-export const createCustomer = async (req: Request, res: Response) => {
+// ============================================================================
+// EXPEDIENTE DE CLIENTE: Consultar historial de deuda y pagos de un individuo
+// ============================================================================
+export const retrieveCustomerProfile = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const customerProfile = await prisma.customer.findUnique({
+      where: { id: Number(id) },
+      include: {
+        sales: {
+          where: { status: { in: ["PENDING", "PARTIAL"] } }, // Solo facturas impagas
+          orderBy: { createdAt: "asc" },
+        },
+      },
+    });
+
+    if (!customerProfile) {
+      return res.status(404).json({
+        error: "El cliente solicitado no existe en la base de datos.",
+      });
+    }
+
+    const totalConsolidatedDebt = customerProfile.sales.reduce(
+      (sum, sale) => sum + sale.balance,
+      0,
+    );
+
+    res.status(200).json({
+      message: "Expediente financiero recuperado con éxito.",
+      profile: customerProfile,
+      financialStatus: {
+        totalConsolidatedDebt,
+        pendingInvoicesCount: customerProfile.sales.length,
+        activeDebts: customerProfile.sales,
+      },
+    });
+  } catch (error) {
+    console.error("Error retrieving customer profile:", error);
+    res
+      .status(500)
+      .json({ error: "Fallo al generar el expediente del cliente." });
+  }
+};
+
+// ============================================================================
+// REGISTRAR PERFIL: Dar de alta nuevo cliente, empresa o contratista
+// ============================================================================
+export const registerCustomerProfile = async (req: Request, res: Response) => {
   try {
     const { name, document, type, phone, email, address } = req.body;
 
-    if (!name) {
-      return res
-        .status(400)
-        .json({ error: "Customer name is strictly required." });
-    }
-
-    // Prevent duplicate documents (DNI/CUIT) if provided
     if (document) {
       const existingCustomer = await prisma.customer.findUnique({
         where: { document },
       });
       if (existingCustomer) {
-        return res
-          .status(400)
-          .json({
-            error: "A customer with this Document/CUIT already exists.",
-          });
+        return res.status(400).json({
+          error:
+            "Conflicto: Ya existe un cliente registrado con este Documento/CUIT.",
+        });
       }
     }
 
@@ -71,19 +109,21 @@ export const createCustomer = async (req: Request, res: Response) => {
     });
 
     res.status(201).json({
-      message: "Customer profile created successfully.",
+      message: "Perfil de cliente registrado correctamente.",
       customer: newCustomer,
     });
   } catch (error) {
     console.error("Error creating customer:", error);
     res
       .status(500)
-      .json({ error: "Structural failure while creating customer profile." });
+      .json({ error: "Fallo estructural al registrar el nuevo perfil." });
   }
 };
 
-// Update existing customer details
-export const updateCustomer = async (req: Request, res: Response) => {
+// ============================================================================
+// MODIFICAR PERFIL: Actualizar datos de contacto o facturación
+// ============================================================================
+export const modifyCustomerProfile = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { name, document, type, phone, email, address } = req.body;
@@ -93,13 +133,15 @@ export const updateCustomer = async (req: Request, res: Response) => {
       data: { name, document, type, phone, email, address },
     });
 
-    res.status(200).json(updatedCustomer);
+    res.status(200).json({
+      message: "Perfil actualizado con éxito.",
+      customer: updatedCustomer,
+    });
   } catch (error) {
     console.error("Error updating customer:", error);
-    res
-      .status(500)
-      .json({
-        error: "Failed to update customer. Verify ID and unique constraints.",
-      });
+    res.status(500).json({
+      error:
+        "Fallo al actualizar. Verifique el ID y restricciones de unicidad.",
+    });
   }
 };

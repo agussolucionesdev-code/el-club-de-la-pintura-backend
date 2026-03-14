@@ -4,31 +4,32 @@ import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validateSchema } from "../../middlewares/validate.middleware";
 import { createCustomerSchema } from "../../schemas/customer.schema";
 import {
-  getCustomers,
-  createCustomer,
-  updateCustomer,
+  retrieveCustomersLedger,
+  retrieveCustomerProfile,
+  registerCustomerProfile,
+  modifyCustomerProfile,
 } from "./customer.controller";
 
 const router = Router();
 
-// Todos los empleados pueden ver la lista de clientes y fiados
-router.get("/", verifyToken, getCustomers);
+// Rutas de lectura y listado
+router.get("/", verifyToken, retrieveCustomersLedger);
+router.get("/:id/profile", verifyToken, retrieveCustomerProfile); // NUEVO: Expediente detallado
 
-// Creación de cliente: Validada estrictamente por Zod
+// Rutas de mutación de datos
 router.post(
   "/",
   verifyToken,
-  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"), // Todos pueden registrar un cliente nuevo
+  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
   validateSchema(createCustomerSchema),
-  createCustomer,
+  registerCustomerProfile,
 );
 
-// Actualización de datos del cliente
 router.put(
   "/:id",
   verifyToken,
-  authorizeRoles("ADMIN", "ENCARGADO"), // Solo gerencia/encargados modifican perfiles
-  updateCustomer,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  modifyCustomerProfile,
 );
 
 export default router;

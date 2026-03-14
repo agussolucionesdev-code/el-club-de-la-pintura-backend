@@ -272,3 +272,79 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
     });
   }
 };
+
+// ============================================================================
+// Análisis de Deudores y Morosidad
+// ============================================================================
+export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
+  try {
+    // 1. Obtener todas las facturas impagas del sistema
+    const pendingSales = await prisma.sale.findMany({
+      where: {
+        status: { in: ["PENDING", "PARTIAL"] },
+        customerId: { not: null },
+      },
+      include: {
+        customer: { select: { name: true, document: true, phone: true } },
+      },
+    });
+
+    // 2. Acumuladores e inicializadores
+    let totalCapitalOnStreet = 0;
+    const debtorsMap: Record<number, any> = {};
+    let overdueInvoicesCount = 0;
+
+    // Límite de morosidad (Ej: facturas de más de 30 días)
+    const overdueThreshold = new Date();
+    overdueThreshold.setDate(overdueThreshold.getDate() - 30);
+
+    // 3. Procesamiento y Agrupación de Deuda por Cliente
+    pendingSales.forEach((sale) => {
+      totalCapitalOnStreet += sale.balance;
+
+      // Verificar si la factura está vencida/morosa
+      if (sale.createdAt < overdueThreshold) {
+        overdueInvoicesCount++;
+      }
+
+      // Agrupar deuda consolidada por cliente
+      const customerId = sale.customerId as number;
+      if (!debtorsMap[customerId]) {
+        debtorsMap[customerId] = {
+          customerId: customerId,
+          name: sale.customer?.name,
+          phone: sale.customer?.phone,
+          totalDebt: 0,
+          oldestInvoiceDate: sale.createdAt,
+        };
+      }
+
+      debtorsMap[customerId].totalDebt += sale.balance;
+
+      // Registrar la fecha de la deuda más antigua de ese cliente
+      if (sale.createdAt < debtorsMap[customerId].oldestInvoiceDate) {
+        debtorsMap[customerId].oldestInvoiceDate = sale.createdAt;
+      }
+    });
+
+    // 4. Transformar el mapa en array y ordenar para el "Top Deudores"
+    const topDebtorsRanking = Object.values(debtorsMap).sort(
+      (a, b) => b.totalDebt - a.totalDebt,
+    );
+
+    res.status(200).json({
+      message: "Análisis de Riesgo Crediticio generado con éxito.",
+      kpis: {
+        totalCapitalOnStreet,
+        activeDebtorsCount: topDebtorsRanking.length,
+        overdueInvoicesCount,
+      },
+      topDebtorsRanking: topDebtorsRanking.slice(0, 20), // El Frontend solo recibe los 20 peores para no saturar
+    });
+  } catch (error) {
+    console.error("Error en Motor de Riesgo Crediticio:", error);
+    res
+      .status(500)
+      .json({ error: "Fallo estructural al calcular métricas de deuda." });
+  }
+};
