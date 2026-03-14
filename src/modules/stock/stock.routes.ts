@@ -2,22 +2,37 @@ import { Router } from "express";
 import { verifyToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validateSchema } from "../../middlewares/validate.middleware";
-import { updateStockSchema } from "../../schemas/stock.schema";
-import { getStockByBranch, updateStock } from "./stock.controller";
+import {
+  updateStockSchema,
+  updateStockThresholdsSchema,
+} from "../../schemas/stock.schema";
+import {
+  getStockByBranch,
+  updateStock,
+  updateStockThresholds,
+} from "./stock.controller";
 
 const router = Router();
 
-// Consulta de inventario: Abierto para todos los empleados (necesitan ver qué hay para vender)
+// CONSULTAR INVENTARIO
 router.get("/branch/:branchId", verifyToken, getStockByBranch);
 
-// Ingreso de Mercadería (Camión) o Ajuste de Stock: Protección Máxima
-// Solo Gerencia y Encargados pueden alterar físicamente el inventario o actualizar costos
+// INGRESAR/EGRESAR MERCADERÍA
 router.post(
   "/",
   verifyToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
   validateSchema(updateStockSchema),
   updateStock,
+);
+
+// NUEVO: CONFIGURAR UMBRALES DE SEMÁFORO DINÁMICO
+router.put(
+  "/thresholds",
+  verifyToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  validateSchema(updateStockThresholdsSchema),
+  updateStockThresholds,
 );
 
 export default router;

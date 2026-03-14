@@ -15,8 +15,9 @@ import customerRoutes from "./modules/customer/customer.routes"; // <-- Integrac
 import paymentRoutes from "./modules/payment/payment.routes"; // <-- Integración del Módulo de Cobranzas.
 import supplierRoutes from "./modules/supplier/supplier.routes"; // <-- Integración del Módulo de Proveedores.
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes"; // <-- Integración del Módulo de Caja.
+import expenseRoutes from "./modules/expense/expense.routes"; // <-- Integración del Módulo de Gastos Operativos.
+import dashboardRoutes from "./modules/dashboard/dashboard.routes"; // <-- Integración del Módulo de Dashboard.
 
-// Inicialización de la aplicación Express
 const app: Application = express();
 
 // Configuración del puerto del servidor
@@ -42,6 +43,8 @@ app.use("/api/customers", customerRoutes); // <-- Endpoint de clientes y cajas
 app.use("/api/payments", paymentRoutes); // <-- Endpoint de cobranzas y saldos
 app.use("/api/suppliers", supplierRoutes); // <-- Endpoint de proveedores y contactos
 app.use("/api/cash-registers", cashRegisterRoutes); // <-- Endpoint de cajas y turnos
+app.use("/api/expenses", expenseRoutes); // <-- Endpoint de gastos operativos y retiros de caja
+app.use("/api/dashboard", dashboardRoutes); // <-- Endpoint de análisis financiero y KPIs
 
 // Definición de Endpoint de diagnóstico (Health Check)
 // Verificación de disponibilidad y entorno de ejecución del servidor

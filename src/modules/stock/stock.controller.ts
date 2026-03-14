@@ -1,7 +1,9 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
-// Obtención del inventario físico por sucursal
+// ============================================================================
+// OBTENER INVENTARIO: Consulta física por sucursal
+// ============================================================================
 export const getStockByBranch = async (req: Request, res: Response) => {
   try {
     const { branchId } = req.params;
@@ -22,16 +24,16 @@ export const getStockByBranch = async (req: Request, res: Response) => {
   }
 };
 
-// Ingreso/Egreso de mercadería con Actualización Automática de Costos (ERP)
+// ============================================================================
+// MOVIMIENTO DE MERCADERÍA: Ingreso/Egreso con Actualización Automática (ERP)
+// ============================================================================
 export const updateStock = async (req: Request, res: Response) => {
   try {
     const userId = (req as any).user.id;
     const { productId, branchId, quantity, type, reason, newCostPrice } =
       req.body;
 
-    // EJECUCIÓN TRANSACCIONAL ACID
     const transactionResult = await prisma.$transaction(async (tx) => {
-      // 1. Operación de actualización de stock físico
       const stockRecord = await tx.stock.upsert({
         where: {
           productId_branchId: {
@@ -48,7 +50,6 @@ export const updateStock = async (req: Request, res: Response) => {
         include: { product: true },
       });
 
-      // 2. Operación de registro de auditoría en el Libro Diario Inmutable
       const movementRecord = await tx.movement.create({
         data: {
           type: String(type),
@@ -60,8 +61,6 @@ export const updateStock = async (req: Request, res: Response) => {
         },
       });
 
-      // 3. NUEVO: MOTOR DE ACTUALIZACIÓN FINANCIERA AUTOMÁTICA
-      // Si entró mercadería (IN) y nos declaran un nuevo costo, actualizamos el catálogo central
       let updatedProduct = null;
       if (
         type === "IN" &&
@@ -77,17 +76,17 @@ export const updateStock = async (req: Request, res: Response) => {
       return { stockRecord, movementRecord, updatedProduct };
     });
 
-    // REGLAS DE NEGOCIO: Motor de Alertas de Reposición (Mantenemos tu lógica impecable)
+    // MOTOR DE ALERTAS: Usa los límites dinámicos
     let alertMessage = null;
     let alertType = "OK";
     const currentStock = transactionResult.stockRecord;
 
-    if (currentStock.quantity === 0) {
+    if (currentStock.quantity <= currentStock.criticalStock) {
       alertType = "CRITICAL";
-      alertMessage = `ALERTA ROJA: El producto "${currentStock.product.name}" se ha agotado por completo en esta sucursal.`;
+      alertMessage = `ALERTA ROJA: El producto "${currentStock.product.name}" ha entrado en nivel CRÍTICO (${currentStock.quantity} unidades).`;
     } else if (currentStock.quantity <= currentStock.minStock) {
       alertType = "WARNING";
-      alertMessage = `ALERTA AMARILLA: El producto "${currentStock.product.name}" ha alcanzado su nivel crítico de stock (${currentStock.quantity} unidades restantes).`;
+      alertMessage = `ALERTA AMARILLA: El producto "${currentStock.product.name}" ha alcanzado su nivel de ADVERTENCIA (${currentStock.quantity} unidades restantes).`;
     }
 
     res.status(200).json({
@@ -104,9 +103,60 @@ export const updateStock = async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("Error al actualizar el stock y generar auditoría:", error);
-    res.status(500).json({
-      error:
-        "Hubo un problema crítico al procesar la transacción de logística.",
+    res
+      .status(500)
+      .json({
+        error:
+          "Hubo un problema crítico al procesar la transacción de logística.",
+      });
+  }
+};
+
+// ============================================================================
+// CONFIGURAR SEMÁFORO: Modificar los umbrales de alerta logística
+// ============================================================================
+export const updateStockThresholds = async (req: Request, res: Response) => {
+  try {
+    const { productId, branchId, minStock, criticalStock } = req.body;
+
+    // Buscar si el stock existe para actualizarlo
+    const existingStock = await prisma.stock.findUnique({
+      where: {
+        productId_branchId: {
+          productId: Number(productId),
+          branchId: Number(branchId),
+        },
+      },
     });
+
+    if (!existingStock) {
+      return res
+        .status(404)
+        .json({
+          error:
+            "No se encontró un registro de inventario para este producto en la sucursal indicada.",
+        });
+    }
+
+    const updatedStock = await prisma.stock.update({
+      where: { id: existingStock.id },
+      data: {
+        minStock: Number(minStock),
+        criticalStock: Number(criticalStock),
+      },
+      include: { product: { select: { name: true } } },
+    });
+
+    res.status(200).json({
+      message: `Semáforo actualizado para ${updatedStock.product.name}. Amarillo: ${updatedStock.minStock} | Rojo: ${updatedStock.criticalStock}.`,
+      stock: updatedStock,
+    });
+  } catch (error) {
+    console.error("Error al configurar umbrales de stock:", error);
+    res
+      .status(500)
+      .json({
+        error: "Fallo estructural al actualizar el semáforo de inventario.",
+      });
   }
 };

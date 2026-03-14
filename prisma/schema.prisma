@@ -14,42 +14,48 @@ datasource db {
 
 // Manage physical branches and locations
 model Branch {
-  id        Int        @id @default(autoincrement())
-  name      String     
-  location  String?    
+  id            Int            @id @default(autoincrement())
+  name          String     
+  location      String?    
   
-  users     User[]     // M:N: Employees assigned to this branch
-  stocks    Stock[]    
-  movements Movement[] 
-  sales     Sale[]     
-  payments  Payment[]  // Track physical money entering this branch
+  users         User[]         // M:N: Employees assigned to this branch
+  stocks        Stock[]    
+  movements     Movement[] 
+  sales         Sale[]     
+  payments      Payment[]  // Track physical money entering this branch
   
-  // NEW: Track shifts in this branch
+  // Track shifts in this branch
   cashRegisters CashRegister[] 
   
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  // NEW: Track daily operational expenses for this branch
+  expenses      Expense[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 // Manage system users, credentials and roles
 model User {
-  id        Int        @id @default(autoincrement())
-  name      String
-  email     String     @unique
-  password  String     
-  role      String     @default("EMPLOYEE") 
+  id            Int            @id @default(autoincrement())
+  name          String
+  email         String         @unique
+  password      String     
+  role          String         @default("EMPLOYEE") 
   
-  branches  Branch[]   // M:N: Branches this user can operate in
+  branches      Branch[]   // M:N: Branches this user can operate in
   
-  movements Movement[] 
-  sales     Sale[]     
-  payments  Payment[]  // Track which employee collected the money
+  movements     Movement[] 
+  sales         Sale[]     
+  payments      Payment[]  // Track which employee collected the money
   
-  // NEW: Track shifts opened by this user
+  // Track shifts opened by this user
   cashRegisters CashRegister[] 
   
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
+  // NEW: Track which employee registered an expense
+  expenses      Expense[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 // ==========================================
@@ -130,18 +136,21 @@ model Product {
 
 // Manage physical inventory levels per branch
 model Stock {
-  id        Int      @id @default(autoincrement())
-  quantity  Int      @default(0) 
-  minStock  Int      @default(5) 
+  id            Int      @id @default(autoincrement())
+  quantity      Int      @default(0) 
+  minStock      Int      @default(5) 
   
-  productId Int
-  product   Product  @relation(fields: [productId], references: [id])
+  // NUEVO: SEMÁFORO LOGÍSTICO DINÁMICO (Alerta Roja)
+  criticalStock Int      @default(0) 
   
-  branchId  Int
-  branch    Branch   @relation(fields: [branchId], references: [id])
+  productId     Int
+  product       Product  @relation(fields: [productId], references: [id])
   
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  branchId      Int
+  branch        Branch   @relation(fields: [branchId], references: [id])
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
   @@unique([productId, branchId])
 }
@@ -166,7 +175,7 @@ model Movement {
 }
 
 // ==========================================
-// NEW: SHIFT & CASH REGISTER MODULE
+// SHIFT & CASH REGISTER MODULE
 // ==========================================
 model CashRegister {
   id              Int       @id @default(autoincrement())
@@ -189,9 +198,37 @@ model CashRegister {
 
   sales           Sale[]    // Ventas vinculadas a este turno
   payments        Payment[] // Cobranzas vinculadas a este turno
+  
+  // NEW: Gastos operativos que salieron del cajón durante este turno
+  expenses        Expense[] 
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+}
+
+// ==========================================
+// NEW: EXPENSE MODULE (Gastos Operativos diarios)
+// ==========================================
+model Expense {
+  id              Int           @id @default(autoincrement())
+  amount          Float         // Dinero físico retirado de la caja
+  reason          String        // Ej: "Compra lavandina", "Pago a fletero"
+  category        String        // Ej: "LIMPIEZA", "LOGISTICA", "OTROS"
+  
+  // NUEVO: Clasificación Financiera Estructural (Fijo vs Variable)
+  type            String        @default("VARIABLE") // "FIXED" or "VARIABLE"
+  
+  // Link to the exact shift from which the money was taken
+  cashRegisterId  Int
+  cashRegister    CashRegister  @relation(fields: [cashRegisterId], references: [id])
+
+  userId          Int           // Employee who registered the expense
+  user            User          @relation(fields: [userId], references: [id])
+
+  branchId        Int           
+  branch          Branch        @relation(fields: [branchId], references: [id])
+
+  createdAt       DateTime      @default(now())
 }
 
 // ------------------------------------------------------
@@ -217,7 +254,7 @@ model Sale {
   userId        Int        
   user          User       @relation(fields: [userId], references: [id])
   
-  // NEW: Link to the active shift
+  // Link to the active shift
   cashRegisterId Int?
   cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
   
@@ -257,7 +294,7 @@ model Payment {
   branchId      Int
   branch        Branch   @relation(fields: [branchId], references: [id])
 
-  // NEW: Link to the active shift
+  // Link to the active shift
   cashRegisterId Int?
   cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
 

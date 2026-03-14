@@ -53,7 +53,7 @@ export const openShift = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// GET SHIFT STATUS: Arqueo Dinámico (Desglose Total de Medios de Pago)
+// GET SHIFT STATUS: Arqueo Dinámico (Ventas, Pagos y Descuento de Gastos)
 // ============================================================================
 export const getActiveShiftStatus = async (req: Request, res: Response) => {
   try {
@@ -67,8 +67,9 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
         status: "OPEN",
       },
       include: {
-        payments: true, // Todos los ingresos de dinero físico/digital
-        sales: true, // Todas las facturas generadas (para ver fiados)
+        payments: true,
+        sales: true,
+        expenses: true, // INYECCIÓN: Traemos los retiros de caja
       },
     });
 
@@ -78,19 +79,16 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
         .json({ error: "No tienes ningún turno abierto en esta sucursal." });
     }
 
-    // 1. Desglose de Pagos por Método (Efectivo, Tarjeta, Transferencia, etc.)
+    // 1. Desglose de Pagos por Método
     const paymentBreakdown: Record<string, number> = {};
     let totalCashCollected = 0;
     let totalDigitalCollected = 0;
 
     activeShift.payments.forEach((payment) => {
       const method = payment.paymentMethod.toUpperCase();
-
-      // Agrupamos en el objeto dinámico
       if (!paymentBreakdown[method]) paymentBreakdown[method] = 0;
       paymentBreakdown[method] += payment.amount;
 
-      // Separamos Efectivo vs Digital para el cálculo de la gaveta
       if (method === "EFECTIVO" || method === "CASH") {
         totalCashCollected += payment.amount;
       } else {
@@ -98,7 +96,7 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
       }
     });
 
-    // 2. Cálculo de la Deuda Generada en este turno (Fiados)
+    // 2. Cálculo de la Deuda Generada
     const totalDebtGenerated = activeShift.sales.reduce(
       (sum, sale) => sum + sale.balance,
       0,
@@ -108,9 +106,15 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
       0,
     );
 
-    // 3. Plata física que TIENE que haber en el cajón de madera
+    // 3. INYECCIÓN: Cálculo de Gastos Operativos
+    const totalExpensesAmount = activeShift.expenses.reduce(
+      (sum, expense) => sum + expense.amount,
+      0,
+    );
+
+    // 4. Plata física que TIENE que haber en el cajón de madera (Fondo + Ventas Efectivo - Gastos)
     const expectedCashInDrawer =
-      activeShift.initialBalance + totalCashCollected;
+      activeShift.initialBalance + totalCashCollected - totalExpensesAmount;
 
     res.status(200).json({
       message: "Arqueo de caja dinámico calculado con éxito.",
@@ -120,15 +124,19 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
         initialBalance: activeShift.initialBalance,
       },
       billingSummary: {
-        totalBilled, // Total vendido (incluye lo cobrado y lo fiado)
-        totalDebtGenerated, // Plata que quedó "en la calle" en este turno
+        totalBilled,
+        totalDebtGenerated,
       },
       collectionsBreakdown: {
         totalCollected: totalCashCollected + totalDigitalCollected,
-        methods: paymentBreakdown, // Ej: { "EFECTIVO": 5000, "TARJETA": 15000 }
+        methods: paymentBreakdown,
+      },
+      expenseAudit: {
+        totalExpenses: totalExpensesAmount,
+        expenseCount: activeShift.expenses.length,
       },
       cashAudit: {
-        expectedCashInDrawer, // Lo que el empleado tiene que contar billete por billete
+        expectedCashInDrawer,
       },
     });
   } catch (error) {
@@ -140,7 +148,7 @@ export const getActiveShiftStatus = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// CLOSE SHIFT: Cierre de Turno y Auditoría Exacta
+// CLOSE SHIFT: Cierre de Turno y Auditoría Exacta con Gastos
 // ============================================================================
 export const closeShift = async (req: Request, res: Response) => {
   try {
@@ -155,14 +163,13 @@ export const closeShift = async (req: Request, res: Response) => {
           branchId: Number(branchId),
           status: "OPEN",
         },
-        include: { payments: true, sales: true },
+        include: { payments: true, sales: true, expenses: true }, // INYECCIÓN
       });
 
       if (!activeShift) {
         throw new Error("No se encontró un turno abierto para cerrar.");
       }
 
-      // Reconstruimos la misma lógica de separación para auditar la caja física
       let totalCashCollected = 0;
       const paymentBreakdown: Record<string, number> = {};
 
@@ -176,10 +183,17 @@ export const closeShift = async (req: Request, res: Response) => {
         }
       });
 
-      const expectedBalance = activeShift.initialBalance + totalCashCollected;
+      // INYECCIÓN: Restamos los gastos para que el cierre sea exacto
+      const totalExpensesAmount = activeShift.expenses.reduce(
+        (sum, exp) => sum + exp.amount,
+        0,
+      );
+
+      const expectedBalance =
+        activeShift.initialBalance + totalCashCollected - totalExpensesAmount;
       const discrepancy = Number(actualBalance) - expectedBalance;
 
-      const autoNotes = `Desglose Digital: ${JSON.stringify(paymentBreakdown)}. Deuda generada: $${activeShift.sales.reduce((s, a) => s + a.balance, 0)}. `;
+      const autoNotes = `Desglose Digital: ${JSON.stringify(paymentBreakdown)}. Deuda generada: $${activeShift.sales.reduce((s, a) => s + a.balance, 0)}. Gastos Operativos: $${totalExpensesAmount}. `;
       const finalObservations = observations
         ? `${autoNotes} | Notas Empleado: ${observations}`
         : autoNotes;
@@ -196,10 +210,9 @@ export const closeShift = async (req: Request, res: Response) => {
         },
       });
 
-      return { closedShift, paymentBreakdown };
+      return { closedShift, paymentBreakdown, totalExpensesAmount };
     });
 
-    // SOLUCIÓN TYPESCRIPT: Extraemos la discrepancia garantizando que sea un número
     const finalDiscrepancy = result.closedShift.discrepancy || 0;
 
     res.status(200).json({
@@ -207,6 +220,7 @@ export const closeShift = async (req: Request, res: Response) => {
       auditResult: {
         expectedCash: result.closedShift.expectedBalance,
         countedCash: result.closedShift.actualBalance,
+        totalExpensesDeducted: result.totalExpensesAmount, // Se lo mostramos como comprobante
         discrepancy: finalDiscrepancy,
         status:
           finalDiscrepancy === 0
