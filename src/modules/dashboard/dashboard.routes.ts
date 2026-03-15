@@ -4,10 +4,11 @@ import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validateSchema } from "../../middlewares/validate.middleware";
 import { dashboardFilterSchema } from "../../schemas/dashboard.schema";
 import {
-  getFinancialSummary, // BÓVEDA FINANCIERA
-  getExpensesAnalytics, // NUEVO: Motor Financiero
-  getProductsAnalytics, // NUEVO: Motor Analítico Logístico
-  getCreditRiskAnalytics, // NUEVO: Ruta conectada para el Muro de Deudores y Riesgo Crediticio
+  getFinancialSummary,
+  getExpensesAnalytics,
+  getProductsAnalytics,
+  getCreditRiskAnalytics,
+  exportFinancialReportToExcel, // <-- IMPORTACIÓN DEL EXPORTADOR
 } from "./dashboard.controller";
 
 const router = Router();
@@ -30,12 +31,13 @@ router.get(
   validateSchema(dashboardFilterSchema),
   getProductsAnalytics,
 );
-
-// NUEVO: Ruta conectada para el Muro de Deudores y Riesgo Crediticio
 router.get(
   "/credit-risk",
   validateSchema(dashboardFilterSchema),
   getCreditRiskAnalytics,
 );
+
+// NUEVO: Ruta para que el contador descargue el Excel
+router.get("/export", exportFinancialReportToExcel);
 
 export default router;

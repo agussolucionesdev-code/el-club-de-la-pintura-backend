@@ -8,13 +8,14 @@ import {
   retrieveCustomerProfile,
   registerCustomerProfile,
   modifyCustomerProfile,
+  deactivateCustomerProfile, // <-- NUEVO IMPORT
 } from "./customer.controller";
 
 const router = Router();
 
 // Rutas de lectura y listado
 router.get("/", verifyToken, retrieveCustomersLedger);
-router.get("/:id/profile", verifyToken, retrieveCustomerProfile); // NUEVO: Expediente detallado
+router.get("/:id/profile", verifyToken, retrieveCustomerProfile);
 
 // Rutas de mutación de datos
 router.post(
@@ -30,6 +31,17 @@ router.put(
   verifyToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
   modifyCustomerProfile,
+);
+
+// ============================================================================
+// BAJA LÓGICA: Archivar a un cliente moroso o inactivo
+// Seguridad Crítica: Solo Cristian y la gerencia pueden ocultar perfiles
+// ============================================================================
+router.delete(
+  "/:id",
+  verifyToken,
+  authorizeRoles("ADMIN"),
+  deactivateCustomerProfile,
 );
 
 export default router;

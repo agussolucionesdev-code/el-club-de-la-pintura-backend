@@ -12,7 +12,8 @@ export const getProducts = async (req: Request, res: Response) => {
     const pageSize = Number(limit);
     const skip = (pageNumber - 1) * pageSize;
 
-    const whereClause: any = {};
+    // INYECCIÓN DE SEGURIDAD: Solo mostramos productos activos en el catálogo
+    const whereClause: any = { isActive: true };
 
     if (category) {
       whereClause.category = String(category);
@@ -172,6 +173,17 @@ export const updateProduct = async (req: Request, res: Response) => {
       ...metadata
     } = req.body;
 
+    // Verificación de seguridad: No se puede editar un producto archivado
+    const activeProduct = await prisma.product.findFirst({
+      where: { id: Number(id), isActive: true },
+    });
+
+    if (!activeProduct) {
+      return res
+        .status(404)
+        .json({ error: "El producto no existe o se encuentra archivado." });
+    }
+
     const updatedProduct = await prisma.product.update({
       where: { id: Number(id) },
       data: {
@@ -209,19 +221,28 @@ export const updateProduct = async (req: Request, res: Response) => {
   }
 };
 
-// Eliminación de un producto del catálogo
+// ============================================================================
+// ELIMINACIÓN SEGURA: Baja lógica del producto
+// ============================================================================
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    await prisma.product.delete({ where: { id: Number(id) } });
-    res
-      .status(200)
-      .json({ message: "Producto eliminado correctamente del catálogo." });
+
+    // INYECCIÓN: Cambiamos a false en lugar de borrar físicamente
+    await prisma.product.update({
+      where: { id: Number(id) },
+      data: { isActive: false },
+    });
+
+    res.status(200).json({
+      message:
+        "Producto retirado del catálogo activo exitosamente. El historial de ventas está a salvo.",
+    });
   } catch (error) {
-    console.error("Error al eliminar el producto:", error);
+    console.error("Error al retirar el producto:", error);
     res
       .status(500)
-      .json({ error: "No se pudo eliminar el producto. Verifique el ID." });
+      .json({ error: "No se pudo archivar el producto. Verifique el ID." });
   }
 };
 
@@ -327,11 +348,13 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
         row.indoorOutdoor !== undefined ? Boolean(row.indoorOutdoor) : true,
       baseType: row.baseType || row.tipo_base || null,
 
-      // NUEVO: Mapeo del ID de proveedor si viene en el Excel
       supplierId:
         row.supplierId || row.proveedor_id
           ? Number(row.supplierId || row.proveedor_id)
           : null,
+
+      // Aseguramos que los masivos entren como activos
+      isActive: true,
     }));
 
     const result = await prisma.product.createMany({

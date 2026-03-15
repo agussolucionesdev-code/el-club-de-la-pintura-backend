@@ -71,6 +71,11 @@ model Customer {
   email       String?
   address     String?
 
+  // ==========================================
+  // INYECCIÓN DE SEGURIDAD FISCAL (Soft Delete)
+  // ==========================================
+  isActive    Boolean   @default(true) 
+
   sales       Sale[]    // Relate billing and debts to this specific customer
 
   createdAt   DateTime  @default(now())
@@ -122,6 +127,11 @@ model Product {
   metadata       Json?
   images         String[]   @default([]) 
   
+  // ==========================================
+  // INYECCIÓN DE SEGURIDAD FISCAL (Soft Delete)
+  // ==========================================
+  isActive       Boolean    @default(true) 
+  
   // Link product to its primary supplier
   supplierId     Int?
   supplier       Supplier?  @relation(fields: [supplierId], references: [id])
@@ -140,7 +150,7 @@ model Stock {
   quantity      Int      @default(0) 
   minStock      Int      @default(5) 
   
-  // NUEVO: SEMÁFORO LOGÍSTICO DINÁMICO (Alerta Roja)
+  // INYECCIÓN RECUPERADA: Semáforo Dinámico
   criticalStock Int      @default(0) 
   
   productId     Int
@@ -215,7 +225,7 @@ model Expense {
   reason          String        // Ej: "Compra lavandina", "Pago a fletero"
   category        String        // Ej: "LIMPIEZA", "LOGISTICA", "OTROS"
   
-  // NUEVO: Clasificación Financiera Estructural (Fijo vs Variable)
+  // INYECCIÓN RECUPERADA: Clasificación Financiera Estructural (Fijo vs Variable)
   type            String        @default("VARIABLE") // "FIXED" or "VARIABLE"
   
   // Link to the exact shift from which the money was taken

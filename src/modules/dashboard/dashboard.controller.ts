@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import * as ExcelJS from "exceljs"; // <-- LIBRERÍA CONTABLE INYECTADA
 
 // ============================================================================
 // MOTOR FINANCIERO: Resumen General de Rentabilidad
@@ -228,7 +229,6 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
       healthy: [] as any[],
     };
 
-    // CLASIFICAR salud del inventario dinámicamente según `minStock` y `criticalStock`
     currentInventory.forEach((stock) => {
       const stockInfo = {
         branchName: stock.branch.name,
@@ -236,17 +236,14 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
         sku: stock.product.sku,
         currentQuantity: stock.quantity,
         minimumRequired: stock.minStock,
-        criticalLevel: stock.criticalStock, // Enviamos el límite crítico para que el Frontend lo vea
+        criticalLevel: stock.criticalStock,
       };
 
-      // Inyección: Lógica Matemática Dinámica para el semáforo
-      if (stock.quantity <= stock.criticalStock) {
+      if (stock.quantity <= stock.criticalStock)
         stockAlerts.critical.push(stockInfo);
-      } else if (stock.quantity <= stock.minStock) {
+      else if (stock.quantity <= stock.minStock)
         stockAlerts.warning.push(stockInfo);
-      } else {
-        stockAlerts.healthy.push(stockInfo);
-      }
+      else stockAlerts.healthy.push(stockInfo);
     });
 
     res.status(200).json({
@@ -278,7 +275,6 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
 // ============================================================================
 export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
   try {
-    // 1. Obtener todas las facturas impagas del sistema
     const pendingSales = await prisma.sale.findMany({
       where: {
         status: { in: ["PENDING", "PARTIAL"] },
@@ -289,25 +285,18 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
       },
     });
 
-    // 2. Acumuladores e inicializadores
     let totalCapitalOnStreet = 0;
     const debtorsMap: Record<number, any> = {};
     let overdueInvoicesCount = 0;
 
-    // Límite de morosidad (Ej: facturas de más de 30 días)
     const overdueThreshold = new Date();
     overdueThreshold.setDate(overdueThreshold.getDate() - 30);
 
-    // 3. Procesamiento y Agrupación de Deuda por Cliente
     pendingSales.forEach((sale) => {
       totalCapitalOnStreet += sale.balance;
 
-      // Verificar si la factura está vencida/morosa
-      if (sale.createdAt < overdueThreshold) {
-        overdueInvoicesCount++;
-      }
+      if (sale.createdAt < overdueThreshold) overdueInvoicesCount++;
 
-      // Agrupar deuda consolidada por cliente
       const customerId = sale.customerId as number;
       if (!debtorsMap[customerId]) {
         debtorsMap[customerId] = {
@@ -321,13 +310,11 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
 
       debtorsMap[customerId].totalDebt += sale.balance;
 
-      // Registrar la fecha de la deuda más antigua de ese cliente
       if (sale.createdAt < debtorsMap[customerId].oldestInvoiceDate) {
         debtorsMap[customerId].oldestInvoiceDate = sale.createdAt;
       }
     });
 
-    // 4. Transformar el mapa en array y ordenar para el "Top Deudores"
     const topDebtorsRanking = Object.values(debtorsMap).sort(
       (a, b) => b.totalDebt - a.totalDebt,
     );
@@ -339,12 +326,70 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
         activeDebtorsCount: topDebtorsRanking.length,
         overdueInvoicesCount,
       },
-      topDebtorsRanking: topDebtorsRanking.slice(0, 20), // El Frontend solo recibe los 20 peores para no saturar
+      topDebtorsRanking: topDebtorsRanking.slice(0, 20),
     });
   } catch (error) {
     console.error("Error en Motor de Riesgo Crediticio:", error);
     res
       .status(500)
       .json({ error: "Fallo estructural al calcular métricas de deuda." });
+  }
+};
+
+// ============================================================================
+// EXPORTACIÓN CONTABLE: Generador de Reportes en Excel
+// ============================================================================
+export const exportFinancialReportToExcel = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const sales = await prisma.sale.findMany({
+      where: { status: "PAID" }, // Exportamos lo efectivamente cobrado
+      include: { customer: true, items: true },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Reporte de Ventas");
+
+    // Estructura de Columnas
+    worksheet.columns = [
+      { header: "Fecha", key: "date", width: 15 },
+      { header: "Nº Ticket", key: "id", width: 10 },
+      { header: "Cliente", key: "customer", width: 25 },
+      { header: "Medio de Pago", key: "method", width: 15 },
+      { header: "Total Facturado", key: "total", width: 15 },
+    ];
+
+    // Llenado de Filas
+    sales.forEach((sale) => {
+      worksheet.addRow({
+        date: sale.createdAt.toLocaleDateString("es-AR"),
+        id: sale.id,
+        customer: sale.customer?.name || "Consumidor Final",
+        method: sale.paymentMethod,
+        total: sale.totalAmount,
+      });
+    });
+
+    // Configuración de cabeceras HTTP para forzar descarga
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=Reporte_Contable_ElClub.xlsx",
+    );
+
+    // Transmisión del archivo binario
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error) {
+    console.error("Error exportando a Excel:", error);
+    res
+      .status(500)
+      .json({ error: "Fallo en la generación del documento contable." });
   }
 };
