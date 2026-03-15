@@ -1,8 +1,13 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 
-// Process POS Transaction with Accounts Receivable logic and Cash Register tracking
-export const processSale = async (req: Request, res: Response) => {
+// ============================================================================
+// EJECUTAR TRANSACCIÓN: Procesar Punto de Venta (POS), Inventario y Caja
+// ============================================================================
+export const executeCommercialTransaction = async (
+  req: Request,
+  res: Response,
+) => {
   try {
     const {
       branchId,
@@ -14,7 +19,7 @@ export const processSale = async (req: Request, res: Response) => {
     } = req.body;
     const authUser = (req as any).user;
 
-    // MULTI-BRANCH BARRIER
+    // BARRERA DE SEGURIDAD MULTI-SUCURSAL
     if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
       return res.status(403).json({
         error:
@@ -23,9 +28,7 @@ export const processSale = async (req: Request, res: Response) => {
     }
 
     const transactionResult = await prisma.$transaction(async (tx) => {
-      // ============================================================================
       // 1. INYECCIÓN DE CAJA: Verificación de Turno Abierto
-      // ============================================================================
       const activeShift = await tx.cashRegister.findFirst({
         where: { userId: authUser.id, branchId: branchId, status: "OPEN" },
       });
@@ -39,7 +42,7 @@ export const processSale = async (req: Request, res: Response) => {
       let totalAmount = 0;
       const enrichedItems = [];
 
-      // 2. Process items, calculate totals, freeze costs, and deduct physical stock
+      // 2. PROCESAR ÍTEMS: Calcular totales, congelar costos y descontar stock físico
       for (const item of items) {
         const subtotal = item.quantity * item.unitPrice;
         totalAmount += subtotal;
@@ -89,7 +92,7 @@ export const processSale = async (req: Request, res: Response) => {
         });
       }
 
-      // 3. Financial Debt & Status Calculation
+      // 3. CÁLCULO FINANCIERO: Evaluación de Deuda y Estado Crediticio
       const actualAmountPaid =
         amountPaid !== undefined ? Number(amountPaid) : totalAmount;
       const balance = totalAmount - actualAmountPaid;
@@ -98,7 +101,7 @@ export const processSale = async (req: Request, res: Response) => {
       if (actualAmountPaid === 0) status = "PENDING";
       else if (balance > 0) status = "PARTIAL";
 
-      // 4. Generate Master Sale Ticket with Debt tracking AND Cash Register link
+      // 4. GENERAR TICKET MAESTRO: Vinculado a Cuenta Corriente y Caja Activa
       const saleRecord = await tx.sale.create({
         data: {
           totalAmount,
@@ -109,7 +112,7 @@ export const processSale = async (req: Request, res: Response) => {
           pickedUpBy: pickedUpBy || null,
           status,
           balance,
-          cashRegisterId: activeShift.id, // <-- VINCULACIÓN DE CAJA
+          cashRegisterId: activeShift.id, // VINCULACIÓN DE CAJA
           items: {
             create: enrichedItems,
           },
@@ -117,7 +120,7 @@ export const processSale = async (req: Request, res: Response) => {
         include: { items: true },
       });
 
-      // 5. Register Physical Cash Flow AND Link to Cash Register
+      // 5. REGISTRAR FLUJO DE EFECTIVO FÍSICO Y VINCULAR A CAJA
       if (actualAmountPaid > 0) {
         await tx.payment.create({
           data: {
@@ -126,7 +129,7 @@ export const processSale = async (req: Request, res: Response) => {
             saleId: saleRecord.id,
             userId: authUser.id,
             branchId: branchId,
-            cashRegisterId: activeShift.id, // <-- VINCULACIÓN DE CAJA
+            cashRegisterId: activeShift.id, // VINCULACIÓN DE CAJA
           },
         });
       }
@@ -143,32 +146,64 @@ export const processSale = async (req: Request, res: Response) => {
     if (error instanceof Error) {
       return res.status(400).json({ error: error.message });
     }
+    // Si no lo ataja el if, lo mandamos al Escudo Global que armamos antes llamando a 'next' o devolviendo 500
     res
       .status(500)
       .json({ error: "Fallo estructural al procesar el carrito de compras." });
   }
 };
 
-// Retrieve Sales History with Customer details
-export const getSales = async (req: Request, res: Response) => {
+// ============================================================================
+// RECUPERAR HISTORIAL: Auditoría de tickets con Paginación Inteligente
+// ============================================================================
+export const retrieveSalesHistory = async (req: Request, res: Response) => {
   try {
     const authUser = (req as any).user;
 
+    // 1. LECTURA DE PARÁMETROS DE PAGINACIÓN (Enviados por el celular/Frontend)
+    // Si no mandan nada, por defecto traemos la página 1, con 50 registros máximo.
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const skip = (page - 1) * limit;
+
+    // 2. CONSTRUCCIÓN DEL FILTRO DE SEGURIDAD ESPACIAL
     const whereClause =
       authUser.role === "ADMIN" ? {} : { branchId: { in: authUser.branchIds } };
 
-    const salesHistory = await prisma.sale.findMany({
-      where: whereClause,
-      include: {
-        user: { select: { name: true, role: true } },
-        customer: { select: { name: true, document: true, type: true } },
-        items: { include: { product: { select: { name: true, sku: true } } } },
-        payments: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    // 3. EJECUCIÓN PARALELA (Performance Enterprise)
+    // Buscamos los tickets de la página solicitada y, AL MISMO TIEMPO, contamos cuántos hay en total.
+    const [salesHistory, totalRecords] = await Promise.all([
+      prisma.sale.findMany({
+        where: whereClause,
+        skip, // Saltamos los registros de las páginas anteriores
+        take: limit, // Tomamos solo la cantidad solicitada (Ahorro de memoria)
+        include: {
+          user: { select: { name: true, role: true } },
+          customer: { select: { name: true, document: true, type: true } },
+          items: {
+            include: { product: { select: { name: true, sku: true } } },
+          },
+          payments: true,
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.sale.count({ where: whereClause }), // Contamos el universo total de ventas
+    ]);
 
-    res.status(200).json(salesHistory);
+    // 4. CÁLCULO DE METADATA PARA EL FRONTEND
+    const totalPages = Math.ceil(totalRecords / limit);
+
+    // 5. RESPUESTA ESTRUCTURADA
+    res.status(200).json({
+      message: "Historial de ventas recuperado exitosamente.",
+      metadata: {
+        totalRecords, // Ej: 15420 ventas históricas
+        totalPages, // Ej: 309 páginas
+        currentPage: page, // Ej: Página 1
+        recordsPerPage: limit, // Ej: 50 ventas
+      },
+      data: salesHistory, // La lista de 50 ventas exactas para renderizar
+    });
   } catch (error) {
     console.error("Error al obtener el registro de facturación:", error);
     res

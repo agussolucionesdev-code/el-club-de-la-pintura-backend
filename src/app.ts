@@ -1,61 +1,83 @@
 // Carga automática de variables de entorno (Prioridad absoluta de ejecución)
 import "dotenv/config";
 
-// Importación de módulos principales y tipos de Express
+// Importación de módulos principales y utilidades
 import express, { Application, Request, Response } from "express";
+import cors from "cors";
+import morgan from "morgan";
 
-// Importación de enrutadores modulares (Arquitectura Feature-First).
+// Importación de Escudos de Seguridad (Middlewares globales)
+import {
+  globalErrorHandler,
+  notFoundHandler,
+} from "./middlewares/error.middleware";
+
+// Importación de Enrutadores Modulares (Arquitectura Feature-First)
 import branchRoutes from "./modules/branch/branch.routes";
 import productRoutes from "./modules/product/product.routes";
 import userRoutes from "./modules/user/user.routes";
-import stockRoutes from "./modules/stock/stock.routes"; // <-- Integración del Módulo de Inventario.
-import saleRoutes from "./modules/sale/sale.routes"; // <-- Integración del Módulo de Ventas.
-import financeRoutes from "./modules/finance/finance.routes"; // <-- Integración del Módulo de Finanzas.
-import customerRoutes from "./modules/customer/customer.routes"; // <-- Integración del Módulo de Clientes.
-import paymentRoutes from "./modules/payment/payment.routes"; // <-- Integración del Módulo de Cobranzas.
-import supplierRoutes from "./modules/supplier/supplier.routes"; // <-- Integración del Módulo de Proveedores.
-import cashRegisterRoutes from "./modules/cash-register/cash-register.routes"; // <-- Integración del Módulo de Caja.
-import expenseRoutes from "./modules/expense/expense.routes"; // <-- Integración del Módulo de Gastos Operativos.
-import dashboardRoutes from "./modules/dashboard/dashboard.routes"; // <-- Integración del Módulo de Dashboard.
+import stockRoutes from "./modules/stock/stock.routes";
+import saleRoutes from "./modules/sale/sale.routes";
+import financeRoutes from "./modules/finance/finance.routes";
+import customerRoutes from "./modules/customer/customer.routes";
+import paymentRoutes from "./modules/payment/payment.routes";
+import supplierRoutes from "./modules/supplier/supplier.routes";
+import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
+import expenseRoutes from "./modules/expense/expense.routes";
+import dashboardRoutes from "./modules/dashboard/dashboard.routes";
 
+// Inicialización de la aplicación Express
 const app: Application = express();
-
-// Configuración del puerto del servidor
-// Asignación del puerto mediante variable de entorno o fallback de seguridad al puerto 3000
 const PORT = process.env.PORT || 3000;
 
-// Integración de Middlewares globales
-// Habilitación de la lectura de cuerpos de solicitud en formato JSON (Body Parser)
-app.use(express.json());
+// ============================================================================
+// 1. MIDDLEWARES DE PROCESAMIENTO Y AUDITORÍA
+// ============================================================================
+app.use(cors()); // Habilitar peticiones cruzadas (Frontend <-> Backend)
+app.use(express.json()); // Parsear cuerpos de solicitud en formato JSON
+app.use(morgan("dev")); // Caja Negra: Registrar cada petición HTTP en consola para mantenimiento
 
-// Registro de rutas principales de la API (Endpoints)
-// Conexión del módulo de gestión de sucursales
-app.use("/api/branches", branchRoutes);
-// Conexión del módulo de catálogo de productos
-app.use("/api/products", productRoutes);
-// Conexión del módulo de seguridad e identidad (Usuarios)
-app.use("/api/users", userRoutes);
-// Conexión del módulo de control de inventario (Stock físico)
-app.use("/api/stock", stockRoutes); // <-- Endpoint central de mercadería/inventario
-app.use("/api/sales", saleRoutes); // <-- Endpoint de ventas y financiera
-app.use("/api/finance", financeRoutes); // <-- Endpoint de análisis financiero
-app.use("/api/customers", customerRoutes); // <-- Endpoint de clientes y cajas
-app.use("/api/payments", paymentRoutes); // <-- Endpoint de cobranzas y saldos
-app.use("/api/suppliers", supplierRoutes); // <-- Endpoint de proveedores y contactos
-app.use("/api/cash-registers", cashRegisterRoutes); // <-- Endpoint de cajas y turnos
-app.use("/api/expenses", expenseRoutes); // <-- Endpoint de gastos operativos y retiros de caja
-app.use("/api/dashboard", dashboardRoutes); // <-- Endpoint de análisis financiero y KPIs
-
-// Definición de Endpoint de diagnóstico (Health Check)
+// ============================================================================
+// 2. ENDPOINTS DE DIAGNÓSTICO
+// ============================================================================
 // Verificación de disponibilidad y entorno de ejecución del servidor
 app.get("/api/health", (req: Request, res: Response) => {
   res.status(200).json({
     status: "success",
-    message: `El servidor de El Club de la Pintura está funcionando correctamente en modo: ${process.env.NODE_ENV}`,
+    message: `El servidor de El Club Pinturerías está funcionando correctamente en modo: ${process.env.NODE_ENV || "development"}`,
   });
 });
 
-// Puesta en marcha del servidor HTTP
+// ============================================================================
+// 3. RUTAS DE NEGOCIO (API REST)
+// ============================================================================
+app.use("/api/branches", branchRoutes);
+app.use("/api/products", productRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/stock", stockRoutes);
+app.use("/api/sales", saleRoutes);
+app.use("/api/finance", financeRoutes);
+app.use("/api/customers", customerRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/suppliers", supplierRoutes);
+app.use("/api/cash-registers", cashRegisterRoutes);
+app.use("/api/expenses", expenseRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+
+// ============================================================================
+// 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)
+// CRÍTICO: Deben ser declarados estrictamente AL FINAL de todas las rutas.
+// ============================================================================
+app.use(notFoundHandler); // Captura solicitudes a rutas inexistentes (404)
+app.use(globalErrorHandler); // Captura excepciones y evita el colapso del servidor (500)
+
+// ============================================================================
+// 5. INICIALIZACIÓN DEL SERVIDOR
+// ============================================================================
 app.listen(PORT, () => {
-  console.log(`Server is running smoothly on http://localhost:${PORT}`);
+  console.log(
+    `🚀 Motor backend encendido y operando en http://localhost:${PORT}`,
+  );
 });
+
+export default app; // Importante exportarlo por si a futuro agregamos tests automáticos
