@@ -45,7 +45,24 @@ export const createProductSchema = z.object({
     baseType: z.string().optional().nullable(),
 
     // ==========================================
-    // NUEVO: RELACIÓN LOGÍSTICA (PROVEEDORES)
+    // NUEVO: SOPORTE DE IMÁGENES Y METADATOS
+    // ==========================================
+    // Habilitación de array de imágenes para compatibilidad con Prisma
+    images: z.array(z.string()).optional().default([]),
+
+    // Habilitación de campos virtuales y metadatos operativos (Stock rápido)
+    stock: z
+      .number()
+      .nonnegative("El stock no puede ser negativo")
+      .optional()
+      .nullable(),
+    status: z.string().optional().nullable(),
+
+    // Corrección Estructural Zod v4: Declaración explícita de key (string) y value (any)
+    metadata: z.record(z.string(), z.any()).optional().nullable(),
+
+    // ==========================================
+    // RELACIÓN LOGÍSTICA (PROVEEDORES)
     // ==========================================
     supplierId: z
       .number()

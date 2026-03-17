@@ -2,7 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
-import { Prisma } from "@prisma/client"; // <-- tipos oficiales de Prisma
+import { Prisma } from "@prisma/client";
 
 // Obtención del catálogo de productos con paginación, búsqueda, filtros dinámicos y relación de proveedor
 export const getProducts = async (req: Request, res: Response) => {
@@ -86,7 +86,11 @@ export const createProduct = async (req: Request, res: Response) => {
       baseType,
       images,
       supplierId,
-      ...metadata
+      // Extracción explícita para evitar anidamiento doble
+      stock,
+      status,
+      metadata: reqMetadata,
+      ...extraData
     } = req.body;
 
     if (!sku || !name || !brand || !category) {
@@ -113,6 +117,17 @@ export const createProduct = async (req: Request, res: Response) => {
       }
     }
 
+    // Aplanamiento estructural: Consolidamos stock y metadata en un solo nivel
+    const flatMetadata = {
+      ...(reqMetadata || {}),
+      ...(stock !== undefined && {
+        stock: Number(stock),
+        initialStockImported: Number(stock),
+      }),
+      ...(status && { status }),
+      ...extraData,
+    };
+
     const newProduct = await prisma.product.create({
       data: {
         sku,
@@ -135,7 +150,8 @@ export const createProduct = async (req: Request, res: Response) => {
         baseType,
         images,
         supplierId: supplierId ? Number(supplierId) : null,
-        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+        // Guardado de metadatos limpios
+        metadata: Object.keys(flatMetadata).length > 0 ? flatMetadata : null,
       },
     });
 
@@ -171,7 +187,11 @@ export const updateProduct = async (req: Request, res: Response) => {
       baseType,
       images,
       supplierId,
-      ...metadata
+      // Extracción explícita para evitar anidamiento doble
+      stock,
+      status,
+      metadata: reqMetadata,
+      ...extraData
     } = req.body;
 
     const activeProduct = await prisma.product.findFirst({
@@ -183,6 +203,17 @@ export const updateProduct = async (req: Request, res: Response) => {
         .status(404)
         .json({ error: "El producto no existe o se encuentra archivado." });
     }
+
+    // Aplanamiento estructural: Sincronización para vista Frontend
+    const flatMetadata = {
+      ...(reqMetadata || {}),
+      ...(stock !== undefined && {
+        stock: Number(stock),
+        initialStockImported: Number(stock),
+      }),
+      ...(status && { status }),
+      ...extraData,
+    };
 
     const updatedProduct = await prisma.product.update({
       where: { id: Number(id) },
@@ -207,7 +238,8 @@ export const updateProduct = async (req: Request, res: Response) => {
         baseType,
         images,
         supplierId: supplierId ? Number(supplierId) : null,
-        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+        // Inyección de metadatos aplanados
+        metadata: Object.keys(flatMetadata).length > 0 ? flatMetadata : null,
       },
     });
 
@@ -342,9 +374,13 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
           ? Number(row.ivaPercentage || row.iva)
           : 21.0,
 
-      // SOLUCIÓN ARQUITECTÓNICA: Movemos el Stock a la Metadata
+      // SOLUCIÓN ARQUITECTÓNICA: Movemos el Stock a la Metadata sin anidamientos extras
       metadata: {
         initialStockImported:
+          row.stock || row.cantidad || row.STOCK !== undefined
+            ? Number(row.stock || row.cantidad || row.STOCK)
+            : 0,
+        stock:
           row.stock || row.cantidad || row.STOCK !== undefined
             ? Number(row.stock || row.cantidad || row.STOCK)
             : 0,
@@ -371,15 +407,12 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
     );
     const skusInExcel = validProducts.map((p) => p.sku);
 
-    // SOLUCIÓN DE TIPADO: Agregamos Prisma.TransactionClient al parámetro 'tx'
     const result = await prisma.$transaction(
       async (tx: Prisma.TransactionClient) => {
-        // 1. Damos de baja física los repetidos para que el constraint UNIQUE no salte
         await tx.product.deleteMany({
           where: { sku: { in: skusInExcel } },
         });
 
-        // 2. Insertamos la versión fresca del Excel
         return await tx.product.createMany({
           data: validProducts,
           skipDuplicates: true,
