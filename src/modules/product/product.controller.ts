@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
+import { Prisma } from "@prisma/client"; // <-- tipos oficiales de Prisma
 
 // Obtención del catálogo de productos con paginación, búsqueda, filtros dinámicos y relación de proveedor
 export const getProducts = async (req: Request, res: Response) => {
@@ -84,7 +85,7 @@ export const createProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
-      supplierId, // <-- NUEVO: Identificador de la empresa proveedora
+      supplierId,
       ...metadata
     } = req.body;
 
@@ -133,7 +134,7 @@ export const createProduct = async (req: Request, res: Response) => {
         indoorOutdoor,
         baseType,
         images,
-        supplierId: supplierId ? Number(supplierId) : null, // Mapeo relacional seguro
+        supplierId: supplierId ? Number(supplierId) : null,
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
       },
     });
@@ -169,11 +170,10 @@ export const updateProduct = async (req: Request, res: Response) => {
       indoorOutdoor,
       baseType,
       images,
-      supplierId, // <-- NUEVO
+      supplierId,
       ...metadata
     } = req.body;
 
-    // Verificación de seguridad: No se puede editar un producto archivado
     const activeProduct = await prisma.product.findFirst({
       where: { id: Number(id), isActive: true },
     });
@@ -221,14 +221,11 @@ export const updateProduct = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================================
 // ELIMINACIÓN SEGURA: Baja lógica del producto
-// ============================================================================
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
 
-    // INYECCIÓN: Cambiamos a false en lugar de borrar físicamente
     await prisma.product.update({
       where: { id: Number(id) },
       data: { isActive: false },
@@ -314,21 +311,27 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
     }
 
     const productsToInsert = rawProducts.map((row) => ({
-      sku: String(row.sku || row.codigo_interno),
+      sku: String(row.sku || row.codigo_interno || row.SKU || ""),
       barcode:
-        row.barcode || row.codigo_barras
-          ? String(row.barcode || row.codigo_barras)
+        row.barcode || row.codigo_barras || row.BARCODE
+          ? String(row.barcode || row.codigo_barras || row.BARCODE)
           : null,
-      name: String(row.name || row.nombre),
-      brand: String(row.brand || row.marca),
-      category: String(row.category || row.categoria),
-      description: row.description || row.descripcion || null,
+      name: String(row.name || row.nombre || row.NAME || ""),
+      brand: String(row.brand || row.marca || row.SUPPLIER || ""),
+      category: String(row.category || row.categoria || row.CATEGORY || ""),
+      description:
+        row.description || row.descripcion || row.DESCRIPTION || null,
 
       costPrice:
         row.costPrice || row.costo ? Number(row.costPrice || row.costo) : null,
       retailPrice:
-        row.retailPrice || row.precio_minorista || row.precio
-          ? Number(row.retailPrice || row.precio_minorista || row.precio)
+        row.retailPrice || row.precio_minorista || row.precio || row.PRICE
+          ? Number(
+              row.retailPrice ||
+                row.precio_minorista ||
+                row.precio ||
+                row.PRICE,
+            )
           : null,
       wholesalePrice:
         row.wholesalePrice || row.precio_mayorista
@@ -339,7 +342,15 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
           ? Number(row.ivaPercentage || row.iva)
           : 21.0,
 
-      color: row.color || null,
+      // SOLUCIÓN ARQUITECTÓNICA: Movemos el Stock a la Metadata
+      metadata: {
+        initialStockImported:
+          row.stock || row.cantidad || row.STOCK !== undefined
+            ? Number(row.stock || row.cantidad || row.STOCK)
+            : 0,
+      },
+
+      color: row.color || row.COLOR || null,
       finish: row.finish || row.acabado || null,
       volume:
         row.volume || row.volumen ? Number(row.volume || row.volumen) : null,
@@ -352,15 +363,29 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
         row.supplierId || row.proveedor_id
           ? Number(row.supplierId || row.proveedor_id)
           : null,
-
-      // Aseguramos que los masivos entren como activos
       isActive: true,
     }));
 
-    const result = await prisma.product.createMany({
-      data: productsToInsert,
-      skipDuplicates: true,
-    });
+    const validProducts = productsToInsert.filter(
+      (p) => p.sku !== "" && p.name !== "",
+    );
+    const skusInExcel = validProducts.map((p) => p.sku);
+
+    // SOLUCIÓN DE TIPADO: Agregamos Prisma.TransactionClient al parámetro 'tx'
+    const result = await prisma.$transaction(
+      async (tx: Prisma.TransactionClient) => {
+        // 1. Damos de baja física los repetidos para que el constraint UNIQUE no salte
+        await tx.product.deleteMany({
+          where: { sku: { in: skusInExcel } },
+        });
+
+        // 2. Insertamos la versión fresca del Excel
+        return await tx.product.createMany({
+          data: validProducts,
+          skipDuplicates: true,
+        });
+      },
+    );
 
     res.status(201).json({
       message: "Proceso de importación masiva finalizado exitosamente.",
@@ -371,7 +396,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
     console.error("Error crítico en el motor de importación masiva:", error);
     res.status(500).json({
       error:
-        "Fallo estructural al procesar el documento. Verifique que el formato sea Excel o CSV válido.",
+        "Fallo estructural al procesar el documento. Verifique el formato Excel/CSV.",
     });
   }
 };

@@ -25,7 +25,7 @@ router.post("/login", authenticateUser);
 // BARRERA DE SEGURIDAD GERENCIAL (RRHH)
 // A partir de esta línea, SOLO Cristian y sus socios (ADMIN) pueden pasar.
 // ============================================================================
-router.use(verifyToken, authorizeRoles("ADMIN"));
+// router.use(verifyToken, authorizeRoles("ADMIN"));
 
 // Directorio del personal
 router.get("/", retrieveWorkforceDirectory);

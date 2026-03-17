@@ -28,7 +28,7 @@ import dashboardRoutes from "./modules/dashboard/dashboard.routes";
 
 // Inicialización de la aplicación Express
 const app: Application = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 4000;
 
 // ============================================================================
 // 1. MIDDLEWARES DE PROCESAMIENTO Y AUDITORÍA
@@ -74,10 +74,14 @@ app.use(globalErrorHandler); // Captura excepciones y evita el colapso del servi
 // ============================================================================
 // 5. INICIALIZACIÓN DEL SERVIDOR
 // ============================================================================
-app.listen(PORT, () => {
-  console.log(
-    `🚀 Motor backend encendido y operando en http://localhost:${PORT}`,
-  );
-});
+// Jest configura automáticamente NODE_ENV = "test" cuando corre.
+// Así evitamos que el puerto se quede colgado.
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, () => {
+    console.log(
+      `🚀 Motor backend encendido, blindado y operando en http://localhost:${PORT}`,
+    );
+  });
+}
 
 export default app; // Importante exportarlo por si a futuro agregamos tests automáticos
