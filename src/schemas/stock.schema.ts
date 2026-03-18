@@ -1,58 +1,35 @@
 import { z } from "zod";
 
-// Aduana de Seguridad para el Movimiento Físico de Mercadería
+// ==========================================
+// VALIDACIÓN: Movimientos de Inventario
+// ==========================================
 export const updateStockSchema = z.object({
   body: z.object({
-    productId: z.number().int().positive("El ID del producto debe ser válido."),
-    branchId: z
+    productId: z
       .number()
       .int()
-      .positive("El ID de la sucursal debe ser válido."),
+      .positive("El ID del producto es obligatorio y debe ser válido."),
+    branchId: z.number().int().positive("El ID de la sucursal es obligatorio."),
     quantity: z
       .number()
-      .int()
-      .nonnegative("La cantidad física no puede ser negativa."),
-    type: z.enum(["IN", "OUT", "ADJUST"], {
-      message: "El tipo de movimiento debe ser 'IN', 'OUT' o 'ADJUST'.",
+      .nonnegative("La cantidad a ajustar no puede ser negativa."),
+
+    // CORRECCIÓN: Usamos 'message' directamente para el enum
+    type: z.enum(["ADD", "SUBTRACT", "SET"], {
+      message: "Comando inválido. Debe ser ADD, SUBTRACT o SET.",
     }),
-    reason: z
-      .string()
-      .min(
-        3,
-        "Debe especificar un motivo claro para la auditoría (mínimo 3 caracteres).",
-      ),
-    newCostPrice: z
-      .number()
-      .nonnegative("El nuevo costo no puede ser negativo.")
-      .optional()
-      .nullable(),
+
+    reason: z.string().max(255, "La razón es demasiado larga.").optional(),
   }),
 });
 
-// NUEVO: Aduana para Configuración del Semáforo Dinámico
+// ==========================================
+// VALIDACIÓN: Configuración de Alertas
+// ==========================================
 export const updateStockThresholdsSchema = z.object({
-  body: z
-    .object({
-      productId: z
-        .number()
-        .int()
-        .positive("El ID del producto debe ser válido."),
-      branchId: z
-        .number()
-        .int()
-        .positive("El ID de la sucursal debe ser válido."),
-      minStock: z
-        .number()
-        .int()
-        .nonnegative("El límite amarillo no puede ser negativo."),
-      criticalStock: z
-        .number()
-        .int()
-        .nonnegative("El límite rojo no puede ser negativo."),
-    })
-    .refine((data) => data.minStock > data.criticalStock, {
-      message:
-        "Error lógico: El nivel Amarillo (minStock) debe ser estrictamente mayor al Rojo (criticalStock).",
-      path: ["minStock"], // Apunta el error al campo responsable
-    }),
+  body: z.object({
+    productId: z.number().int().positive("El ID del producto es obligatorio."),
+    branchId: z.number().int().positive("El ID de la sucursal es obligatorio."),
+    minStock: z.number().nonnegative("El umbral mínimo no puede ser negativo."),
+  }),
 });

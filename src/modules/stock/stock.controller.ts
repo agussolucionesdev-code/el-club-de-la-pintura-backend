@@ -2,161 +2,188 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 
 // ============================================================================
-// OBTENER INVENTARIO: Consulta física por sucursal
+// LECTURA DE INVENTARIO: Catálogo Maestro Completo + Stock Cruzado
 // ============================================================================
 export const getStockByBranch = async (req: Request, res: Response) => {
   try {
-    const { branchId } = req.params;
+    const branchId = Number(req.params.branchId);
 
-    const stockList = await prisma.stock.findMany({
-      where: { branchId: Number(branchId) },
+    // 1. ESTRATEGIA ERP (LEFT JOIN LOGIC):
+    const products = await prisma.product.findMany({
+      where: { isActive: true },
       include: {
-        product: {
-          select: { name: true, sku: true, category: true, costPrice: true },
-        },
+        stocks: branchId === 0 ? true : { where: { branchId: branchId } },
       },
+      orderBy: { name: "asc" },
     });
 
-    res.status(200).json(stockList);
-  } catch (error) {
-    console.error("Error al obtener el inventario de la sucursal:", error);
-    res.status(500).json({ error: "Hubo un problema al consultar el stock." });
+    // 2. Mapeo estructural para el Frontend
+    const inventory = products.map((p) => {
+      let totalQuantity = 0;
+      let minStock = 5;
+      let stockId = Number(`${p.id}999`);
+
+      // BLINDAJE 1: Forzamos matemáticamente a que sea un Array
+      const productStocks = Array.isArray(p.stocks) ? p.stocks : [];
+
+      if (productStocks.length > 0) {
+        // BLINDAJE 2: Extracción segura para evitar el error 'noUncheckedIndexedAccess'
+        const firstStock = productStocks[0];
+
+        if (branchId === 0) {
+          // CONSOLIDADO MULTI-SUCURSAL
+          totalQuantity = productStocks.reduce((acc, stock) => {
+            return acc + (stock?.quantity || 0);
+          }, 0);
+
+          if (firstStock) {
+            minStock = firstStock.minStock;
+            stockId = firstStock.id;
+          }
+        } else {
+          // SUCURSAL INDIVIDUAL
+          if (firstStock) {
+            totalQuantity = firstStock.quantity;
+            minStock = firstStock.minStock;
+            stockId = firstStock.id;
+          }
+        }
+      }
+
+      return {
+        id: stockId,
+        quantity: totalQuantity,
+        minStock: minStock,
+        productId: p.id,
+        branchId: branchId === 0 ? 1 : branchId,
+        product: {
+          id: p.id,
+          name: p.name,
+          sku: p.sku,
+          barcode: p.barcode,
+          category: p.category,
+          brand: p.brand,
+          retailPrice: p.retailPrice,
+          imageUrl: p.images && p.images.length > 0 ? p.images[0] : undefined,
+        },
+      };
+    });
+
+    res.status(200).json({
+      message: "Inventario consolidado recuperado exitosamente.",
+      data: inventory,
+    });
+  } catch (error: unknown) {
+    console.error("Error en getStockByBranch:", error);
+    res.status(500).json({
+      error: "Fallo crítico al cruzar el catálogo con el inventario físico.",
+    });
   }
 };
 
 // ============================================================================
-// MOVIMIENTO DE MERCADERÍA: Ingreso/Egreso con Actualización Automática (ERP)
+// AJUSTE DE INVENTARIO: Movimientos manuales (Entradas, Salidas, Ajustes)
 // ============================================================================
 export const updateStock = async (req: Request, res: Response) => {
   try {
-    const userId = (req as any).user.id;
-    const { productId, branchId, quantity, type, reason, newCostPrice } =
-      req.body;
+    const { productId, branchId, quantity, type, reason } = req.body;
 
-    const transactionResult = await prisma.$transaction(async (tx) => {
-      const stockRecord = await tx.stock.upsert({
+    const result = await prisma.$transaction(async (tx) => {
+      const currentStock = await tx.stock.findUnique({
         where: {
           productId_branchId: {
             productId: Number(productId),
             branchId: Number(branchId),
           },
         },
-        update: { quantity: Number(quantity) },
+      });
+
+      let newQuantity = Number(quantity);
+
+      if (currentStock) {
+        if (type === "ADD")
+          newQuantity = currentStock.quantity + Number(quantity);
+        if (type === "SUBTRACT") {
+          if (currentStock.quantity < Number(quantity)) {
+            throw new Error(
+              "Operación rechazada: Stock insuficiente para el descuento solicitado.",
+            );
+          }
+          newQuantity = currentStock.quantity - Number(quantity);
+        }
+      } else {
+        if (type === "SUBTRACT") {
+          throw new Error(
+            "Operación rechazada: El producto no tiene stock registrado para descontar.",
+          );
+        }
+      }
+
+      const updatedStock = await tx.stock.upsert({
+        where: {
+          productId_branchId: {
+            productId: Number(productId),
+            branchId: Number(branchId),
+          },
+        },
+        update: { quantity: newQuantity },
         create: {
           productId: Number(productId),
           branchId: Number(branchId),
-          quantity: Number(quantity),
+          quantity: newQuantity,
+          minStock: 5,
         },
-        include: { product: true },
       });
 
-      const movementRecord = await tx.movement.create({
+      await tx.movement.create({
         data: {
-          type: String(type),
+          type: type,
           quantity: Number(quantity),
-          reason: String(reason),
+          reason: reason || "Ajuste manual de inventario",
           productId: Number(productId),
           branchId: Number(branchId),
-          userId: Number(userId),
+          userId: 1,
         },
       });
 
-      let updatedProduct = null;
-      if (
-        type === "IN" &&
-        newCostPrice !== undefined &&
-        newCostPrice !== null
-      ) {
-        updatedProduct = await tx.product.update({
-          where: { id: Number(productId) },
-          data: { costPrice: Number(newCostPrice) },
-        });
-      }
-
-      return { stockRecord, movementRecord, updatedProduct };
+      return updatedStock;
     });
-
-    // MOTOR DE ALERTAS: Usa los límites dinámicos
-    let alertMessage = null;
-    let alertType = "OK";
-    const currentStock = transactionResult.stockRecord;
-
-    if (currentStock.quantity <= currentStock.criticalStock) {
-      alertType = "CRITICAL";
-      alertMessage = `ALERTA ROJA: El producto "${currentStock.product.name}" ha entrado en nivel CRÍTICO (${currentStock.quantity} unidades).`;
-    } else if (currentStock.quantity <= currentStock.minStock) {
-      alertType = "WARNING";
-      alertMessage = `ALERTA AMARILLA: El producto "${currentStock.product.name}" ha alcanzado su nivel de ADVERTENCIA (${currentStock.quantity} unidades restantes).`;
-    }
 
     res.status(200).json({
-      message: transactionResult.updatedProduct
-        ? "Mercadería ingresada, auditoría generada y Costo Financiero actualizado con éxito."
-        : "Movimiento físico registrado y auditado exitosamente.",
-      inventoryStatus: alertType,
-      alert: alertMessage,
-      stock: currentStock,
-      auditorReceipt: transactionResult.movementRecord,
-      financialUpdate: transactionResult.updatedProduct
-        ? "Costo actualizado"
-        : "Sin cambios financieros",
+      message: `Stock actualizado con éxito. Razón: ${reason || "Ajuste manual"}`,
+      data: result,
     });
-  } catch (error) {
-    console.error("Error al actualizar el stock y generar auditoría:", error);
-    res
-      .status(500)
-      .json({
-        error:
-          "Hubo un problema crítico al procesar la transacción de logística.",
-      });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error ? error.message : "Error desconocido";
+    res.status(400).json({ error: errorMsg });
   }
 };
 
 // ============================================================================
-// CONFIGURAR SEMÁFORO: Modificar los umbrales de alerta logística
+// CONFIGURACIÓN DE ALERTAS: Actualizar el umbral de stock mínimo
 // ============================================================================
 export const updateStockThresholds = async (req: Request, res: Response) => {
   try {
-    const { productId, branchId, minStock, criticalStock } = req.body;
+    const { productId, branchId, minStock } = req.body;
 
-    // Buscar si el stock existe para actualizarlo
-    const existingStock = await prisma.stock.findUnique({
+    const updatedThreshold = await prisma.stock.update({
       where: {
         productId_branchId: {
           productId: Number(productId),
           branchId: Number(branchId),
         },
       },
-    });
-
-    if (!existingStock) {
-      return res
-        .status(404)
-        .json({
-          error:
-            "No se encontró un registro de inventario para este producto en la sucursal indicada.",
-        });
-    }
-
-    const updatedStock = await prisma.stock.update({
-      where: { id: existingStock.id },
-      data: {
-        minStock: Number(minStock),
-        criticalStock: Number(criticalStock),
-      },
-      include: { product: { select: { name: true } } },
+      data: { minStock: Number(minStock) },
     });
 
     res.status(200).json({
-      message: `Semáforo actualizado para ${updatedStock.product.name}. Amarillo: ${updatedStock.minStock} | Rojo: ${updatedStock.criticalStock}.`,
-      stock: updatedStock,
+      message: "Umbrales de alerta actualizados.",
+      data: updatedThreshold,
     });
-  } catch (error) {
-    console.error("Error al configurar umbrales de stock:", error);
+  } catch (error: unknown) {
     res
-      .status(500)
-      .json({
-        error: "Fallo estructural al actualizar el semáforo de inventario.",
-      });
+      .status(400)
+      .json({ error: "No se pudo actualizar el umbral de stock." });
   }
 };

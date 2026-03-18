@@ -1,34 +1,34 @@
 import { Router } from "express";
-import { authenticateToken } from "../../middlewares/auth.middleware";
-import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validate } from "../../middlewares/validate.middleware";
-import {
-  updateStockSchema,
-  updateStockThresholdsSchema,
-} from "../../schemas/stock.schema";
 import {
   getStockByBranch,
   updateStock,
   updateStockThresholds,
 } from "./stock.controller";
+import { authenticateToken } from "../../middlewares/auth.middleware";
+import { validate } from "../../middlewares/validate.middleware"; // <-- CORREGIDO: Importamos 'validate'
+import {
+  updateStockSchema,
+  updateStockThresholdsSchema,
+} from "../../schemas/stock.schema";
 
 const router = Router();
 
-router.get("/branch/:branchId", authenticateToken, getStockByBranch);
+// LECTURA: Obtener todo el inventario de una sucursal específica
+router.get("/:branchId", authenticateToken, getStockByBranch);
 
-router.post(
-  "/",
+// ESCRITURA: Movimientos de stock (Pasando por la aduana Zod)
+router.put(
+  "/update",
   authenticateToken,
-  authorizeRoles("ADMIN", "ENCARGADO"),
-  validate(updateStockSchema),
+  validate(updateStockSchema), // <-- CORREGIDO: Usamos 'validate'
   updateStock,
 );
 
+// CONFIGURACIÓN: Ajustar los mínimos para las alertas
 router.put(
   "/thresholds",
   authenticateToken,
-  authorizeRoles("ADMIN", "ENCARGADO"),
-  validate(updateStockThresholdsSchema),
+  validate(updateStockThresholdsSchema), // <-- CORREGIDO: Usamos 'validate'
   updateStockThresholds,
 );
 
