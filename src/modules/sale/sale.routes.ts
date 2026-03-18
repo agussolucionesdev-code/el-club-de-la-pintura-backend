@@ -1,38 +1,14 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
-import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validateSchema } from "../../middlewares/validate.middleware";
+import { getSales, getSaleById, createSale } from "./sale.controller";
+import { authenticateToken } from "../../middlewares/auth.middleware";
+import { validate } from "../../middlewares/validate.middleware";
 import { createSaleSchema } from "../../schemas/sale.schema";
-import {
-  executeCommercialTransaction,
-  retrieveSalesHistory,
-} from "./sale.controller";
 
 const router = Router();
 
-// ============================================================================
-// PROCESAR PUNTO DE VENTA (Carrito de compras)
-// ============================================================================
-// Candado 1: Autenticación (verifyToken)
-// Candado 2: Autorización Comercial (authorizeRoles) - Todos pueden vender
-// Candado 3: Validación Estructural (validateSchema)
-router.post(
-  "/",
-  verifyToken,
-  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
-  validateSchema(createSaleSchema),
-  executeCommercialTransaction,
-);
-
-// ============================================================================
-// AUDITORÍA FINANCIERA (Historial de tickets con paginación)
-// ============================================================================
-// Candado de Privacidad: Solo los Dueños (ADMIN) y Encargados pueden ver el historial
-router.get(
-  "/",
-  verifyToken,
-  authorizeRoles("ADMIN", "ENCARGADO"),
-  retrieveSalesHistory,
-);
+// Rutas protegidas para la gestión de ventas
+router.get("/", authenticateToken, getSales);
+router.get("/:id", authenticateToken, getSaleById);
+router.post("/", authenticateToken, validate(createSaleSchema), createSale);
 
 export default router;

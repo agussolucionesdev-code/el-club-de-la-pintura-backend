@@ -1,5 +1,6 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
+// Sincronización de nombre de middleware
+import { authenticateToken } from "../../middlewares/auth.middleware";
 import {
   getBranches,
   createBranch,
@@ -9,12 +10,11 @@ import {
 
 const router = Router();
 
-// Definición de la ruta GET pública para la obtención de sucursales
 router.get("/", getBranches);
 
-// Definición de rutas protegidas (Exigen validación de token JWT en cabecera)
-router.post("/", verifyToken, createBranch);
-router.put("/:id", verifyToken, updateBranch);
-router.delete("/:id", verifyToken, deleteBranch);
+// Aplicación del nuevo nombre de interceptor
+router.post("/", authenticateToken, createBranch);
+router.put("/:id", authenticateToken, updateBranch);
+router.delete("/:id", authenticateToken, deleteBranch);
 
 export default router;

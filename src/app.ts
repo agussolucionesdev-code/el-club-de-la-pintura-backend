@@ -35,12 +35,11 @@ const PORT = process.env.PORT || 4000;
 // ============================================================================
 app.use(cors()); // Habilitar peticiones cruzadas (Frontend <-> Backend)
 app.use(express.json()); // Parsear cuerpos de solicitud en formato JSON
-app.use(morgan("dev")); // Caja Negra: Registrar cada petición HTTP en consola para mantenimiento
+app.use(morgan("dev")); // Caja Negra: Registrar cada petición HTTP en consola
 
 // ============================================================================
 // 2. ENDPOINTS DE DIAGNÓSTICO
 // ============================================================================
-// Verificación de disponibilidad y entorno de ejecución del servidor
 app.get("/api/health", (req: Request, res: Response) => {
   res.status(200).json({
     status: "success",
@@ -66,22 +65,22 @@ app.use("/api/dashboard", dashboardRoutes);
 
 // ============================================================================
 // 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)
-// CRÍTICO: Deben ser declarados estrictamente AL FINAL de todas las rutas.
 // ============================================================================
-app.use(notFoundHandler); // Captura solicitudes a rutas inexistentes (404)
-app.use(globalErrorHandler); // Captura excepciones y evita el colapso del servidor (500)
+app.use(notFoundHandler);
+app.use(globalErrorHandler);
 
 // ============================================================================
 // 5. INICIALIZACIÓN DEL SERVIDOR
 // ============================================================================
-// Jest configura automáticamente NODE_ENV = "test" cuando corre.
-// Así evitamos que el puerto se quede colgado.
 if (process.env.NODE_ENV !== "test") {
-  app.listen(PORT, () => {
+  // Forzamos el puerto a ser estrictamente un número para evitar errores de TS
+  const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
+
+  app.listen(portNumber, "0.0.0.0", () => {
     console.log(
-      `🚀 Motor backend encendido, blindado y operando en http://localhost:${PORT}`,
+      `🚀 Motor backend encendido, blindado y operando en http://127.0.0.1:${portNumber}`,
     );
   });
 }
 
-export default app; // Importante exportarlo por si a futuro agregamos tests automáticos
+export default app;

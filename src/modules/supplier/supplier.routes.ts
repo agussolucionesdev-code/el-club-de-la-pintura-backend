@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
+import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validateSchema } from "../../middlewares/validate.middleware";
+import { validate } from "../../middlewares/validate.middleware";
 import { createSupplierSchema } from "../../schemas/supplier.schema";
 import {
   getSuppliers,
@@ -12,16 +12,12 @@ import {
 
 const router = Router();
 
-// ============================================================================
-// BARRERA DE SEGURIDAD: COMPRAS Y PROVEEDORES
-// ============================================================================
-// Se exige token y rol gerencial para todas las rutas de este archivo
-router.use(verifyToken, authorizeRoles("ADMIN", "ENCARGADO"));
+// Aplicación de barrera de seguridad con nombres actualizados
+router.use(authenticateToken, authorizeRoles("ADMIN", "ENCARGADO"));
 
-// Operaciones CRUD
 router.get("/", getSuppliers);
-router.post("/", validateSchema(createSupplierSchema), createSupplier);
+router.post("/", validate(createSupplierSchema), createSupplier);
 router.put("/:id", updateSupplier);
-router.delete("/:id", deleteSupplier); // Borrado Lógico
+router.delete("/:id", deleteSupplier);
 
 export default router;

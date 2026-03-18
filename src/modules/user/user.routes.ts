@@ -1,7 +1,8 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
+// Sincronización de nombres de middleware
+import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validateSchema } from "../../middlewares/validate.middleware";
+import { validate } from "../../middlewares/validate.middleware";
 import {
   onboardEmployeeSchema,
   modifyEmployeeSchema,
@@ -18,27 +19,30 @@ import {
 
 const router = Router();
 
-// RUTAS PÚBLICAS
 router.post("/login", authenticateUser);
 
-// ============================================================================
-// BARRERA DE SEGURIDAD GERENCIAL (RRHH)
-// A partir de esta línea, SOLO Cristian y sus socios (ADMIN) pueden pasar.
-// ============================================================================
-// router.use(verifyToken, authorizeRoles("ADMIN"));
+// Directorio del personal (Protegido)
+router.get("/", authenticateToken, retrieveWorkforceDirectory);
 
-// Directorio del personal
-router.get("/", retrieveWorkforceDirectory);
+// Altas, Bajas y Modificaciones (ABM) con validación actualizada
+router.post(
+  "/",
+  authenticateToken,
+  validate(onboardEmployeeSchema),
+  onboardEmployee,
+);
+router.put(
+  "/:id",
+  authenticateToken,
+  validate(modifyEmployeeSchema),
+  modifyEmployeeProfile,
+);
+router.delete("/:id", authenticateToken, terminateEmployee);
 
-// Altas, Bajas y Modificaciones (ABM)
-router.post("/", validateSchema(onboardEmployeeSchema), onboardEmployee);
-router.put("/:id", validateSchema(modifyEmployeeSchema), modifyEmployeeProfile);
-router.delete("/:id", terminateEmployee);
-
-// Módulo de Seguridad (Reseteo de claves de cajeros olvidadizos)
 router.patch(
   "/:id/password",
-  validateSchema(resetPasswordSchema),
+  authenticateToken,
+  validate(resetPasswordSchema),
   resetEmployeePassword,
 );
 

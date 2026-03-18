@@ -1,45 +1,39 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
+import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validateSchema } from "../../middlewares/validate.middleware";
+import { validate } from "../../middlewares/validate.middleware";
 import { createCustomerSchema } from "../../schemas/customer.schema";
 import {
   retrieveCustomersLedger,
   retrieveCustomerProfile,
   registerCustomerProfile,
   modifyCustomerProfile,
-  deactivateCustomerProfile, // <-- NUEVO IMPORT
+  deactivateCustomerProfile,
 } from "./customer.controller";
 
 const router = Router();
 
-// Rutas de lectura y listado
-router.get("/", verifyToken, retrieveCustomersLedger);
-router.get("/:id/profile", verifyToken, retrieveCustomerProfile);
+router.get("/", authenticateToken, retrieveCustomersLedger);
+router.get("/:id/profile", authenticateToken, retrieveCustomerProfile);
 
-// Rutas de mutación de datos
 router.post(
   "/",
-  verifyToken,
+  authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
-  validateSchema(createCustomerSchema),
+  validate(createCustomerSchema),
   registerCustomerProfile,
 );
 
 router.put(
   "/:id",
-  verifyToken,
+  authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
   modifyCustomerProfile,
 );
 
-// ============================================================================
-// BAJA LÓGICA: Archivar a un cliente moroso o inactivo
-// Seguridad Crítica: Solo Cristian y la gerencia pueden ocultar perfiles
-// ============================================================================
 router.delete(
   "/:id",
-  verifyToken,
+  authenticateToken,
   authorizeRoles("ADMIN"),
   deactivateCustomerProfile,
 );

@@ -1,7 +1,7 @@
 import { Router } from "express";
-import { verifyToken } from "../../middlewares/auth.middleware";
+import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validateSchema } from "../../middlewares/validate.middleware";
+import { validate } from "../../middlewares/validate.middleware";
 import {
   updateStockSchema,
   updateStockThresholdsSchema,
@@ -14,24 +14,21 @@ import {
 
 const router = Router();
 
-// CONSULTAR INVENTARIO
-router.get("/branch/:branchId", verifyToken, getStockByBranch);
+router.get("/branch/:branchId", authenticateToken, getStockByBranch);
 
-// INGRESAR/EGRESAR MERCADERÍA
 router.post(
   "/",
-  verifyToken,
+  authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
-  validateSchema(updateStockSchema),
+  validate(updateStockSchema),
   updateStock,
 );
 
-// NUEVO: CONFIGURAR UMBRALES DE SEMÁFORO DINÁMICO
 router.put(
   "/thresholds",
-  verifyToken,
+  authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
-  validateSchema(updateStockThresholdsSchema),
+  validate(updateStockThresholdsSchema),
   updateStockThresholds,
 );
 
