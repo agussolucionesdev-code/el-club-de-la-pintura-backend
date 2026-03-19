@@ -10,11 +10,18 @@ export const updateStockSchema = z.object({
       .int()
       .positive("El ID del producto es obligatorio y debe ser válido."),
     branchId: z.number().int().positive("El ID de la sucursal es obligatorio."),
+
+    // 🛡️ CORRECCIÓN: Agregamos el ID del usuario que envía el frontend
+    userId: z
+      .number()
+      .int()
+      .positive("El ID del usuario es obligatorio para la auditoría.")
+      .optional(),
+
     quantity: z
       .number()
       .nonnegative("La cantidad a ajustar no puede ser negativa."),
 
-    // CORRECCIÓN: Usamos 'message' directamente para el enum
     type: z.enum(["ADD", "SUBTRACT", "SET"], {
       message: "Comando inválido. Debe ser ADD, SUBTRACT o SET.",
     }),

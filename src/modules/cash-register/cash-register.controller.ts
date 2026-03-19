@@ -2,243 +2,151 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 
 // ============================================================================
-// OPEN SHIFT: Apertura de Turno y Fondo de Caja
+// ESTADO DE CAJA: Verifica si la sucursal tiene un turno activo operando
 // ============================================================================
-export const openShift = async (req: Request, res: Response) => {
+export const getActiveShift = async (req: Request, res: Response) => {
   try {
-    const { branchId, initialBalance } = req.body;
-    const authUser = (req as any).user;
+    const branchId = Number(req.params.branchId);
 
-    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
-      return res.status(403).json({
-        error: "Brecha de seguridad: No tienes acceso a esta sucursal.",
-      });
-    }
-
-    const existingOpenShift = await prisma.cashRegister.findFirst({
+    const activeShift = await prisma.cashRegister.findFirst({
       where: {
-        userId: authUser.id,
         branchId: branchId,
         status: "OPEN",
       },
+      include: {
+        user: { select: { id: true, name: true } },
+        expenses: true,
+        payments: true,
+      },
     });
 
-    if (existingOpenShift) {
-      return res.status(400).json({
-        error:
-          "Conflicto Operativo: Ya tienes un turno de caja abierto en esta sucursal.",
-        activeShiftId: existingOpenShift.id,
+    if (!activeShift) {
+      return res.status(200).json({
+        message: "No hay turnos abiertos.",
+        data: null,
       });
     }
 
+    const totalIncomes = activeShift.payments.reduce(
+      (acc, curr) => acc + curr.amount,
+      0,
+    );
+    const totalExpenses = activeShift.expenses.reduce(
+      (acc, curr) => acc + curr.amount,
+      0,
+    );
+    const currentExpectedBalance =
+      activeShift.initialBalance + totalIncomes - totalExpenses;
+
+    res.status(200).json({
+      message: "Turno activo recuperado.",
+      data: {
+        ...activeShift,
+        currentExpectedBalance,
+      },
+    });
+  } catch (error: unknown) {
+    console.error("Error al obtener estado de caja:", error);
+    res
+      .status(500)
+      .json({ error: "Fallo de conexión al consultar el cajón de dinero." });
+  }
+};
+
+// ============================================================================
+// APERTURA DE CAJA: Inicia el día laboral con un fondo fijo
+// ============================================================================
+export const openShift = async (req: Request, res: Response) => {
+  try {
+    // AHORA RECIBIMOS EL userId DESDE EL FRONTEND
+    const { initialBalance, branchId, userId } = req.body;
+
+    const existingOpen = await prisma.cashRegister.findFirst({
+      where: { branchId: Number(branchId), status: "OPEN" },
+    });
+
+    if (existingOpen) {
+      return res.status(400).json({
+        error:
+          "Atención: Ya existe un turno abierto en esta sucursal. Debe cerrarlo antes de iniciar uno nuevo.",
+      });
+    }
+
+    // Usamos el ID REAL del usuario que está abriendo la caja
     const newShift = await prisma.cashRegister.create({
       data: {
         initialBalance: Number(initialBalance),
-        userId: authUser.id,
-        branchId: branchId,
+        userId: Number(userId || 1), // <-- ID dinámico inyectado
+        branchId: Number(branchId || 1),
         status: "OPEN",
       },
     });
 
     res.status(201).json({
-      message: "Turno de caja abierto exitosamente.",
-      shift: newShift,
+      message:
+        "Caja abierta exitosamente. ¡Que sea una excelente jornada de ventas!",
+      data: newShift,
     });
-  } catch (error) {
-    console.error("Error al abrir la caja:", error);
-    res
-      .status(500)
-      .json({ error: "Fallo estructural al inicializar el turno de caja." });
+  } catch (error: unknown) {
+    console.error("Error crítico al abrir caja:", error);
+    res.status(500).json({
+      error:
+        "Fallo de integridad: Verifique que el Usuario y la Sucursal existan en la base de datos.",
+    });
   }
 };
 
 // ============================================================================
-// GET SHIFT STATUS: Arqueo Dinámico (Ventas, Pagos y Descuento de Gastos)
-// ============================================================================
-export const getActiveShiftStatus = async (req: Request, res: Response) => {
-  try {
-    const { branchId } = req.params;
-    const authUser = (req as any).user;
-
-    const activeShift = await prisma.cashRegister.findFirst({
-      where: {
-        userId: authUser.id,
-        branchId: Number(branchId),
-        status: "OPEN",
-      },
-      include: {
-        payments: true,
-        sales: true,
-        expenses: true, // INYECCIÓN: Traemos los retiros de caja
-      },
-    });
-
-    if (!activeShift) {
-      return res
-        .status(404)
-        .json({ error: "No tienes ningún turno abierto en esta sucursal." });
-    }
-
-    // 1. Desglose de Pagos por Método
-    const paymentBreakdown: Record<string, number> = {};
-    let totalCashCollected = 0;
-    let totalDigitalCollected = 0;
-
-    activeShift.payments.forEach((payment) => {
-      const method = payment.paymentMethod.toUpperCase();
-      if (!paymentBreakdown[method]) paymentBreakdown[method] = 0;
-      paymentBreakdown[method] += payment.amount;
-
-      if (method === "EFECTIVO" || method === "CASH") {
-        totalCashCollected += payment.amount;
-      } else {
-        totalDigitalCollected += payment.amount;
-      }
-    });
-
-    // 2. Cálculo de la Deuda Generada
-    const totalDebtGenerated = activeShift.sales.reduce(
-      (sum, sale) => sum + sale.balance,
-      0,
-    );
-    const totalBilled = activeShift.sales.reduce(
-      (sum, sale) => sum + sale.totalAmount,
-      0,
-    );
-
-    // 3. INYECCIÓN: Cálculo de Gastos Operativos
-    const totalExpensesAmount = activeShift.expenses.reduce(
-      (sum, expense) => sum + expense.amount,
-      0,
-    );
-
-    // 4. Plata física que TIENE que haber en el cajón de madera (Fondo + Ventas Efectivo - Gastos)
-    const expectedCashInDrawer =
-      activeShift.initialBalance + totalCashCollected - totalExpensesAmount;
-
-    res.status(200).json({
-      message: "Arqueo de caja dinámico calculado con éxito.",
-      shiftDetails: {
-        shiftId: activeShift.id,
-        openingTime: activeShift.openingTime,
-        initialBalance: activeShift.initialBalance,
-      },
-      billingSummary: {
-        totalBilled,
-        totalDebtGenerated,
-      },
-      collectionsBreakdown: {
-        totalCollected: totalCashCollected + totalDigitalCollected,
-        methods: paymentBreakdown,
-      },
-      expenseAudit: {
-        totalExpenses: totalExpensesAmount,
-        expenseCount: activeShift.expenses.length,
-      },
-      cashAudit: {
-        expectedCashInDrawer,
-      },
-    });
-  } catch (error) {
-    console.error("Error al consultar estado de caja:", error);
-    res
-      .status(500)
-      .json({ error: "Fallo al calcular el arqueo de caja actual." });
-  }
-};
-
-// ============================================================================
-// CLOSE SHIFT: Cierre de Turno y Auditoría Exacta con Gastos
+// CIERRE DE CAJA (ARQUEO): Cierre ciego y cálculo de diferencias
 // ============================================================================
 export const closeShift = async (req: Request, res: Response) => {
   try {
-    const { branchId } = req.params;
+    const { id } = req.params;
     const { actualBalance, observations } = req.body;
-    const authUser = (req as any).user;
 
-    const result = await prisma.$transaction(async (tx) => {
-      const activeShift = await tx.cashRegister.findFirst({
-        where: {
-          userId: authUser.id,
-          branchId: Number(branchId),
-          status: "OPEN",
-        },
-        include: { payments: true, sales: true, expenses: true }, // INYECCIÓN
-      });
-
-      if (!activeShift) {
-        throw new Error("No se encontró un turno abierto para cerrar.");
-      }
-
-      let totalCashCollected = 0;
-      const paymentBreakdown: Record<string, number> = {};
-
-      activeShift.payments.forEach((p) => {
-        const method = p.paymentMethod.toUpperCase();
-        if (!paymentBreakdown[method]) paymentBreakdown[method] = 0;
-        paymentBreakdown[method] += p.amount;
-
-        if (method === "EFECTIVO" || method === "CASH") {
-          totalCashCollected += p.amount;
-        }
-      });
-
-      // INYECCIÓN: Restamos los gastos para que el cierre sea exacto
-      const totalExpensesAmount = activeShift.expenses.reduce(
-        (sum, exp) => sum + exp.amount,
-        0,
-      );
-
-      const expectedBalance =
-        activeShift.initialBalance + totalCashCollected - totalExpensesAmount;
-      const discrepancy = Number(actualBalance) - expectedBalance;
-
-      const autoNotes = `Desglose Digital: ${JSON.stringify(paymentBreakdown)}. Deuda generada: $${activeShift.sales.reduce((s, a) => s + a.balance, 0)}. Gastos Operativos: $${totalExpensesAmount}. `;
-      const finalObservations = observations
-        ? `${autoNotes} | Notas Empleado: ${observations}`
-        : autoNotes;
-
-      const closedShift = await tx.cashRegister.update({
-        where: { id: activeShift.id },
-        data: {
-          status: "CLOSED",
-          closingTime: new Date(),
-          expectedBalance,
-          actualBalance: Number(actualBalance),
-          discrepancy,
-          observations: finalObservations,
-        },
-      });
-
-      return { closedShift, paymentBreakdown, totalExpensesAmount };
+    const shift = await prisma.cashRegister.findUnique({
+      where: { id: Number(id) },
+      include: { payments: true, expenses: true },
     });
 
-    const finalDiscrepancy = result.closedShift.discrepancy || 0;
+    if (!shift || shift.status === "CLOSED") {
+      return res.status(400).json({
+        error: "El turno indicado no existe o ya fue cerrado previamente.",
+      });
+    }
+
+    const totalIncomes = shift.payments.reduce(
+      (acc, curr) => acc + curr.amount,
+      0,
+    );
+    const totalExpenses = shift.expenses.reduce(
+      (acc, curr) => acc + curr.amount,
+      0,
+    );
+
+    const expectedBalance = shift.initialBalance + totalIncomes - totalExpenses;
+    const discrepancy = Number(actualBalance) - expectedBalance;
+
+    const closedShift = await prisma.cashRegister.update({
+      where: { id: Number(id) },
+      data: {
+        status: "CLOSED",
+        closingTime: new Date(),
+        expectedBalance: expectedBalance,
+        actualBalance: Number(actualBalance),
+        discrepancy: discrepancy,
+        observations: observations || null,
+      },
+    });
 
     res.status(200).json({
-      message: "Turno cerrado y caja auditada con éxito.",
-      auditResult: {
-        expectedCash: result.closedShift.expectedBalance,
-        countedCash: result.closedShift.actualBalance,
-        totalExpensesDeducted: result.totalExpensesAmount, // Se lo mostramos como comprobante
-        discrepancy: finalDiscrepancy,
-        status:
-          finalDiscrepancy === 0
-            ? "CAJA PERFECTA"
-            : finalDiscrepancy < 0
-              ? "FALTANTE"
-              : "SOBRANTE",
-      },
-      digitalBreakdown: result.paymentBreakdown,
-      shift: result.closedShift,
+      message: "El turno ha sido cerrado y arqueado correctamente.",
+      data: closedShift,
     });
-  } catch (error: any) {
-    console.error("Error crítico al cerrar la caja:", error);
-    if (error instanceof Error) {
-      return res.status(400).json({ error: error.message });
-    }
-    res
-      .status(500)
-      .json({ error: "Fallo estructural en el proceso de cierre de caja." });
+  } catch (error: unknown) {
+    console.error("Error al cerrar caja:", error);
+    res.status(500).json({
+      error: "Fallo crítico al intentar realizar el cierre contable.",
+    });
   }
 };

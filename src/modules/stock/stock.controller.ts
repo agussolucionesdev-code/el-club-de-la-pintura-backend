@@ -86,7 +86,17 @@ export const getStockByBranch = async (req: Request, res: Response) => {
 // ============================================================================
 export const updateStock = async (req: Request, res: Response) => {
   try {
-    const { productId, branchId, quantity, type, reason } = req.body;
+    const { productId, branchId, quantity, type, reason, userId } = req.body;
+
+    // 🛡️ EXTRACCIÓN DE IDENTIDAD: Intentamos sacar el ID del Token, si falla, usamos el que mandó el Frontend.
+    // Esto es vital para que la base de datos sepa quién hizo el movimiento.
+    const operatorId = (req as any).user?.id || userId;
+
+    if (!operatorId) {
+      throw new Error(
+        "No se pudo identificar la credencial del usuario para la auditoría.",
+      );
+    }
 
     const result = await prisma.$transaction(async (tx) => {
       const currentStock = await tx.stock.findUnique({
@@ -142,7 +152,7 @@ export const updateStock = async (req: Request, res: Response) => {
           reason: reason || "Ajuste manual de inventario",
           productId: Number(productId),
           branchId: Number(branchId),
-          userId: 1,
+          userId: Number(operatorId), // 🛡️ CORRECCIÓN: Usamos la identidad real en lugar de un 1 fijo
         },
       });
 
