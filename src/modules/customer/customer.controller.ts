@@ -2,101 +2,60 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 
 // ============================================================================
-// CONSOLIDAR LIBRO MAYOR: Obtener todos los clientes y su deuda total
+// LECTURA: Obtener el Directorio Comercial (Solo clientes activos)
 // ============================================================================
-export const retrieveCustomersLedger = async (req: Request, res: Response) => {
+export const getCustomers = async (req: Request, res: Response) => {
   try {
     const customers = await prisma.customer.findMany({
-      where: { isActive: true }, // <-- INYECCIÓN: Solo traemos clientes activos
+      where: { isActive: true },
+      orderBy: { name: "asc" },
+      // Traemos un resumen de sus saldos pendientes para mostrar en el Directorio
       include: {
         sales: {
           where: { status: { in: ["PENDING", "PARTIAL"] } },
-          select: { balance: true, status: true, createdAt: true },
-        },
-      },
-      orderBy: { name: "asc" },
-    });
-
-    const customersWithDebt = customers.map((customer) => {
-      const totalConsolidatedDebt = customer.sales.reduce(
-        (sum, sale) => sum + sale.balance,
-        0,
-      );
-      return { ...customer, totalConsolidatedDebt };
-    });
-
-    res.status(200).json(customersWithDebt);
-  } catch (error) {
-    console.error("Error retrieving customers ledger:", error);
-    res
-      .status(500)
-      .json({ error: "Fallo estructural al consultar el libro de clientes." });
-  }
-};
-
-// ============================================================================
-// EXPEDIENTE DE CLIENTE: Consultar historial de deuda y pagos de un individuo
-// ============================================================================
-export const retrieveCustomerProfile = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params;
-
-    // Cambiamos findUnique por findFirst para poder filtrar por isActive
-    const customerProfile = await prisma.customer.findFirst({
-      where: { id: Number(id), isActive: true }, // <-- INYECCIÓN: Previene operar con clientes archivados
-      include: {
-        sales: {
-          where: { status: { in: ["PENDING", "PARTIAL"] } }, // Solo facturas impagas
-          orderBy: { createdAt: "asc" },
+          select: { balance: true },
         },
       },
     });
 
-    if (!customerProfile) {
-      return res.status(404).json({
-        error:
-          "El cliente solicitado no existe o ha sido archivado del sistema.",
-      });
-    }
-
-    const totalConsolidatedDebt = customerProfile.sales.reduce(
-      (sum, sale) => sum + sale.balance,
-      0,
-    );
+    // Mapeo inteligente para saber si el cliente tiene deuda viva
+    const directory = customers.map((c) => {
+      const activeDebt = c.sales.reduce((sum, sale) => sum + sale.balance, 0);
+      return {
+        ...c,
+        sales: undefined, // Limpiamos la respuesta cruda
+        activeDebt, // Inyectamos la deuda calculada
+      };
+    });
 
     res.status(200).json({
-      message: "Expediente financiero recuperado con éxito.",
-      profile: customerProfile,
-      financialStatus: {
-        totalConsolidatedDebt,
-        pendingInvoicesCount: customerProfile.sales.length,
-        activeDebts: customerProfile.sales,
-      },
+      message: "Directorio de clientes recuperado con éxito.",
+      data: directory,
     });
-  } catch (error) {
-    console.error("Error retrieving customer profile:", error);
+  } catch (error: unknown) {
     res
       .status(500)
-      .json({ error: "Fallo al generar el expediente del cliente." });
+      .json({ error: "Fallo crítico al cargar la cartera de clientes." });
   }
 };
 
 // ============================================================================
-// REGISTRAR PERFIL: Dar de alta nuevo cliente, empresa o contratista
+// ALTA: Registrar un nuevo Cliente/Contratista
 // ============================================================================
-export const registerCustomerProfile = async (req: Request, res: Response) => {
+export const createCustomer = async (req: Request, res: Response) => {
   try {
     const { name, document, type, phone, email, address } = req.body;
 
-    if (document) {
+    // 🛡️ BLINDAJE: Evitar CUITs o DNIs duplicados
+    if (document && document.trim() !== "") {
       const existingCustomer = await prisma.customer.findUnique({
-        where: { document },
+        where: { document: document.trim() },
       });
+
       if (existingCustomer) {
-        return res.status(400).json({
-          error:
-            "Conflicto: Ya existe un cliente registrado con este Documento/CUIT.",
-        });
+        throw new Error(
+          `Operación rechazada: Ya existe un perfil registrado con el documento/CUIT ${document}.`,
+        );
       }
     }
 
@@ -105,86 +64,92 @@ export const registerCustomerProfile = async (req: Request, res: Response) => {
         name,
         document: document || null,
         type: type || "CONSUMER",
-        phone: phone || null,
-        email: email || null,
-        address: address || null,
-        // isActive es true por defecto en el schema
+        phone,
+        email,
+        address,
       },
     });
 
     res.status(201).json({
-      message: "Perfil de cliente registrado correctamente.",
-      customer: newCustomer,
+      message: "Perfil comercial incorporado al directorio exitosamente.",
+      data: newCustomer,
     });
-  } catch (error) {
-    console.error("Error creating customer:", error);
-    res
-      .status(500)
-      .json({ error: "Fallo estructural al registrar el nuevo perfil." });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "Error al registrar el perfil comercial.";
+    res.status(400).json({ error: errorMsg });
   }
 };
 
 // ============================================================================
-// MODIFICAR PERFIL: Actualizar datos de contacto o facturación
+// MODIFICACIÓN: Actualizar datos de contacto o perfil
 // ============================================================================
-export const modifyCustomerProfile = async (req: Request, res: Response) => {
+export const updateCustomer = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const { name, document, type, phone, email, address } = req.body;
+    const customerId = Number(req.params.id);
+    const data = req.body;
 
-    // Verificamos que el cliente esté activo antes de modificarlo
-    const activeCustomer = await prisma.customer.findFirst({
-      where: { id: Number(id), isActive: true },
-    });
-
-    if (!activeCustomer) {
-      return res.status(404).json({
-        error: "No se puede modificar un cliente archivado o inexistente.",
+    // Si intenta cambiar el documento, verificamos que no pise a otro
+    if (data.document) {
+      const existing = await prisma.customer.findFirst({
+        where: {
+          document: data.document,
+          id: { not: customerId },
+        },
       });
+      if (existing)
+        throw new Error(
+          "El Documento/CUIT ingresado ya pertenece a otro cliente.",
+        );
     }
 
     const updatedCustomer = await prisma.customer.update({
-      where: { id: Number(id) },
-      data: { name, document, type, phone, email, address },
+      where: { id: customerId },
+      data,
     });
 
     res.status(200).json({
-      message: "Perfil actualizado con éxito.",
-      customer: updatedCustomer,
+      message: "Ficha del cliente actualizada correctamente.",
+      data: updatedCustomer,
     });
-  } catch (error) {
-    console.error("Error updating customer:", error);
-    res.status(500).json({
-      error:
-        "Fallo al actualizar. Verifique el ID y restricciones de unicidad.",
-    });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error ? error.message : "Fallo al actualizar el perfil.";
+    res.status(400).json({ error: errorMsg });
   }
 };
 
 // ============================================================================
-// OCULTAR PERFIL: Baja lógica del cliente (Previene errores de integridad)
+// BAJA LÓGICA (Soft Delete): Archivar cliente sin romper el historial contable
 // ============================================================================
-export const deactivateCustomerProfile = async (
-  req: Request,
-  res: Response,
-) => {
+export const deleteCustomer = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const customerId = Number(req.params.id);
 
-    // INYECCIÓN: Cambiamos a false en lugar de borrar físicamente
+    // Verificamos si tiene deuda pendiente antes de borrarlo
+    const pendingSales = await prisma.sale.findFirst({
+      where: { customerId, status: { in: ["PENDING", "PARTIAL"] } },
+    });
+
+    if (pendingSales) {
+      throw new Error(
+        "Bloqueo de Seguridad: No se puede archivar un cliente que mantiene saldos pendientes de pago.",
+      );
+    }
+
     await prisma.customer.update({
-      where: { id: Number(id) },
+      where: { id: customerId },
       data: { isActive: false },
     });
 
-    res.status(200).json({
-      message:
-        "Cliente archivado correctamente. Su historial financiero y deuda han sido preservados intactos en el sistema.",
-    });
-  } catch (error) {
-    console.error("Error archivando cliente:", error);
     res
-      .status(500)
-      .json({ error: "Fallo estructural al intentar dar de baja al cliente." });
+      .status(200)
+      .json({ message: "Perfil comercial archivado de forma segura." });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error ? error.message : "Error al archivar el cliente.";
+    res.status(400).json({ error: errorMsg });
   }
 };

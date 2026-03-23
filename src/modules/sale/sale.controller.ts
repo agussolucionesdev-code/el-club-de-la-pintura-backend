@@ -2,67 +2,63 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 
 // ============================================================================
-// MOTOR TRANSACCIONAL DE VENTAS (POS)
+// 1. MOTOR TRANSACCIONAL DE VENTAS Y CUENTAS CORRIENTES (ERP Level)
 // ============================================================================
 export const createSale = async (req: Request, res: Response) => {
   try {
     const {
       branchId,
-      userId,
       cashRegisterId,
       customerId,
-      totalAmount,
       paymentMethod,
-      status,
+      totalAmount,
       items,
+      pickedUpBy,
     } = req.body;
 
-    if (!items || items.length === 0) {
-      return res
-        .status(400)
-        .json({ error: "La venta debe contener al menos un producto." });
+    const userId = (req as any).user.id;
+
+    if (paymentMethod === "CREDIT_ACCOUNT") {
+      if (!customerId)
+        throw new Error(
+          "Operación rechazada: Las ventas en Cuenta Corriente exigen un Cliente Titular registrado.",
+        );
+      if (!pickedUpBy || pickedUpBy.trim().length < 3)
+        throw new Error(
+          "Operación rechazada: Debe especificar el Nombre y DNI de la persona autorizada al retiro.",
+        );
     }
 
-    // Ejecutamos todo dentro de una transacción estricta (O todo o nada)
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Verificamos que la caja esté realmente abierta (Seguridad anti-fraude)
-      const register = await tx.cashRegister.findUnique({
+      const activeRegister = await tx.cashRegister.findUnique({
         where: { id: Number(cashRegisterId) },
       });
-      if (!register || register.status !== "OPEN") {
+
+      if (!activeRegister || activeRegister.status !== "OPEN") {
         throw new Error(
-          "La caja registradora está cerrada o no existe. Abra el turno primero.",
+          "Operación bloqueada: No hay un turno de caja abierto para registrar esta operación.",
         );
       }
 
-      // 2. Creamos la Cabecera de la Venta (El Ticket)
-      const sale = await tx.sale.create({
+      const isCredit = paymentMethod === "CREDIT_ACCOUNT";
+      const initialStatus = isCredit ? "PENDING" : "PAID";
+      const initialBalance = isCredit ? Number(totalAmount) : 0;
+
+      const newSale = await tx.sale.create({
         data: {
           totalAmount: Number(totalAmount),
-          paymentMethod: paymentMethod,
-          status: status, // "PAID" (Pagado) o "PENDING" (Fiado)
-          balance: status === "PENDING" ? Number(totalAmount) : 0, // Si es fiado, todo va a saldo deudor
+          paymentMethod,
+          status: initialStatus,
+          balance: initialBalance,
+          pickedUpBy: isCredit ? pickedUpBy : null,
+          customerId: customerId ? Number(customerId) : null,
           branchId: Number(branchId),
           userId: Number(userId),
           cashRegisterId: Number(cashRegisterId),
-          customerId: customerId ? Number(customerId) : null,
         },
       });
 
-      // 3. Procesamos cada producto del carrito
       for (const item of items) {
-        // A) Guardamos el renglón del ticket (Fijando el precio de venta en este exacto momento)
-        await tx.saleItem.create({
-          data: {
-            saleId: sale.id,
-            productId: Number(item.productId),
-            quantity: Number(item.quantity),
-            unitPrice: Number(item.unitPrice),
-            subtotal: Number(item.subtotal),
-          },
-        });
-
-        // B) Descontamos el stock físico de la sucursal actual
         const currentStock = await tx.stock.findUnique({
           where: {
             productId_branchId: {
@@ -72,33 +68,33 @@ export const createSale = async (req: Request, res: Response) => {
           },
         });
 
-        const stockToDeduct = Number(item.quantity);
-        const newQuantity = currentStock
-          ? currentStock.quantity - stockToDeduct
-          : -stockToDeduct;
+        if (!currentStock || currentStock.quantity < Number(item.quantity)) {
+          throw new Error(
+            `Inconsistencia de Inventario: Stock insuficiente para el producto ID ${item.productId}.`,
+          );
+        }
 
-        await tx.stock.upsert({
-          where: {
-            productId_branchId: {
-              productId: Number(item.productId),
-              branchId: Number(branchId),
-            },
-          },
-          update: { quantity: newQuantity },
-          create: {
+        await tx.stock.update({
+          where: { id: currentStock.id },
+          data: { quantity: currentStock.quantity - Number(item.quantity) },
+        });
+
+        await tx.saleItem.create({
+          data: {
+            saleId: newSale.id,
             productId: Number(item.productId),
-            branchId: Number(branchId),
-            quantity: newQuantity,
-            minStock: 5,
+            quantity: Number(item.quantity),
+            unitPrice: Number(item.unitPrice),
+            subtotal: Number(item.quantity) * Number(item.unitPrice),
+            unitCost: item.unitCost ? Number(item.unitCost) : 0,
           },
         });
 
-        // C) Dejamos registro en la Auditoría de Movimientos (Salida por Venta)
         await tx.movement.create({
           data: {
             type: "OUT",
-            quantity: stockToDeduct,
-            reason: `Venta #${sale.id}`,
+            quantity: Number(item.quantity),
+            reason: `Venta #${newSale.id} ${isCredit ? "(Cuenta Corriente)" : ""}`,
             productId: Number(item.productId),
             branchId: Number(branchId),
             userId: Number(userId),
@@ -106,13 +102,12 @@ export const createSale = async (req: Request, res: Response) => {
         });
       }
 
-      // 4. Si el cliente pagó (No es fiado), metemos la plata en la caja
-      if (status === "PAID") {
+      if (!isCredit && paymentMethod === "CASH") {
         await tx.payment.create({
           data: {
             amount: Number(totalAmount),
-            paymentMethod: paymentMethod,
-            saleId: sale.id,
+            paymentMethod: "CASH",
+            saleId: newSale.id,
             userId: Number(userId),
             branchId: Number(branchId),
             cashRegisterId: Number(cashRegisterId),
@@ -120,86 +115,106 @@ export const createSale = async (req: Request, res: Response) => {
         });
       }
 
-      return sale;
+      return newSale;
     });
 
     res.status(201).json({
       message:
-        "Venta registrada, stock actualizado y dinero ingresado correctamente.",
+        paymentMethod === "CREDIT_ACCOUNT"
+          ? "Venta a Crédito registrada."
+          : "Venta procesada con éxito.",
       data: result,
     });
   } catch (error: unknown) {
-    console.error("Error en motor de ventas:", error);
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "Fallo crítico al procesar la transacción comercial.";
+        : "Error crítico al procesar la venta.";
     res.status(400).json({ error: errorMsg });
   }
 };
 
 // ============================================================================
-// HISTORIAL DE VENTAS: Listado para reportes y devoluciones
+// 2. RADAR DE DEUDORES: Obtener todas las Cuentas Corrientes Pendientes
 // ============================================================================
-export const getSales = async (req: Request, res: Response) => {
+export const getPendingAccounts = async (req: Request, res: Response) => {
   try {
-    const { branchId } = req.query;
+    const branchId = Number(req.params.branchId);
 
-    const sales = await prisma.sale.findMany({
-      where: branchId ? { branchId: Number(branchId) } : {},
-      include: {
-        customer: { select: { name: true, type: true } },
-        user: { select: { name: true } },
-        items: {
-          include: { product: { select: { name: true, sku: true } } },
-        },
+    const pendingSales = await prisma.sale.findMany({
+      where: {
+        branchId: branchId === 0 ? undefined : branchId,
+        status: { in: ["PENDING", "PARTIAL"] },
       },
-      orderBy: { createdAt: "desc" },
-      take: 100, // Límite de seguridad para no saturar el panel
+      include: {
+        customer: { select: { id: true, name: true, type: true, phone: true } },
+        user: { select: { name: true } },
+      },
+      orderBy: { createdAt: "asc" },
     });
 
-    res.status(200).json({ data: sales });
+    res.status(200).json({ message: "Radar actualizado.", data: pendingSales });
   } catch (error: unknown) {
-    res
-      .status(500)
-      .json({ error: "No se pudo recuperar el historial de ventas." });
+    res.status(500).json({ error: "Fallo al consultar el radar de deudores." });
   }
 };
 
 // ============================================================================
-// DETALLE DE VENTA: Recuperar un ticket específico (Para reimpresión o consulta)
+// 3. HISTORIAL GENERAL: Obtener listado de ventas (RESTAURADO)
 // ============================================================================
-export const getSaleById = async (req: Request, res: Response) => {
+export const getSales = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-
-    const sale = await prisma.sale.findUnique({
-      where: { id: Number(id) },
+    // Tomamos las últimas 100 ventas para no saturar la red (paginación básica)
+    const sales = await prisma.sale.findMany({
+      take: 100,
+      orderBy: { createdAt: "desc" },
       include: {
-        customer: { select: { name: true, document: true, type: true } },
-        user: { select: { name: true } },
-        cashRegister: { select: { id: true } },
-        items: {
-          include: {
-            product: { select: { name: true, sku: true, barcode: true } },
-          },
-        },
-        payments: true,
+        customer: { select: { name: true, document: true } },
+        user: { select: { name: true } }, // El empleado que hizo la venta
       },
     });
 
-    if (!sale) {
-      return res.status(404).json({ error: "Ticket no encontrado." });
-    }
-
-    res.status(200).json({
-      message: "Ticket recuperado exitosamente.",
-      data: sale,
-    });
-  } catch (error: unknown) {
-    console.error("Error al obtener detalle de venta:", error);
     res
-      .status(500)
-      .json({ error: "Fallo al recuperar los detalles del ticket comercial." });
+      .status(200)
+      .json({ message: "Historial de ventas recuperado.", data: sales });
+  } catch (error: unknown) {
+    res.status(500).json({ error: "Fallo al obtener el historial de ventas." });
+  }
+};
+
+// ============================================================================
+// 4. DETALLE DE TICKET: Recuperar venta para PDF o Consulta (RESTAURADO Y MEJORADO)
+// ============================================================================
+export const getSaleById = async (req: Request, res: Response) => {
+  try {
+    const saleId = Number(req.params.id);
+
+    const sale = await prisma.sale.findUnique({
+      where: { id: saleId },
+      include: {
+        customer: true, // Datos del cliente
+        user: { select: { name: true } }, // Cajero
+        items: {
+          include: {
+            product: { select: { name: true, sku: true, brand: true } },
+          },
+        },
+        payments: {
+          // 🛡️ VITAL PARA FIADOS: Trae todos los pagos a cuenta que hizo
+          orderBy: { createdAt: "desc" },
+          include: { user: { select: { name: true } } },
+        },
+      },
+    });
+
+    if (!sale) throw new Error("Venta o Ticket no encontrado en el sistema.");
+
+    res
+      .status(200)
+      .json({ message: "Detalle de ticket recuperado.", data: sale });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error ? error.message : "Error desconocido.";
+    res.status(404).json({ error: errorMsg });
   }
 };

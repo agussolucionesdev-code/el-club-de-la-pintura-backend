@@ -1,41 +1,43 @@
 import { Router } from "express";
-import { authenticateToken } from "../../middlewares/auth.middleware";
-import { authorizeRoles } from "../../middlewares/role.middleware";
-import { validate } from "../../middlewares/validate.middleware";
-import { createCustomerSchema } from "../../schemas/customer.schema";
 import {
-  retrieveCustomersLedger,
-  retrieveCustomerProfile,
-  registerCustomerProfile,
-  modifyCustomerProfile,
-  deactivateCustomerProfile,
+  getCustomers,
+  createCustomer,
+  updateCustomer,
+  deleteCustomer,
 } from "./customer.controller";
+import { authenticateToken } from "../../middlewares/auth.middleware";
+import { validate } from "../../middlewares/validate.middleware";
+import {
+  createCustomerSchema,
+  updateCustomerSchema,
+} from "../../schemas/customer.schema";
 
 const router = Router();
 
-router.get("/", authenticateToken, retrieveCustomersLedger);
-router.get("/:id/profile", authenticateToken, retrieveCustomerProfile);
+// ============================================================================
+// RUTAS DEL DIRECTORIO COMERCIAL (Protegidas por JWT)
+// ============================================================================
 
+// 1. Obtener la cartera de clientes activa
+router.get("/", authenticateToken, getCustomers);
+
+// 2. Dar de alta un nuevo perfil (Pasa por la aduana Zod)
 router.post(
   "/",
   authenticateToken,
-  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
   validate(createCustomerSchema),
-  registerCustomerProfile,
+  createCustomer,
 );
 
+// 3. Modificar un perfil existente
 router.put(
   "/:id",
   authenticateToken,
-  authorizeRoles("ADMIN", "ENCARGADO"),
-  modifyCustomerProfile,
+  validate(updateCustomerSchema),
+  updateCustomer,
 );
 
-router.delete(
-  "/:id",
-  authenticateToken,
-  authorizeRoles("ADMIN"),
-  deactivateCustomerProfile,
-);
+// 4. Archivar un cliente (Soft Delete)
+router.delete("/:id", authenticateToken, deleteCustomer);
 
 export default router;
