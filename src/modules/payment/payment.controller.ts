@@ -60,7 +60,8 @@ export const registerAccountPayment = async (req: Request, res: Response) => {
       message:
         result.status === "PAID"
           ? "¡Cuenta saldada en su totalidad!"
-          : `Pago parcial registrado. Saldo restante: $${result.newBalance}`,
+          : // 🛡️ Le agregamos explícitamente "ARS" y el formato argentino
+            `Pago parcial. Saldo restante: $ ${result.newBalance.toLocaleString("es-AR")} ARS`,
       data: result,
     });
   } catch (error: unknown) {
