@@ -35,6 +35,7 @@ const PORT = process.env.PORT || 4000;
 // ============================================================================
 app.use(cors()); // Habilitar peticiones cruzadas (Frontend <-> Backend)
 app.use(express.json()); // Parsear cuerpos de solicitud en formato JSON
+app.use(express.urlencoded({ extended: true })); // 🛡️ MEJORA: Parsear datos de formularios (URL-encoded)
 app.use(morgan("dev")); // Caja Negra: Registrar cada petición HTTP en consola
 
 // ============================================================================
@@ -58,7 +59,7 @@ app.use("/api/sales", saleRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/payments", paymentRoutes);
-app.use("/api/suppliers", supplierRoutes);
+app.use("/api/suppliers", supplierRoutes); // 👈 ACÁ ESTÁ EL PLURAL MAGICO
 app.use("/api/cash-registers", cashRegisterRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/dashboard", dashboardRoutes);
@@ -66,6 +67,7 @@ app.use("/api/dashboard", dashboardRoutes);
 // ============================================================================
 // 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)
 // ============================================================================
+// 🛡️ IMPORTANTE: Estos siempre deben ir al final de todas las rutas
 app.use(notFoundHandler);
 app.use(globalErrorHandler);
 

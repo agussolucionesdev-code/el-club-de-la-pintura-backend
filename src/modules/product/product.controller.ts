@@ -6,6 +6,18 @@ import { Prisma } from "@prisma/client";
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
 
+// 🧠 IA BACKEND: MOTOR DE NORMALIZACIÓN (Data Cleansing)
+// Estandariza volúmenes y textos para evitar duplicados en la base de datos
+const normalizeProductName = (name: string): string => {
+  let cleanName = name.trim().toUpperCase();
+  // Normaliza "x20", "20 Lts", "20L" -> "20 L"
+  cleanName = cleanName.replace(/(\d+)\s*(LTS|LT|L)\b/gi, "$1 L");
+  cleanName = cleanName.replace(/X\s*(\d+)/gi, "$1 L");
+  // Limpia espacios dobles
+  cleanName = cleanName.replace(/\s{2,}/g, " ");
+  return cleanName;
+};
+
 // ============================================================================
 // LECTURA DE CATÁLOGO: Paginación, búsqueda y filtros
 // ============================================================================
@@ -17,8 +29,8 @@ export const getProducts = async (req: Request, res: Response) => {
     const pageSize = Number(limit);
     const skip = (pageNumber - 1) * pageSize;
 
-    // INYECCIÓN DE SEGURIDAD: Solo mostramos productos activos en el catálogo
-    const whereClause: any = { isActive: true };
+    // 🛡️ INYECCIÓN DE SEGURIDAD Y TIPADO FUERTE
+    const whereClause: Prisma.ProductWhereInput = { isActive: true };
 
     if (category) whereClause.category = String(category);
     if (brand) whereClause.brand = String(brand);
@@ -40,7 +52,6 @@ export const getProducts = async (req: Request, res: Response) => {
         skip: skip,
         take: pageSize,
         orderBy: { createdAt: "desc" },
-        // INYECCIÓN RELACIONAL: Adjuntamos los datos del proveedor para la vista del catálogo
         include: {
           supplier: {
             select: { id: true, companyName: true },
@@ -115,7 +126,6 @@ export const createProduct = async (req: Request, res: Response) => {
           .json({ error: "El código de barras ya existe." });
     }
 
-    // Aplanamiento estructural: Consolidamos stock y metadata
     const flatMetadata = {
       ...(reqMetadata || {}),
       ...(stock !== undefined && {
@@ -130,7 +140,7 @@ export const createProduct = async (req: Request, res: Response) => {
       data: {
         sku,
         barcode: barcode || null,
-        name,
+        name: normalizeProductName(name), // 🧠 Normalizamos al crear
         brand,
         category,
         description,
@@ -146,9 +156,10 @@ export const createProduct = async (req: Request, res: Response) => {
         volumeUnit,
         indoorOutdoor,
         baseType,
-        images: images || [], // Blindaje de array
+        images: images || [],
         supplierId: supplierId ? Number(supplierId) : null,
-        metadata: Object.keys(flatMetadata).length > 0 ? flatMetadata : null,
+        metadata:
+          Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
       },
     });
 
@@ -175,9 +186,10 @@ export const updateProduct = async (req: Request, res: Response) => {
       category,
       description,
       costPrice,
+      profitMargin,
+      ivaPercentage,
       retailPrice,
       wholesalePrice,
-      ivaPercentage,
       color,
       finish,
       volume,
@@ -201,7 +213,14 @@ export const updateProduct = async (req: Request, res: Response) => {
         .status(404)
         .json({ error: "El producto no existe o fue archivado." });
 
+    const existingMeta =
+      typeof activeProduct.metadata === "object" &&
+      activeProduct.metadata !== null
+        ? activeProduct.metadata
+        : {};
+
     const flatMetadata = {
+      ...existingMeta,
       ...(reqMetadata || {}),
       ...(stock !== undefined && {
         stock: Number(stock),
@@ -211,21 +230,41 @@ export const updateProduct = async (req: Request, res: Response) => {
       ...extraData,
     };
 
+    const finalCost =
+      costPrice !== undefined
+        ? Number(costPrice)
+        : Number(activeProduct.costPrice || 0);
+    const finalMargin =
+      profitMargin !== undefined
+        ? Number(profitMargin)
+        : Number(activeProduct.profitMargin || 30);
+    const finalIva =
+      ivaPercentage !== undefined
+        ? Number(ivaPercentage)
+        : Number(activeProduct.ivaPercentage || 21);
+
+    const calculatedRetail =
+      retailPrice !== undefined && Number(retailPrice) > 0
+        ? Number(retailPrice)
+        : Math.round(
+            finalCost * (1 + finalMargin / 100) * (1 + finalIva / 100),
+          );
+
     const updatedProduct = await prisma.product.update({
       where: { id: Number(id) },
       data: {
         sku,
         barcode: barcode || null,
-        name,
+        name: name ? normalizeProductName(name) : activeProduct.name, // 🧠 Normalizamos al actualizar
         brand,
         category,
         description,
-        costPrice: costPrice !== undefined ? Number(costPrice) : null,
-        retailPrice: retailPrice !== undefined ? Number(retailPrice) : null,
+        costPrice: finalCost,
+        profitMargin: finalMargin,
+        ivaPercentage: finalIva,
+        retailPrice: calculatedRetail,
         wholesalePrice:
           wholesalePrice !== undefined ? Number(wholesalePrice) : null,
-        ivaPercentage:
-          ivaPercentage !== undefined ? Number(ivaPercentage) : 21.0,
         color,
         finish,
         volume,
@@ -234,9 +273,25 @@ export const updateProduct = async (req: Request, res: Response) => {
         baseType,
         images: images || [],
         supplierId: supplierId ? Number(supplierId) : null,
-        metadata: Object.keys(flatMetadata).length > 0 ? flatMetadata : null,
+        metadata:
+          Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
       },
     });
+
+    if (stock !== undefined) {
+      await prisma.stock.upsert({
+        where: {
+          productId_branchId: { productId: Number(id), branchId: 1 },
+        },
+        update: { quantity: Number(stock) },
+        create: {
+          productId: Number(id),
+          branchId: 1,
+          quantity: Number(stock),
+          minStock: 5,
+        },
+      });
+    }
 
     res.status(200).json(updatedProduct);
   } catch (error) {
@@ -245,9 +300,6 @@ export const updateProduct = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================================
-// ELIMINACIÓN SEGURA: Baja lógica del producto
-// ============================================================================
 export const deleteProduct = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -255,17 +307,44 @@ export const deleteProduct = async (req: Request, res: Response) => {
       where: { id: Number(id) },
       data: { isActive: false },
     });
-    res
-      .status(200)
-      .json({ message: "Producto retirado del catálogo activo exitosamente." });
+    res.status(200).json({ message: "Producto retirado del catálogo." });
   } catch (error) {
     res.status(500).json({ error: "No se pudo archivar el producto." });
   }
 };
 
 // ============================================================================
-// ALOJAMIENTO CLOUD: Subida de imagen a Cloudinary
+// 💣 VACIADO MASIVO NUCLEAR (ELIMINA TODOS LOS PRODUCTOS ACTIVOS)
 // ============================================================================
+export const deleteAllProducts = async (req: Request, res: Response) => {
+  try {
+    const totalActive = await prisma.product.count({
+      where: { isActive: true },
+    });
+
+    if (totalActive === 0) {
+      return res
+        .status(200)
+        .json({ message: "El catálogo ya estaba vacío.", deletedCount: 0 });
+    }
+
+    const result = await prisma.product.updateMany({
+      where: { isActive: true },
+      data: { isActive: false },
+    });
+
+    res.status(200).json({
+      message: "Directorio de Tarifas vaciado con éxito.",
+      deletedCount: result.count,
+    });
+  } catch (error) {
+    console.error("Error crítico al vaciar el catálogo:", error);
+    res.status(500).json({
+      error: "Fallo estructural al intentar vaciar la base de datos.",
+    });
+  }
+};
+
 export const uploadProductImage = async (req: Request, res: Response) => {
   try {
     if (!req.file)
@@ -292,148 +371,153 @@ export const uploadProductImage = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// IMPORTACIÓN MASIVA: Procesamiento seguro de Excel/CSV (MOTOR UPSERT 2.0)
+// 🚀 IMPORTACIÓN MASIVA INTELIGENTE: Motor UPSERT Avanzado y Normalización
 // ============================================================================
 export const importProductsFromExcel = async (req: Request, res: Response) => {
   try {
-    if (!req.file)
+    const { products, globalMargin, globalIva, supplierName } = req.body;
+
+    if (!products || !Array.isArray(products) || products.length === 0) {
       return res
         .status(400)
-        .json({ error: "Aduana rechazada: No hay archivo Excel." });
+        .json({ error: "No se recibieron productos válidos para importar." });
+    }
 
-    const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
-    const sheetName = workbook.SheetNames[0];
-    if (!sheetName)
-      return res
-        .status(400)
-        .json({ error: "El Excel no contiene hojas legibles." });
+    const margin = Number(globalMargin) || 30.0;
+    const iva = Number(globalIva) || 21.0;
 
-    const sheet = workbook.Sheets[sheetName];
-    if (!sheet)
-      return res
-        .status(400)
-        .json({ error: "La hoja de cálculo está corrupta." });
+    let supplierId: number | null = null;
+    let safeBrandName = "General";
 
-    const rawProducts = xlsx.utils.sheet_to_json<any>(sheet as xlsx.WorkSheet);
-    if (rawProducts.length === 0)
-      return res.status(400).json({ error: "El Excel está vacío." });
+    if (supplierName) {
+      safeBrandName = String(supplierName).trim();
+      let supplier = await prisma.supplier.findFirst({
+        where: { companyName: safeBrandName },
+      });
 
-    const parseNumber = (val: any): number => {
-      if (val === undefined || val === null || val === "") return 0;
-      const num = Number(String(val).replace(/[^0-9.-]+/g, ""));
-      return isNaN(num) ? 0 : num;
-    };
+      if (!supplier) {
+        const randomCuit = `30-${Math.floor(10000000 + Math.random() * 90000000)}-9`;
 
-    const productsToProcess = rawProducts.map((row) => {
-      const parsedStock = parseNumber(row.stock || row.cantidad || row.STOCK);
-      const rawBarcode = row.barcode || row.codigo_barras || row.BARCODE;
-      const cleanBarcode = rawBarcode ? String(rawBarcode).trim() : null;
+        supplier = await prisma.supplier.create({
+          data: {
+            companyName: safeBrandName,
+            phone: "No especificado",
+            email: "generado@automatico.com",
+            cuit: randomCuit,
+            contactName: "Auto-generado",
+            address: "Sin especificar",
+            isActive: true,
+          },
+        });
+      }
+      supplierId = supplier.id;
+    }
 
-      return {
-        sku: String(
-          row.sku ||
-            row.codigo_interno ||
-            row.SKU ||
-            `SKU-AUTO-${Math.floor(Math.random() * 10000)}`,
-        ).trim(),
-        barcode: cleanBarcode === "" ? null : cleanBarcode,
-        name: String(
-          row.name || row.nombre || row.NAME || "Producto Genérico",
-        ).trim(),
-        brand: String(row.brand || row.marca || row.SUPPLIER || "S/M").trim(),
-        category: String(
-          row.category || row.categoria || row.CATEGORY || "General",
-        ).trim(),
-        description:
-          row.description || row.descripcion || row.DESCRIPTION
-            ? String(row.description || row.descripcion || row.DESCRIPTION)
-            : null,
-        costPrice: parseNumber(row.costPrice || row.costo || row.COST_PRICE),
-        retailPrice: parseNumber(
-          row.retailPrice ||
-            row.precio_minorista ||
-            row.precio ||
-            row.PRICE ||
-            row.RETAIL_PRICE,
-        ),
-        wholesalePrice: parseNumber(row.wholesalePrice || row.precio_mayorista),
-        ivaPercentage: parseNumber(row.ivaPercentage || row.iva) || 21.0,
-        metadata: { initialStockImported: parsedStock },
-        color: row.color || row.COLOR ? String(row.color || row.COLOR) : null,
-        finish:
-          row.finish || row.acabado ? String(row.finish || row.acabado) : null,
-        volume: parseNumber(row.volume || row.volumen) || null,
-        volumeUnit:
-          row.volumeUnit || row.unidad_volumen
-            ? String(row.volumeUnit || row.unidad_volumen)
-            : null,
-        indoorOutdoor:
-          row.indoorOutdoor !== undefined ? Boolean(row.indoorOutdoor) : true,
-        baseType:
-          row.baseType || row.tipo_base
-            ? String(row.baseType || row.tipo_base)
-            : null,
-        supplierId: parseNumber(row.supplierId || row.proveedor_id) || null,
-        isActive: true,
-        images: [],
-        // ¡NUEVO!: Extraemos la cantidad para inyectarla en la Sucursal
-        initialStockQuantity: parsedStock,
-      };
-    });
+    let updatedCount = 0;
+    let createdCount = 0;
 
-    const validProducts = productsToProcess.filter(
-      (p) => p.sku !== "" && p.name !== "",
-    );
+    // Procesamiento secuencial seguro
+    for (const p of products) {
+      // 🧠 Pasamos el nombre por el motor de limpieza antes de buscar en BD
+      const name = normalizeProductName(String(p.name || ""));
+      const costPrice = Number(p.costPrice) || 0;
+      if (!name || costPrice <= 0) continue;
 
-    // Iniciamos la transacción con 60 SEGUNDOS de tiempo, porque ahora hará doble escritura
-    await prisma.$transaction(
-      async (tx) => {
-        // Usamos for...of para procesar fila por fila de forma estructurada
-        for (const p of validProducts) {
-          const { metadata, images, initialStockQuantity, ...updateData } = p;
+      const searchSku = String(p.sku || "").trim();
+      let existingProduct = null;
 
-          // 1. Guardamos la identidad en el Catálogo (Tabla Product)
-          const savedProduct = await tx.product.upsert({
-            where: { sku: p.sku },
-            update: updateData,
-            create: { ...updateData, metadata, images: [] },
-          });
+      // 1. Busca por SKU si no es autogenerado
+      if (searchSku && !searchSku.startsWith("SKU-AUTO")) {
+        existingProduct = await prisma.product.findFirst({
+          where: { sku: searchSku, isActive: true },
+        });
+      }
 
-          // 2. INYECCIÓN FÍSICA: Guardamos la cantidad en la Sucursal Principal (Tabla Stock)
-          await tx.stock.upsert({
-            where: {
-              productId_branchId: {
-                productId: savedProduct.id,
-                branchId: 1, // Por defecto al importar, va a la sucursal matriz (ID 1)
-              },
-            },
-            update: { quantity: initialStockQuantity }, // Si ya existe, pisamos la cantidad con la del Excel
-            create: {
-              productId: savedProduct.id,
-              branchId: 1,
-              quantity: initialStockQuantity,
-              minStock: 5,
-            },
-          });
-        }
-      },
-      {
-        maxWait: 15000,
-        timeout: 60000, // 60 segundos de paciencia para Prisma
-      },
-    );
+      // 2. Si no lo encuentra por SKU, busca por Nombre Normalizado Y Marca
+      if (!existingProduct) {
+        existingProduct = await prisma.product.findFirst({
+          where: { name: name, brand: safeBrandName, isActive: true },
+        });
+      }
+
+      const initialStock = Number(p.stock) || 0;
+      const incomingMetadata =
+        typeof p.metadata === "object" && p.metadata !== null ? p.metadata : {};
+
+      // 🔄 CAMINO A: ACTUALIZAR PRODUCTO EXISTENTE
+      if (existingProduct) {
+        const existingMeta =
+          typeof existingProduct.metadata === "object" &&
+          existingProduct.metadata !== null
+            ? existingProduct.metadata
+            : {};
+
+        const mergedMetadata = {
+          ...existingMeta,
+          ...incomingMetadata,
+          ...(initialStock > 0 ? { lastImportStock: initialStock } : {}),
+        };
+
+        await prisma.product.update({
+          where: { id: existingProduct.id },
+          data: {
+            costPrice: costPrice,
+            brand: safeBrandName,
+            supplierId:
+              supplierId !== null ? supplierId : existingProduct.supplierId,
+            metadata: mergedMetadata,
+          },
+        });
+
+        updatedCount++;
+      }
+      // 🆕 CAMINO B: CREAR PRODUCTO NUEVO
+      else {
+        const safeSku = searchSku || `SKU-AUTO-${Date.now()}-${createdCount}`;
+        const retailPrice = Math.round(
+          costPrice * (1 + margin / 100) * (1 + iva / 100),
+        );
+
+        const newMetadata = {
+          ...incomingMetadata,
+          initialStockImported: initialStock,
+          status: "optimal",
+        };
+
+        await prisma.product.create({
+          data: {
+            sku: safeSku,
+            name: name, // 🧠 Guardamos el nombre limpio y sin duplicados
+            category: "Importación Masiva",
+            brand: safeBrandName,
+            supplierId: supplierId,
+            costPrice: costPrice,
+            profitMargin: margin,
+            ivaPercentage: iva,
+            retailPrice: retailPrice,
+            images: [],
+            metadata: newMetadata,
+          },
+        });
+
+        createdCount++;
+      }
+    }
 
     res.status(201).json({
       message:
-        "Proceso de actualización masiva y sincronización de stock finalizado exitosamente.",
-      recordsFound: rawProducts.length,
-      importedCount: validProducts.length,
+        "Motor ETL UPSERT finalizado. Lista de precios actualizada exitosamente.",
+      importedCount: createdCount + updatedCount,
+      details: { created: createdCount, updated: updatedCount },
     });
   } catch (error) {
-    console.error("Error crítico en el motor de importación masiva:", error);
+    console.error(
+      "Error crítico en el motor ETL de importación masiva:",
+      error,
+    );
     res.status(500).json({
       error:
-        "Fallo estructural en la base de datos (Posible duplicidad de Códigos de Barra).",
+        "Fallo estructural al inyectar la lista de precios en la base de datos.",
     });
   }
 };

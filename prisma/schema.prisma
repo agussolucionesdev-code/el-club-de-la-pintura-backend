@@ -113,10 +113,12 @@ model Product {
   category       String     
   description    String?
   
-  costPrice      Float?    // Supplier cost (No IVA)
-  retailPrice    Float?    // Retail price
-  wholesalePrice Float?    // Wholesale/Contractor price
-  ivaPercentage  Float     @default(21.0) 
+  // 🛡️ MOTOR FINANCIERO ERP
+  costPrice      Float?    // Costo del Proveedor (Sin IVA)
+  profitMargin   Float      @default(30.0) // Margen de Ganancia (%)
+  ivaPercentage  Float      @default(21.0) // Impuesto (%)
+  retailPrice    Float?    // Precio Final al Público
+  wholesalePrice Float?    // Precio Mayorista (Opcional)
 
   color          String?  
   finish         String?  
@@ -127,12 +129,8 @@ model Product {
   metadata       Json?
   images         String[]   @default([]) 
   
-  // ==========================================
-  // INYECCIÓN DE SEGURIDAD FISCAL (Soft Delete)
-  // ==========================================
   isActive       Boolean    @default(true) 
   
-  // Link product to its primary supplier
   supplierId     Int?
   supplier       Supplier?  @relation(fields: [supplierId], references: [id])
 

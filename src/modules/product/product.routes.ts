@@ -9,6 +9,7 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
+  deleteAllProducts, // 🛡️ Importamos el motor nuclear
   uploadProductImage,
   importProductsFromExcel,
 } from "./product.controller";
@@ -17,11 +18,11 @@ const router = Router();
 
 router.get("/", getProducts);
 
+// 🛡️ REFACTOR: Quitamos upload.single("file") porque ahora recibe JSON
 router.post(
   "/import",
   authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
-  upload.single("file"),
   importProductsFromExcel,
 );
 
@@ -39,6 +40,14 @@ router.post(
   authorizeRoles("ADMIN", "ENCARGADO"),
   validate(createProductSchema),
   createProduct,
+);
+
+// 💣 RUTA NUCLEAR DE VACIADO (DEBE ir antes de /:id para que funcione bien)
+router.delete(
+  "/delete-all",
+  authenticateToken,
+  authorizeRoles("ADMIN"), // 🛡️ Ojo: Solo admins pueden detonar el catálogo
+  deleteAllProducts,
 );
 
 router.put(
