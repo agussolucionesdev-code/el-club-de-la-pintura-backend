@@ -274,7 +274,29 @@ export const transferStockBetweenBranches = async (
         ],
       });
 
-      return { source: updatedSource, target: updatedTarget };
+      const transfer = await tx.stockTransfer.create({
+        data: {
+          productId: parsedProductId,
+          fromBranchId: parsedFromBranchId,
+          toBranchId: parsedToBranchId,
+          quantity: parsedQuantity,
+          reason: transferReason,
+          userId: authUser.id,
+          status: "COMPLETED",
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: parsedFromBranchId,
+          action: "STOCK_TRANSFER_COMPLETED",
+          entityType: "StockTransfer",
+          entityId: transfer.id,
+        },
+      });
+
+      return { transfer, source: updatedSource, target: updatedTarget };
     });
 
     res.status(201).json({
