@@ -1,16 +1,47 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
-// ============================================================================
-// ESTADO DE CAJA: Verifica si la sucursal tiene un turno activo operando
-// ============================================================================
-export const getActiveShift = async (req: Request, res: Response) => {
+const calculateExpectedCashBalance = (shift: {
+  initialBalance: number;
+  payments: { amount: number; paymentMethod: string }[];
+  expenses: { amount: number }[];
+}) => {
+  const totalCashPayments = shift.payments.reduce((acc, payment) => {
+    return payment.paymentMethod.toUpperCase() === "CASH"
+      ? acc + payment.amount
+      : acc;
+  }, 0);
+
+  const totalExpenses = shift.expenses.reduce(
+    (acc, expense) => acc + expense.amount,
+    0,
+  );
+
+  return shift.initialBalance + totalCashPayments - totalExpenses;
+};
+
+export const getActiveShift = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const branchId = Number(req.params.branchId);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del operador.",
+      });
+    }
+
+    if (!Number.isInteger(branchId) || branchId <= 0) {
+      return res.status(400).json({
+        error: "La sucursal indicada no es valida.",
+      });
+    }
 
     const activeShift = await prisma.cashRegister.findFirst({
       where: {
-        branchId: branchId,
+        branchId,
         status: "OPEN",
       },
       include: {
@@ -27,16 +58,7 @@ export const getActiveShift = async (req: Request, res: Response) => {
       });
     }
 
-    const totalIncomes = activeShift.payments.reduce(
-      (acc, curr) => acc + curr.amount,
-      0,
-    );
-    const totalExpenses = activeShift.expenses.reduce(
-      (acc, curr) => acc + curr.amount,
-      0,
-    );
-    const currentExpectedBalance =
-      activeShift.initialBalance + totalIncomes - totalExpenses;
+    const currentExpectedBalance = calculateExpectedCashBalance(activeShift);
 
     res.status(200).json({
       message: "Turno activo recuperado.",
@@ -49,64 +71,89 @@ export const getActiveShift = async (req: Request, res: Response) => {
     console.error("Error al obtener estado de caja:", error);
     res
       .status(500)
-      .json({ error: "Fallo de conexión al consultar el cajón de dinero." });
+      .json({ error: "Fallo de conexion al consultar el cajon de dinero." });
   }
 };
 
-// ============================================================================
-// APERTURA DE CAJA: Inicia el día laboral con un fondo fijo
-// ============================================================================
-export const openShift = async (req: Request, res: Response) => {
+export const openShift = async (req: AuthRequest, res: Response) => {
   try {
-    // AHORA RECIBIMOS EL userId DESDE EL FRONTEND
-    const { initialBalance, branchId, userId } = req.body;
+    const authUser = getAuthUser(req);
+    const { initialBalance, branchId } = req.body;
+    const parsedBranchId = Number(branchId);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del operador.",
+      });
+    }
+
+    if (!Number.isInteger(parsedBranchId) || parsedBranchId <= 0) {
+      return res.status(400).json({
+        error: "La sucursal indicada no es valida.",
+      });
+    }
+
+    if (
+      authUser.role !== "ADMIN" &&
+      !authUser.branchIds.includes(parsedBranchId)
+    ) {
+      return res.status(403).json({
+        error: "No tienes acceso a la sucursal indicada.",
+      });
+    }
 
     const existingOpen = await prisma.cashRegister.findFirst({
-      where: { branchId: Number(branchId), status: "OPEN" },
+      where: { branchId: parsedBranchId, status: "OPEN" },
     });
 
     if (existingOpen) {
       return res.status(400).json({
         error:
-          "Atención: Ya existe un turno abierto en esta sucursal. Debe cerrarlo antes de iniciar uno nuevo.",
+          "Atencion: Ya existe un turno abierto en esta sucursal. Debe cerrarlo antes de iniciar uno nuevo.",
       });
     }
 
-    // Usamos el ID REAL del usuario que está abriendo la caja
     const newShift = await prisma.cashRegister.create({
       data: {
         initialBalance: Number(initialBalance),
-        userId: Number(userId || 1), // <-- ID dinámico inyectado
-        branchId: Number(branchId || 1),
+        userId: authUser.id,
+        branchId: parsedBranchId,
         status: "OPEN",
       },
     });
 
     res.status(201).json({
       message:
-        "Caja abierta exitosamente. ¡Que sea una excelente jornada de ventas!",
+        "Caja abierta exitosamente. Que sea una excelente jornada de ventas.",
       data: newShift,
     });
   } catch (error: unknown) {
-    console.error("Error crítico al abrir caja:", error);
+    console.error("Error critico al abrir caja:", error);
     res.status(500).json({
       error:
-        "Fallo de integridad: Verifique que el Usuario y la Sucursal existan en la base de datos.",
+        "Fallo de integridad: Verifique que el usuario y la sucursal existan en la base de datos.",
     });
   }
 };
 
-// ============================================================================
-// CIERRE DE CAJA (ARQUEO): Cierre ciego y cálculo de diferencias
-// ============================================================================
-export const closeShift = async (req: Request, res: Response) => {
+export const closeShift = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { id } = req.params;
     const { actualBalance, observations } = req.body;
 
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del operador.",
+      });
+    }
+
     const shift = await prisma.cashRegister.findUnique({
       where: { id: Number(id) },
-      include: { payments: true, expenses: true },
+      include: {
+        payments: true,
+        expenses: true,
+      },
     });
 
     if (!shift || shift.status === "CLOSED") {
@@ -115,38 +162,63 @@ export const closeShift = async (req: Request, res: Response) => {
       });
     }
 
-    const totalIncomes = shift.payments.reduce(
-      (acc, curr) => acc + curr.amount,
-      0,
-    );
-    const totalExpenses = shift.expenses.reduce(
-      (acc, curr) => acc + curr.amount,
-      0,
-    );
+    if (
+      authUser.role !== "ADMIN" &&
+      !authUser.branchIds.includes(shift.branchId)
+    ) {
+      return res.status(403).json({
+        error: "No tienes acceso a la sucursal donde se abrio esta caja.",
+      });
+    }
 
-    const expectedBalance = shift.initialBalance + totalIncomes - totalExpenses;
+    const expectedBalance = calculateExpectedCashBalance(shift);
     const discrepancy = Number(actualBalance) - expectedBalance;
 
-    const closedShift = await prisma.cashRegister.update({
-      where: { id: Number(id) },
-      data: {
-        status: "CLOSED",
-        closingTime: new Date(),
-        expectedBalance: expectedBalance,
-        actualBalance: Number(actualBalance),
-        discrepancy: discrepancy,
-        observations: observations || null,
-      },
+    const result = await prisma.$transaction(async (tx) => {
+      const closedShift = await tx.cashRegister.update({
+        where: { id: Number(id) },
+        data: {
+          status: "CLOSED",
+          closingTime: new Date(),
+          expectedBalance,
+          actualBalance: Number(actualBalance),
+          discrepancy,
+          observations: observations || null,
+        },
+      });
+
+      const receipt = await createInternalReceipt(tx, {
+        receiptType: "CASH_CLOSE",
+        branchId: shift.branchId,
+        cashRegisterId: shift.id,
+        sourceId: shift.id,
+        createdBy: authUser.id,
+        payload: {
+          cashRegisterId: shift.id,
+          openedAt: shift.openingTime,
+          closedAt: closedShift.closingTime,
+          initialBalance: shift.initialBalance,
+          expectedBalance,
+          actualBalance: Number(actualBalance),
+          discrepancy,
+          observations: observations || null,
+          paymentsCount: shift.payments.length,
+          expensesCount: shift.expenses.length,
+        },
+      });
+
+      return { closedShift, receipt };
     });
 
     res.status(200).json({
       message: "El turno ha sido cerrado y arqueado correctamente.",
-      data: closedShift,
+      data: result.closedShift,
+      receipt: result.receipt,
     });
   } catch (error: unknown) {
     console.error("Error al cerrar caja:", error);
     res.status(500).json({
-      error: "Fallo crítico al intentar realizar el cierre contable.",
+      error: "Fallo critico al intentar realizar el cierre contable.",
     });
   }
 };

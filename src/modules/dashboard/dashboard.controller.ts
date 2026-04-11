@@ -1,6 +1,111 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import * as ExcelJS from "exceljs"; // <-- LIBRERÍA CONTABLE INYECTADA
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+
+const buildBranchFilter = (
+  rawBranchId: unknown,
+  authUser: { role: string; branchIds: number[] },
+) => {
+  const branchId = rawBranchId === undefined ? 0 : Number(rawBranchId);
+
+  if (branchId === 0) {
+    return authUser.role === "ADMIN" ? undefined : { in: authUser.branchIds };
+  }
+
+  if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
+    throw new Error("No tienes acceso a la sucursal solicitada.");
+  }
+
+  return branchId;
+};
+
+export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const { branchId, from, to } = req.query;
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const branchFilter = buildBranchFilter(branchId, authUser);
+    const createdAt =
+      from || to
+        ? {
+            ...(from ? { gte: new Date(String(from)) } : {}),
+            ...(to ? { lte: new Date(String(to)) } : {}),
+          }
+        : undefined;
+    const scopedWhere = {
+      ...(branchFilter === undefined ? {} : { branchId: branchFilter }),
+      ...(createdAt ? { createdAt } : {}),
+    };
+
+    const [sales, payments, expenses, stocks] = await Promise.all([
+      prisma.sale.findMany({
+        where: scopedWhere,
+        include: { items: true },
+      }),
+      prisma.payment.findMany({ where: scopedWhere }),
+      prisma.expense.findMany({ where: scopedWhere }),
+      prisma.stock.findMany({
+        where:
+          branchFilter === undefined
+            ? undefined
+            : { branchId: branchFilter },
+        include: {
+          product: { select: { id: true, name: true, sku: true, brand: true } },
+          branch: { select: { id: true, name: true } },
+        },
+      }),
+    ]);
+
+    const totalBilled = sales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+    const totalDebt = sales.reduce((sum, sale) => sum + sale.balance, 0);
+    const totalCollected = payments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0,
+    );
+    const totalExpenses = expenses.reduce(
+      (sum, expense) => sum + expense.amount,
+      0,
+    );
+    const totalCost = sales.reduce((saleSum, sale) => {
+      const itemsCost = sale.items.reduce(
+        (itemSum, item) => itemSum + Number(item.unitCost || 0) * item.quantity,
+        0,
+      );
+      return saleSum + itemsCost;
+    }, 0);
+    const stockAlerts = stocks.filter(
+      (stock) => stock.quantity <= stock.minStock,
+    );
+
+    res.status(200).json({
+      scope: { branchId: branchId || "ALL", from: from || null, to: to || null },
+      kpis: {
+        totalBilled,
+        totalCollected,
+        totalDebt,
+        totalExpenses,
+        grossProfit: totalBilled - totalCost,
+        netProfit: totalBilled - totalCost - totalExpenses,
+        stockAlerts: stockAlerts.length,
+        salesCount: sales.length,
+      },
+      stockAlerts: stockAlerts.slice(0, 50),
+    });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "No se pudo generar el resumen del dashboard.";
+    res.status(400).json({ error: errorMsg });
+  }
+};
 
 // ============================================================================
 // MOTOR FINANCIERO: Resumen General de Rentabilidad

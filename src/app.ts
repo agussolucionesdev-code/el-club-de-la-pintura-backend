@@ -25,6 +25,9 @@ import supplierRoutes from "./modules/supplier/supplier.routes";
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
 import expenseRoutes from "./modules/expense/expense.routes";
 import dashboardRoutes from "./modules/dashboard/dashboard.routes";
+import syncRoutes from "./modules/sync/sync.routes";
+import purchaseRoutes from "./modules/purchase/purchase.routes";
+import internalReceiptRoutes from "./modules/internal-receipt/internal-receipt.routes";
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -63,6 +66,9 @@ app.use("/api/suppliers", supplierRoutes); // 👈 ACÁ ESTÁ EL PLURAL MAGICO
 app.use("/api/cash-registers", cashRegisterRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/sync", syncRoutes);
+app.use("/api/purchases", purchaseRoutes);
+app.use("/api/internal-receipts", internalReceiptRoutes);
 
 // ============================================================================
 // 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)

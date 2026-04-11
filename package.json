@@ -6,7 +6,10 @@
     "dev": "nodemon src/app.ts",
     "build": "tsc",
     "start": "node dist/app.js",
-    "test": "jest --detectOpenHandles"
+    "test": "jest --detectOpenHandles",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:status": "prisma migrate status"
   },
   "keywords": [],
   "author": "",

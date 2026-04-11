@@ -1,11 +1,22 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
-// ============================================================================
-// 1. MOTOR TRANSACCIONAL DE VENTAS Y CUENTAS CORRIENTES (ERP Level)
-// ============================================================================
-export const createSale = async (req: Request, res: Response) => {
+const ensureBranchAccess = (
+  branchId: number,
+  authUser: { role: string; branchIds: number[] },
+) => {
+  if (authUser.role === "ADMIN") return;
+
+  if (!authUser.branchIds.includes(branchId)) {
+    throw new Error("No tienes acceso a la sucursal indicada.");
+  }
+};
+
+export const createSale = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const {
       branchId,
       cashRegisterId,
@@ -16,17 +27,26 @@ export const createSale = async (req: Request, res: Response) => {
       pickedUpBy,
     } = req.body;
 
-    const userId = (req as any).user.id;
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del vendedor.",
+      });
+    }
+
+    const parsedBranchId = Number(branchId);
+    ensureBranchAccess(parsedBranchId, authUser);
 
     if (paymentMethod === "CREDIT_ACCOUNT") {
-      if (!customerId)
+      if (!customerId) {
         throw new Error(
-          "Operación rechazada: Las ventas en Cuenta Corriente exigen un Cliente Titular registrado.",
+          "Operacion rechazada: Las ventas en cuenta corriente exigen un cliente titular registrado.",
         );
-      if (!pickedUpBy || pickedUpBy.trim().length < 3)
+      }
+      if (!pickedUpBy || pickedUpBy.trim().length < 3) {
         throw new Error(
-          "Operación rechazada: Debe especificar el Nombre y DNI de la persona autorizada al retiro.",
+          "Operacion rechazada: Debe especificar el nombre y DNI de la persona autorizada al retiro.",
         );
+      }
     }
 
     const result = await prisma.$transaction(async (tx) => {
@@ -36,7 +56,13 @@ export const createSale = async (req: Request, res: Response) => {
 
       if (!activeRegister || activeRegister.status !== "OPEN") {
         throw new Error(
-          "Operación bloqueada: No hay un turno de caja abierto para registrar esta operación.",
+          "Operacion bloqueada: No hay un turno de caja abierto para registrar esta operacion.",
+        );
+      }
+
+      if (activeRegister.branchId !== parsedBranchId) {
+        throw new Error(
+          "La caja abierta no pertenece a la misma sucursal de la venta.",
         );
       }
 
@@ -52,8 +78,8 @@ export const createSale = async (req: Request, res: Response) => {
           balance: initialBalance,
           pickedUpBy: isCredit ? pickedUpBy : null,
           customerId: customerId ? Number(customerId) : null,
-          branchId: Number(branchId),
-          userId: Number(userId),
+          branchId: parsedBranchId,
+          userId: authUser.id,
           cashRegisterId: Number(cashRegisterId),
         },
       });
@@ -63,14 +89,14 @@ export const createSale = async (req: Request, res: Response) => {
           where: {
             productId_branchId: {
               productId: Number(item.productId),
-              branchId: Number(branchId),
+              branchId: parsedBranchId,
             },
           },
         });
 
         if (!currentStock || currentStock.quantity < Number(item.quantity)) {
           throw new Error(
-            `Inconsistencia de Inventario: Stock insuficiente para el producto ID ${item.productId}.`,
+            `Inconsistencia de inventario: stock insuficiente para el producto ID ${item.productId}.`,
           );
         }
 
@@ -96,56 +122,92 @@ export const createSale = async (req: Request, res: Response) => {
             quantity: Number(item.quantity),
             reason: `Venta #${newSale.id} ${isCredit ? "(Cuenta Corriente)" : ""}`,
             productId: Number(item.productId),
-            branchId: Number(branchId),
-            userId: Number(userId),
+            branchId: parsedBranchId,
+            userId: authUser.id,
           },
         });
       }
 
-      if (!isCredit && paymentMethod === "CASH") {
-        await tx.payment.create({
-          data: {
-            amount: Number(totalAmount),
-            paymentMethod: "CASH",
-            saleId: newSale.id,
-            userId: Number(userId),
-            branchId: Number(branchId),
-            cashRegisterId: Number(cashRegisterId),
-          },
-        });
-      }
+      const immediatePayment = !isCredit
+        ? await tx.payment.create({
+            data: {
+              amount: Number(totalAmount),
+              paymentMethod,
+              saleId: newSale.id,
+              userId: authUser.id,
+              branchId: parsedBranchId,
+              cashRegisterId: Number(cashRegisterId),
+            },
+          })
+        : null;
 
-      return newSale;
+      const receipt = await createInternalReceipt(tx, {
+        receiptType: "SALE",
+        branchId: parsedBranchId,
+        cashRegisterId: Number(cashRegisterId),
+        saleId: newSale.id,
+        paymentId: immediatePayment?.id,
+        sourceId: newSale.id,
+        createdBy: authUser.id,
+        payload: {
+          saleId: newSale.id,
+          totalAmount: Number(totalAmount),
+          paymentMethod,
+          status: initialStatus,
+          balance: initialBalance,
+          customerId: customerId ? Number(customerId) : null,
+          pickedUpBy: isCredit ? pickedUpBy : null,
+          items,
+        },
+      });
+
+      return { sale: newSale, receipt };
     });
 
     res.status(201).json({
       message:
         paymentMethod === "CREDIT_ACCOUNT"
-          ? "Venta a Crédito registrada."
-          : "Venta procesada con éxito.",
-      data: result,
+          ? "Venta a credito registrada."
+          : "Venta procesada con exito.",
+      data: result.sale,
+      receipt: result.receipt,
     });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "Error crítico al procesar la venta.";
+        : "Error critico al procesar la venta.";
     res.status(400).json({ error: errorMsg });
   }
 };
 
-// ============================================================================
-// 2. RADAR DE DEUDORES: Obtener todas las Cuentas Corrientes Pendientes
-// ============================================================================
-export const getPendingAccounts = async (req: Request, res: Response) => {
+export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const branchId = Number(req.params.branchId);
+    const pendingStatuses = ["PENDING", "PARTIAL"];
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const whereClause =
+      branchId === 0
+        ? authUser.role === "ADMIN"
+          ? { status: { in: pendingStatuses } }
+          : {
+              branchId: { in: authUser.branchIds },
+              status: { in: pendingStatuses },
+            }
+        : {
+            branchId,
+            status: { in: pendingStatuses },
+          };
 
     const pendingSales = await prisma.sale.findMany({
-      where: {
-        branchId: branchId === 0 ? undefined : branchId,
-        status: { in: ["PENDING", "PARTIAL"] },
-      },
+      where: whereClause,
       include: {
         customer: { select: { id: true, name: true, type: true, phone: true } },
         user: { select: { name: true } },
@@ -159,18 +221,26 @@ export const getPendingAccounts = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================================
-// 3. HISTORIAL GENERAL: Obtener listado de ventas (RESTAURADO)
-// ============================================================================
-export const getSales = async (req: Request, res: Response) => {
+export const getSales = async (req: AuthRequest, res: Response) => {
   try {
-    // Tomamos las últimas 100 ventas para no saturar la red (paginación básica)
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
     const sales = await prisma.sale.findMany({
+      where:
+        authUser.role === "ADMIN"
+          ? undefined
+          : { branchId: { in: authUser.branchIds } },
       take: 100,
       orderBy: { createdAt: "desc" },
       include: {
         customer: { select: { name: true, document: true } },
-        user: { select: { name: true } }, // El empleado que hizo la venta
+        user: { select: { name: true } },
       },
     });
 
@@ -182,32 +252,37 @@ export const getSales = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================================
-// 4. DETALLE DE TICKET: Recuperar venta para PDF o Consulta (RESTAURADO Y MEJORADO)
-// ============================================================================
-export const getSaleById = async (req: Request, res: Response) => {
+export const getSaleById = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const saleId = Number(req.params.id);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
 
     const sale = await prisma.sale.findUnique({
       where: { id: saleId },
       include: {
-        customer: true, // Datos del cliente
-        user: { select: { name: true } }, // Cajero
+        customer: true,
+        user: { select: { name: true } },
         items: {
           include: {
             product: { select: { name: true, sku: true, brand: true } },
           },
         },
         payments: {
-          // 🛡️ VITAL PARA FIADOS: Trae todos los pagos a cuenta que hizo
           orderBy: { createdAt: "desc" },
           include: { user: { select: { name: true } } },
         },
       },
     });
 
-    if (!sale) throw new Error("Venta o Ticket no encontrado en el sistema.");
+    if (!sale) throw new Error("Venta o ticket no encontrado en el sistema.");
+
+    ensureBranchAccess(sale.branchId, authUser);
 
     res
       .status(200)

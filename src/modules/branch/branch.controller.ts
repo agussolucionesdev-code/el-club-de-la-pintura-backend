@@ -1,12 +1,26 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
 // Obtención del listado de sucursales
 // Consulta a la base de datos y retorno de registros en formato JSON
-export const getBranches = async (req: Request, res: Response) => {
+export const getBranches = async (req: AuthRequest, res: Response) => {
   try {
-    // Solicitud de todos los registros de la tabla Branch
-    const branches = await prisma.branch.findMany();
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const branches = await prisma.branch.findMany({
+      where:
+        authUser.role === "ADMIN"
+          ? undefined
+          : { id: { in: authUser.branchIds } },
+      orderBy: { name: "asc" },
+    });
 
     // Emisión de respuesta con código HTTP 200 (Éxito)
     res.status(200).json(branches);

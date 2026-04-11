@@ -25,7 +25,7 @@ const SALE_STATUS = ["PAID", "PENDING", "PARTIAL"] as const;
 export const createSaleSchema = z.object({
   body: z.object({
     branchId: z.number().int().positive("La sucursal es obligatoria."),
-    userId: z.number().int().positive("El usuario es obligatorio."),
+    userId: z.number().int().positive("El usuario es obligatorio.").optional(),
     customerId: z.number().int().positive().optional().nullable(),
     cashRegisterId: z
       .number()

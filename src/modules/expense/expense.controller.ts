@@ -1,83 +1,150 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
-export const getExpenses = async (req: Request, res: Response) => {
+const calculateAvailableCash = (shift: {
+  initialBalance: number;
+  payments: { amount: number; paymentMethod: string }[];
+  expenses: { amount: number }[];
+}) => {
+  const totalCashPayments = shift.payments.reduce((acc, payment) => {
+    return payment.paymentMethod.toUpperCase() === "CASH"
+      ? acc + payment.amount
+      : acc;
+  }, 0);
+
+  const totalExpenses = shift.expenses.reduce(
+    (acc, expense) => acc + expense.amount,
+    0,
+  );
+
+  return shift.initialBalance + totalCashPayments - totalExpenses;
+};
+
+export const getExpenses = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
     const expenses = await prisma.expense.findMany({
+      where:
+        authUser.role === "ADMIN"
+          ? undefined
+          : { branchId: { in: authUser.branchIds } },
       orderBy: { createdAt: "desc" },
       include: { user: { select: { name: true } } },
     });
+
     res
       .status(200)
       .json({ message: "Libro diario de egresos recuperado.", data: expenses });
-  } catch (error: any) {
+  } catch (error) {
     res.status(500).json({ error: "Fallo al procesar el historial." });
   }
 };
 
-export const registerExpense = async (req: Request, res: Response) => {
+export const registerExpense = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { amount, reason, category, type, branchId, cashRegisterId } =
       req.body;
-    const authUser = (req as any).user;
     const withdrawalAmount = Number(amount);
 
-    // 🛡️ DEBUG: Si Zod borró el ID, avisamos sin usar la palabra prohibida
-    if (!cashRegisterId) {
-      return res.status(400).json({
-        error:
-          "ERROR DE ZOD: El servidor no recibió el ID de la registradora. Verificá el schema.",
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
       });
     }
 
-    const userBranches = authUser.branchIds || [];
-    if (authUser.role !== "ADMIN" && !userBranches.includes(Number(branchId))) {
-      return res
-        .status(403)
-        .json({ error: "No tienes acceso a esta sucursal." });
+    if (!cashRegisterId) {
+      return res.status(400).json({
+        error: "Falta el identificador de la registradora.",
+      });
+    }
+
+    if (
+      authUser.role !== "ADMIN" &&
+      !authUser.branchIds.includes(Number(branchId))
+    ) {
+      return res.status(403).json({ error: "No tienes acceso a esta sucursal." });
     }
 
     const transactionResult = await prisma.$transaction(async (tx) => {
       const activeShift = await tx.cashRegister.findUnique({
         where: { id: Number(cashRegisterId) },
+        include: {
+          expenses: true,
+          payments: true,
+        },
       });
 
-      // 🛡️ Sin la palabra prohibida
       if (!activeShift || activeShift.status !== "OPEN") {
-        throw new Error("Operación denegada: La registradora no está abierta.");
+        throw new Error("Operacion denegada: La registradora no esta abierta.");
       }
 
-      const rawBalance =
-        activeShift.expectedBalance ??
-        (activeShift as any).currentExpectedBalance ??
-        0;
-      const currentCashInDrawer = Number(rawBalance);
+      if (activeShift.branchId !== Number(branchId)) {
+        throw new Error(
+          "La caja abierta no pertenece a la sucursal seleccionada.",
+        );
+      }
+
+      const availableCash = calculateAvailableCash(activeShift);
+
+      if (withdrawalAmount > availableCash) {
+        throw new Error(
+          "No hay efectivo suficiente en la caja para registrar este egreso.",
+        );
+      }
 
       const newExpense = await tx.expense.create({
         data: {
           amount: withdrawalAmount,
-          reason: reason,
-          category: category,
+          reason,
+          category,
           type: type || "VARIABLE",
-          branchId: Number(branchId),
-          userId: Number(authUser.id),
+          branchId: activeShift.branchId,
+          userId: authUser.id,
           cashRegisterId: activeShift.id,
         },
       });
 
       await tx.cashRegister.update({
         where: { id: activeShift.id },
-        data: { expectedBalance: currentCashInDrawer - withdrawalAmount },
+        data: { expectedBalance: availableCash - withdrawalAmount },
       });
 
-      return newExpense;
+      const receipt = await createInternalReceipt(tx, {
+        receiptType: "EXPENSE",
+        branchId: activeShift.branchId,
+        cashRegisterId: activeShift.id,
+        sourceId: newExpense.id,
+        createdBy: authUser.id,
+        payload: {
+          expenseId: newExpense.id,
+          amount: withdrawalAmount,
+          reason,
+          category,
+          type: type || "VARIABLE",
+          previousExpectedBalance: availableCash,
+          newExpectedBalance: availableCash - withdrawalAmount,
+        },
+      });
+
+      return { expense: newExpense, receipt };
     });
 
     res.status(201).json({
       message: "Egreso registrado correctamente.",
-      data: transactionResult,
+      data: transactionResult.expense,
+      receipt: transactionResult.receipt,
     });
-  } catch (error: any) {
+  } catch (error) {
     if (error instanceof Error) {
       return res.status(400).json({ error: error.message });
     }

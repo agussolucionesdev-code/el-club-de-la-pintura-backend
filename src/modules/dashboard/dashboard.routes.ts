@@ -9,20 +9,38 @@ import {
   getProductsAnalytics,
   getCreditRiskAnalytics,
   exportFinancialReportToExcel,
+  getDashboardSummary,
 } from "./dashboard.controller";
 
 const router = Router();
 
-router.use(authenticateToken, authorizeRoles("ADMIN"));
+router.use(authenticateToken);
 
-router.get("/finance", validate(dashboardFilterSchema), getFinancialSummary);
-router.get("/expenses", validate(dashboardFilterSchema), getExpensesAnalytics);
-router.get("/products", validate(dashboardFilterSchema), getProductsAnalytics);
+router.get("/summary", authorizeRoles("ADMIN", "ENCARGADO"), getDashboardSummary);
+router.get(
+  "/finance",
+  authorizeRoles("ADMIN"),
+  validate(dashboardFilterSchema),
+  getFinancialSummary,
+);
+router.get(
+  "/expenses",
+  authorizeRoles("ADMIN"),
+  validate(dashboardFilterSchema),
+  getExpensesAnalytics,
+);
+router.get(
+  "/products",
+  authorizeRoles("ADMIN"),
+  validate(dashboardFilterSchema),
+  getProductsAnalytics,
+);
 router.get(
   "/credit-risk",
+  authorizeRoles("ADMIN"),
   validate(dashboardFilterSchema),
   getCreditRiskAnalytics,
 );
-router.get("/export", exportFinancialReportToExcel);
+router.get("/export", authorizeRoles("ADMIN"), exportFinancialReportToExcel);
 
 export default router;

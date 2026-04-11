@@ -308,3 +308,111 @@ model Payment {
 
   createdAt     DateTime @default(now())
 }
+
+// ------------------------------------------------------
+// ERP OFFLINE / AUDIT / INTERNAL OPERATIONS SCAFFOLDING
+// ------------------------------------------------------
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  actorUserId Int?
+  branchId    Int?
+  action      String
+  entityType  String
+  entityId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  @@index([actorUserId])
+  @@index([branchId])
+  @@index([entityType, entityId])
+}
+
+model SyncOperation {
+  id             String    @id @default(uuid())
+  idempotencyKey String    @unique
+  branchId       Int?
+  userId         Int?
+  type           String
+  status         String    @default("PENDING")
+  payload        Json
+  error          String?
+  createdAt      DateTime  @default(now())
+  processedAt    DateTime?
+
+  @@index([branchId])
+  @@index([userId])
+  @@index([status])
+}
+
+model SyncCheckpoint {
+  id           Int       @id @default(autoincrement())
+  deviceId     String
+  userId       Int
+  branchId     Int?
+  lastPulledAt DateTime?
+  lastPushedAt DateTime?
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([deviceId, userId, branchId])
+}
+
+model StockTransfer {
+  id           String   @id @default(uuid())
+  productId    Int
+  fromBranchId Int
+  toBranchId   Int
+  quantity     Int
+  reason       String?
+  userId       Int
+  status       String   @default("COMPLETED")
+  createdAt    DateTime @default(now())
+
+  @@index([productId])
+  @@index([fromBranchId])
+  @@index([toBranchId])
+}
+
+model PurchaseOrder {
+  id         String   @id @default(uuid())
+  supplierId Int?
+  branchId   Int
+  status     String   @default("DRAFT")
+  items      Json
+  createdBy  Int
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([supplierId])
+  @@index([branchId])
+}
+
+model PurchaseReceipt {
+  id              String   @id @default(uuid())
+  purchaseOrderId String?
+  supplierId      Int?
+  branchId        Int
+  items           Json
+  receivedBy      Int
+  receivedAt      DateTime @default(now())
+
+  @@index([purchaseOrderId])
+  @@index([branchId])
+}
+
+model InternalReceipt {
+  id             String   @id @default(uuid())
+  receiptNumber  String   @unique
+  receiptType    String
+  branchId       Int
+  cashRegisterId Int?
+  saleId         Int?
+  paymentId      Int?
+  payload        Json
+  createdBy      Int
+  createdAt      DateTime @default(now())
+
+  @@index([branchId])
+  @@index([saleId])
+  @@index([paymentId])
+}

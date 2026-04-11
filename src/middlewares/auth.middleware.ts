@@ -1,13 +1,47 @@
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import jwt, { JwtPayload } from "jsonwebtoken";
 
-// Extensión de la interfaz global Request de Express
-export interface AuthRequest extends Request {
-  user?: string | jwt.JwtPayload;
+export interface AuthenticatedUser {
+  id: number;
+  role: string;
+  branchIds: number[];
 }
 
-// INTERCEPTOR DE SEGURIDAD: Validación de Identidad (JWT)
-// Acción: Desencriptación y verificación de firmas criptográficas
+export interface AuthRequest extends Request {
+  user?: AuthenticatedUser;
+}
+
+const toNumberArray = (value: unknown): number[] => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0);
+};
+
+const parseAuthenticatedUser = (
+  decoded: string | JwtPayload,
+): AuthenticatedUser | null => {
+  if (typeof decoded === "string") return null;
+
+  const id = Number(decoded.id);
+  const role = typeof decoded.role === "string" ? decoded.role : "";
+  const branchIds = toNumberArray(decoded.branchIds);
+
+  if (!Number.isInteger(id) || id <= 0 || role.trim() === "") {
+    return null;
+  }
+
+  return { id, role, branchIds };
+};
+
+export const getAuthUser = (
+  req: Request | AuthRequest,
+): AuthenticatedUser | null => {
+  const user = (req as AuthRequest).user;
+  return user ?? null;
+};
+
 export const authenticateToken = (
   req: AuthRequest,
   res: Response,
@@ -16,7 +50,6 @@ export const authenticateToken = (
   try {
     const authHeader = req.headers.authorization;
 
-    // 1. Verificación de presencia de cabecera
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
         error: "Acceso denegado. Se requiere un token de seguridad.",
@@ -26,31 +59,32 @@ export const authenticateToken = (
     const token = authHeader.split(" ")[1];
     const secret = process.env.JWT_SECRET;
 
-    // 2. Validación de integridad de la clave maestra
     if (!secret) {
       throw new Error("JWT_SECRET no detectado en las variables de entorno.");
     }
 
-    // 3. Validación de integridad del token
     if (!token) {
       return res.status(401).json({
-        error: "Estructura de token inválida.",
+        error: "Estructura de token invalida.",
       });
     }
 
-    // SOLUCIÓN AL ERROR TS2769:
-    // Aplicamos 'as string' para garantizar a TypeScript que los valores son válidos
-    // después de haber pasado los filtros de seguridad anteriores.
-    const decoded = jwt.verify(token as string, secret as string);
+    const decoded = jwt.verify(token, secret);
+    const authenticatedUser = parseAuthenticatedUser(decoded);
 
-    // 4. Inyección del payload decodificado en la solicitud
-    req.user = decoded;
+    if (!authenticatedUser) {
+      return res.status(403).json({
+        error: "El token recibido no contiene una identidad valida.",
+      });
+    }
+
+    req.user = authenticatedUser;
 
     next();
   } catch (error) {
-    console.error("Fallo crítico en validación de identidad:", error);
+    console.error("Fallo critico en validacion de identidad:", error);
     res.status(403).json({
-      error: "Sesión inválida o expirada. Por favor, reingrese al sistema.",
+      error: "Sesion invalida o expirada. Por favor, reingrese al sistema.",
     });
   }
 };

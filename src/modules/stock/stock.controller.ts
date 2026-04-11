@@ -1,70 +1,74 @@
-import { Request, Response } from "express";
+import { Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
-// ============================================================================
-// LECTURA DE INVENTARIO: Catálogo Maestro Completo + Stock Cruzado
-// ============================================================================
-export const getStockByBranch = async (req: Request, res: Response) => {
+const ensureBranchAccess = (
+  branchId: number,
+  authUser: { role: string; branchIds: number[] },
+) => {
+  if (authUser.role === "ADMIN") return;
+
+  if (!authUser.branchIds.includes(branchId)) {
+    throw new Error("No tienes acceso a la sucursal indicada.");
+  }
+};
+
+export const getStockByBranch = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const branchId = Number(req.params.branchId);
 
-    // 1. ESTRATEGIA ERP (LEFT JOIN LOGIC):
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const stocksFilter =
+      branchId === 0
+        ? authUser.role === "ADMIN"
+          ? true
+          : { where: { branchId: { in: authUser.branchIds } } }
+        : { where: { branchId } };
+
     const products = await prisma.product.findMany({
       where: { isActive: true },
       include: {
-        stocks: branchId === 0 ? true : { where: { branchId: branchId } },
+        stocks: stocksFilter,
       },
       orderBy: { name: "asc" },
     });
 
-    // 2. Mapeo estructural para el Frontend
-    const inventory = products.map((p) => {
-      let totalQuantity = 0;
-      let minStock = 5;
-      let stockId = Number(`${p.id}999`);
+    const inventory = products.map((product) => {
+      const productStocks = Array.isArray(product.stocks) ? product.stocks : [];
+      const firstStock = productStocks[0];
 
-      // BLINDAJE 1: Forzamos matemáticamente a que sea un Array
-      const productStocks = Array.isArray(p.stocks) ? p.stocks : [];
+      const quantity =
+        branchId === 0
+          ? productStocks.reduce((acc, stock) => acc + stock.quantity, 0)
+          : firstStock?.quantity ?? 0;
 
-      if (productStocks.length > 0) {
-        // BLINDAJE 2: Extracción segura para evitar el error 'noUncheckedIndexedAccess'
-        const firstStock = productStocks[0];
-
-        if (branchId === 0) {
-          // CONSOLIDADO MULTI-SUCURSAL
-          totalQuantity = productStocks.reduce((acc, stock) => {
-            return acc + (stock?.quantity || 0);
-          }, 0);
-
-          if (firstStock) {
-            minStock = firstStock.minStock;
-            stockId = firstStock.id;
-          }
-        } else {
-          // SUCURSAL INDIVIDUAL
-          if (firstStock) {
-            totalQuantity = firstStock.quantity;
-            minStock = firstStock.minStock;
-            stockId = firstStock.id;
-          }
-        }
-      }
+      const minStock = firstStock?.minStock ?? 5;
+      const stockId = firstStock?.id ?? Number(`${product.id}999`);
 
       return {
         id: stockId,
-        quantity: totalQuantity,
-        minStock: minStock,
-        productId: p.id,
-        branchId: branchId === 0 ? 1 : branchId,
+        quantity,
+        minStock,
+        productId: product.id,
+        branchId: branchId === 0 ? 0 : branchId,
         product: {
-          id: p.id,
-          name: p.name,
-          sku: p.sku,
-          barcode: p.barcode,
-          category: p.category,
-          brand: p.brand,
-          retailPrice: p.retailPrice,
-          imageUrl: p.images && p.images.length > 0 ? p.images[0] : undefined,
+          id: product.id,
+          name: product.name,
+          sku: product.sku,
+          barcode: product.barcode,
+          category: product.category,
+          brand: product.brand,
+          retailPrice: product.retailPrice,
+          imageUrl:
+            product.images && product.images.length > 0
+              ? product.images[0]
+              : undefined,
         },
       };
     });
@@ -76,34 +80,31 @@ export const getStockByBranch = async (req: Request, res: Response) => {
   } catch (error: unknown) {
     console.error("Error en getStockByBranch:", error);
     res.status(500).json({
-      error: "Fallo crítico al cruzar el catálogo con el inventario físico.",
+      error: "Fallo critico al cruzar el catalogo con el inventario fisico.",
     });
   }
 };
 
-// ============================================================================
-// AJUSTE DE INVENTARIO: Movimientos manuales (Entradas, Salidas, Ajustes)
-// ============================================================================
-export const updateStock = async (req: Request, res: Response) => {
+export const updateStock = async (req: AuthRequest, res: Response) => {
   try {
-    const { productId, branchId, quantity, type, reason, userId } = req.body;
+    const authUser = getAuthUser(req);
+    const { productId, branchId, quantity, type, reason } = req.body;
+    const parsedBranchId = Number(branchId);
 
-    // 🛡️ EXTRACCIÓN DE IDENTIDAD: Intentamos sacar el ID del Token, si falla, usamos el que mandó el Frontend.
-    // Esto es vital para que la base de datos sepa quién hizo el movimiento.
-    const operatorId = (req as any).user?.id || userId;
-
-    if (!operatorId) {
-      throw new Error(
-        "No se pudo identificar la credencial del usuario para la auditoría.",
-      );
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
     }
+
+    ensureBranchAccess(parsedBranchId, authUser);
 
     const result = await prisma.$transaction(async (tx) => {
       const currentStock = await tx.stock.findUnique({
         where: {
           productId_branchId: {
             productId: Number(productId),
-            branchId: Number(branchId),
+            branchId: parsedBranchId,
           },
         },
       });
@@ -111,35 +112,34 @@ export const updateStock = async (req: Request, res: Response) => {
       let newQuantity = Number(quantity);
 
       if (currentStock) {
-        if (type === "ADD")
+        if (type === "ADD") {
           newQuantity = currentStock.quantity + Number(quantity);
+        }
         if (type === "SUBTRACT") {
           if (currentStock.quantity < Number(quantity)) {
             throw new Error(
-              "Operación rechazada: Stock insuficiente para el descuento solicitado.",
+              "Operacion rechazada: Stock insuficiente para el descuento solicitado.",
             );
           }
           newQuantity = currentStock.quantity - Number(quantity);
         }
-      } else {
-        if (type === "SUBTRACT") {
-          throw new Error(
-            "Operación rechazada: El producto no tiene stock registrado para descontar.",
-          );
-        }
+      } else if (type === "SUBTRACT") {
+        throw new Error(
+          "Operacion rechazada: El producto no tiene stock registrado para descontar.",
+        );
       }
 
       const updatedStock = await tx.stock.upsert({
         where: {
           productId_branchId: {
             productId: Number(productId),
-            branchId: Number(branchId),
+            branchId: parsedBranchId,
           },
         },
         update: { quantity: newQuantity },
         create: {
           productId: Number(productId),
-          branchId: Number(branchId),
+          branchId: parsedBranchId,
           quantity: newQuantity,
           minStock: 5,
         },
@@ -147,12 +147,12 @@ export const updateStock = async (req: Request, res: Response) => {
 
       await tx.movement.create({
         data: {
-          type: type,
+          type,
           quantity: Number(quantity),
           reason: reason || "Ajuste manual de inventario",
           productId: Number(productId),
-          branchId: Number(branchId),
-          userId: Number(operatorId), // 🛡️ CORRECCIÓN: Usamos la identidad real en lugar de un 1 fijo
+          branchId: parsedBranchId,
+          userId: authUser.id,
         },
       });
 
@@ -160,7 +160,7 @@ export const updateStock = async (req: Request, res: Response) => {
     });
 
     res.status(200).json({
-      message: `Stock actualizado con éxito. Razón: ${reason || "Ajuste manual"}`,
+      message: `Stock actualizado con exito. Razon: ${reason || "Ajuste manual"}`,
       data: result,
     });
   } catch (error: unknown) {
@@ -170,18 +170,148 @@ export const updateStock = async (req: Request, res: Response) => {
   }
 };
 
-// ============================================================================
-// CONFIGURACIÓN DE ALERTAS: Actualizar el umbral de stock mínimo
-// ============================================================================
-export const updateStockThresholds = async (req: Request, res: Response) => {
+export const transferStockBetweenBranches = async (
+  req: AuthRequest,
+  res: Response,
+) => {
   try {
+    const authUser = getAuthUser(req);
+    const { productId, fromBranchId, toBranchId, quantity, reason } = req.body;
+    const parsedProductId = Number(productId);
+    const parsedFromBranchId = Number(fromBranchId);
+    const parsedToBranchId = Number(toBranchId);
+    const parsedQuantity = Number(quantity);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    if (
+      !Number.isInteger(parsedProductId) ||
+      !Number.isInteger(parsedFromBranchId) ||
+      !Number.isInteger(parsedToBranchId) ||
+      !Number.isInteger(parsedQuantity) ||
+      parsedProductId <= 0 ||
+      parsedFromBranchId <= 0 ||
+      parsedToBranchId <= 0 ||
+      parsedQuantity <= 0
+    ) {
+      return res.status(400).json({
+        error:
+          "Producto, sucursales y cantidad son obligatorios para transferir stock.",
+      });
+    }
+
+    if (parsedFromBranchId === parsedToBranchId) {
+      return res.status(400).json({
+        error: "La sucursal de origen y destino deben ser distintas.",
+      });
+    }
+
+    ensureBranchAccess(parsedFromBranchId, authUser);
+    ensureBranchAccess(parsedToBranchId, authUser);
+
+    const result = await prisma.$transaction(async (tx) => {
+      const sourceStock = await tx.stock.findUnique({
+        where: {
+          productId_branchId: {
+            productId: parsedProductId,
+            branchId: parsedFromBranchId,
+          },
+        },
+      });
+
+      if (!sourceStock || sourceStock.quantity < parsedQuantity) {
+        throw new Error("Stock insuficiente en la sucursal de origen.");
+      }
+
+      const updatedSource = await tx.stock.update({
+        where: { id: sourceStock.id },
+        data: { quantity: sourceStock.quantity - parsedQuantity },
+      });
+
+      const updatedTarget = await tx.stock.upsert({
+        where: {
+          productId_branchId: {
+            productId: parsedProductId,
+            branchId: parsedToBranchId,
+          },
+        },
+        update: { quantity: { increment: parsedQuantity } },
+        create: {
+          productId: parsedProductId,
+          branchId: parsedToBranchId,
+          quantity: parsedQuantity,
+          minStock: sourceStock.minStock,
+          criticalStock: sourceStock.criticalStock,
+        },
+      });
+
+      const transferReason =
+        reason ||
+        `Transferencia interna de sucursal ${parsedFromBranchId} a ${parsedToBranchId}`;
+
+      await tx.movement.createMany({
+        data: [
+          {
+            type: "TRANSFER_OUT",
+            quantity: parsedQuantity,
+            reason: transferReason,
+            productId: parsedProductId,
+            branchId: parsedFromBranchId,
+            userId: authUser.id,
+          },
+          {
+            type: "TRANSFER_IN",
+            quantity: parsedQuantity,
+            reason: transferReason,
+            productId: parsedProductId,
+            branchId: parsedToBranchId,
+            userId: authUser.id,
+          },
+        ],
+      });
+
+      return { source: updatedSource, target: updatedTarget };
+    });
+
+    res.status(201).json({
+      message: "Transferencia de stock registrada correctamente.",
+      data: result,
+    });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "No se pudo transferir el stock.";
+    res.status(400).json({ error: errorMsg });
+  }
+};
+
+export const updateStockThresholds = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const authUser = getAuthUser(req);
     const { productId, branchId, minStock } = req.body;
+    const parsedBranchId = Number(branchId);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    ensureBranchAccess(parsedBranchId, authUser);
 
     const updatedThreshold = await prisma.stock.update({
       where: {
         productId_branchId: {
           productId: Number(productId),
-          branchId: Number(branchId),
+          branchId: parsedBranchId,
         },
       },
       data: { minStock: Number(minStock) },

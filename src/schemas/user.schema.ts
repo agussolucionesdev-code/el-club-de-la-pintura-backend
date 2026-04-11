@@ -49,14 +49,17 @@ export const onboardEmployeeSchema = z.object({
 // MODIFY: Validación para editar el rol o sucursal de un empleado existente
 // ============================================================================
 export const modifyEmployeeSchema = z.object({
-  body: z.object({
-    name: z.string().min(2, "El nombre debe tener al menos 2 caracteres."),
-    email: z.string().email("El formato del correo electrónico es inválido."),
-    role: z.enum(["ADMIN", "ENCARGADO", "EMPLOYEE"]),
-    branchIds: z
-      .array(z.number().int().positive())
-      .min(1, "Debe asignar al menos una sucursal."),
-  }),
+  body: z
+    .object({
+      name: z.string().min(2, "El nombre debe tener al menos 2 caracteres."),
+      email: z.string().email("El formato del correo electrónico es inválido."),
+      role: z.enum(["ADMIN", "ENCARGADO", "EMPLOYEE"]),
+      branchIds: z.array(z.number().int().positive()).optional().default([]),
+    })
+    .refine((data) => data.role === "ADMIN" || data.branchIds.length > 0, {
+      message: "Debe asignar al menos una sucursal a perfiles operativos.",
+      path: ["branchIds"],
+    }),
 });
 
 // ============================================================================

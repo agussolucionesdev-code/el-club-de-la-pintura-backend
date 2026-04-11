@@ -21,6 +21,9 @@ const normalizeProductName = (name: string): string => {
 // ============================================================================
 // LECTURA DE CATÁLOGO: Paginación, búsqueda y filtros
 // ============================================================================
+// ============================================================================
+// LECTURA DE CATÁLOGO: Paginación, búsqueda y filtros
+// ============================================================================
 export const getProducts = async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = 10, search, category, brand } = req.query;
@@ -56,6 +59,7 @@ export const getProducts = async (req: Request, res: Response) => {
           supplier: {
             select: { id: true, companyName: true },
           },
+          stocks: true, // 🧠 ¡ACÁ ESTÁ LA MAGIA! Le decimos al backend que envíe el stock en tiempo real
         },
       }),
     ]);

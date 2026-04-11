@@ -1,6 +1,6 @@
 import { Router } from "express";
-// Sincronización de nombre de middleware
 import { authenticateToken } from "../../middlewares/auth.middleware";
+import { authorizeRoles } from "../../middlewares/role.middleware";
 import {
   getBranches,
   createBranch,
@@ -10,11 +10,11 @@ import {
 
 const router = Router();
 
-router.get("/", getBranches);
+router.use(authenticateToken);
 
-// Aplicación del nuevo nombre de interceptor
-router.post("/", authenticateToken, createBranch);
-router.put("/:id", authenticateToken, updateBranch);
-router.delete("/:id", authenticateToken, deleteBranch);
+router.get("/", authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"), getBranches);
+router.post("/", authorizeRoles("ADMIN"), createBranch);
+router.put("/:id", authorizeRoles("ADMIN"), updateBranch);
+router.delete("/:id", authorizeRoles("ADMIN"), deleteBranch);
 
 export default router;
