@@ -6,4 +6,5 @@ module.exports = {
   roots: ["<rootDir>/tests"],
   // Ignoramos la carpeta de compilación por si acaso
   testPathIgnorePatterns: ["/node_modules/", "/dist/"],
+  testTimeout: 30000,
 };

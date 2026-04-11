@@ -13,6 +13,22 @@ const ensureBranchAccess = (
   }
 };
 
+const resolveBranchScope = (
+  branchId: number,
+  authUser: { role: string; branchIds: number[] },
+) => {
+  if (!Number.isInteger(branchId) || branchId < 0) {
+    throw new Error("Sucursal invalida.");
+  }
+
+  if (branchId === 0) {
+    return authUser.role === "ADMIN" ? undefined : { in: authUser.branchIds };
+  }
+
+  ensureBranchAccess(branchId, authUser);
+  return branchId;
+};
+
 export const getStockByBranch = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -82,6 +98,137 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       error: "Fallo critico al cruzar el catalogo con el inventario fisico.",
     });
+  }
+};
+
+export const getStockTransfers = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const branchId = Number(req.query.branchId ?? 0);
+    const branchScope = resolveBranchScope(branchId, authUser);
+    const transferWhere =
+      branchScope === undefined
+        ? undefined
+        : { OR: [{ fromBranchId: branchScope }, { toBranchId: branchScope }] };
+
+    const transfers = await prisma.stockTransfer.findMany({
+      where: transferWhere,
+      orderBy: { createdAt: "desc" },
+      take: 150,
+    });
+
+    const productIds = Array.from(
+      new Set(transfers.map((transfer) => transfer.productId)),
+    );
+    const branchIds = Array.from(
+      new Set(
+        transfers.flatMap((transfer) => [
+          transfer.fromBranchId,
+          transfer.toBranchId,
+        ]),
+      ),
+    );
+
+    const [products, branches] = await Promise.all([
+      prisma.product.findMany({
+        where: { id: { in: productIds } },
+        select: { id: true, name: true, sku: true, brand: true, category: true },
+      }),
+      prisma.branch.findMany({
+        where: { id: { in: branchIds } },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    const productById = new Map(
+      products.map((product) => [product.id, product]),
+    );
+    const branchById = new Map(branches.map((branch) => [branch.id, branch]));
+
+    res.status(200).json({
+      data: transfers.map((transfer) => ({
+        ...transfer,
+        product: productById.get(transfer.productId) || null,
+        fromBranch: branchById.get(transfer.fromBranchId) || null,
+        toBranch: branchById.get(transfer.toBranchId) || null,
+      })),
+    });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "No se pudo listar el historial de transferencias.";
+    res.status(400).json({ error: errorMsg });
+  }
+};
+
+export const getReorderSuggestions = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const branchId = Number(req.query.branchId ?? 0);
+    const branchScope = resolveBranchScope(branchId, authUser);
+
+    const stocks = await prisma.stock.findMany({
+      where: {
+        ...(branchScope === undefined ? {} : { branchId: branchScope }),
+        product: { isActive: true },
+      },
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            brand: true,
+            category: true,
+            costPrice: true,
+          },
+        },
+        branch: { select: { id: true, name: true } },
+      },
+      orderBy: [{ branchId: "asc" }, { quantity: "asc" }],
+    });
+
+    const suggestions = stocks
+      .filter((stock) => stock.quantity <= stock.minStock)
+      .map((stock) => ({
+        id: stock.id,
+        productId: stock.productId,
+        branchId: stock.branchId,
+        quantity: stock.quantity,
+        minStock: stock.minStock,
+        criticalStock: stock.criticalStock,
+        suggestedQuantity: Math.max(stock.minStock * 2 - stock.quantity, 1),
+        product: stock.product,
+        branch: stock.branch,
+      }))
+      .sort((a, b) => a.quantity - b.quantity || a.minStock - b.minStock)
+      .slice(0, 150);
+
+    res.status(200).json({ data: suggestions });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "No se pudieron calcular las sugerencias de reposicion.";
+    res.status(400).json({ error: errorMsg });
   }
 };
 

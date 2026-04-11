@@ -8,7 +8,9 @@ import {
   updateStockThresholdsSchema,
 } from "../../schemas/stock.schema";
 import {
+  getReorderSuggestions,
   getStockByBranch,
+  getStockTransfers,
   transferStockBetweenBranches,
   updateStock,
   updateStockThresholds,
@@ -18,10 +20,22 @@ const router = Router();
 
 router.use(authenticateToken);
 
+router.get(
+  "/transfers",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getStockTransfers,
+);
+
 router.post(
   "/transfers",
   authorizeRoles("ADMIN", "ENCARGADO"),
   transferStockBetweenBranches,
+);
+
+router.get(
+  "/reorder-suggestions",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getReorderSuggestions,
 );
 
 router.get(
