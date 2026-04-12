@@ -2,6 +2,45 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import * as ExcelJS from "exceljs"; // <-- LIBRERÍA CONTABLE INYECTADA
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { Prisma } from "@prisma/client";
+
+class DashboardAccessDeniedError extends Error {}
+
+const responseStatusForDashboardError = (error: unknown) =>
+  error instanceof DashboardAccessDeniedError ? 403 : 400;
+
+const parseDashboardDate = (value: unknown, endOfDay = false) => {
+  if (value === undefined || value === null || value === "") return undefined;
+
+  const rawDate = String(value);
+  const parsedDate = new Date(rawDate);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    throw new Error("El rango de fechas del dashboard no es valido.");
+  }
+
+  if (endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    parsedDate.setHours(23, 59, 59, 999);
+  }
+
+  return parsedDate;
+};
+
+const buildDashboardDateFilter = (from: unknown, to: unknown) => {
+  const fromDate = parseDashboardDate(from);
+  const toDate = parseDashboardDate(to, true);
+
+  if (!fromDate && !toDate) return undefined;
+
+  if (fromDate && toDate && fromDate > toDate) {
+    throw new Error("La fecha desde no puede ser posterior a la fecha hasta.");
+  }
+
+  return {
+    ...(fromDate ? { gte: fromDate } : {}),
+    ...(toDate ? { lte: toDate } : {}),
+  };
+};
 
 const buildBranchFilter = (
   rawBranchId: unknown,
@@ -9,12 +48,18 @@ const buildBranchFilter = (
 ) => {
   const branchId = rawBranchId === undefined ? 0 : Number(rawBranchId);
 
+  if (!Number.isInteger(branchId) || branchId < 0) {
+    throw new Error("La sucursal del dashboard no es valida.");
+  }
+
   if (branchId === 0) {
     return authUser.role === "ADMIN" ? undefined : { in: authUser.branchIds };
   }
 
   if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
-    throw new Error("No tienes acceso a la sucursal solicitada.");
+    throw new DashboardAccessDeniedError(
+      "No tienes acceso a la sucursal solicitada.",
+    );
   }
 
   return branchId;
@@ -32,34 +77,60 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     }
 
     const branchFilter = buildBranchFilter(branchId, authUser);
-    const createdAt =
-      from || to
-        ? {
-            ...(from ? { gte: new Date(String(from)) } : {}),
-            ...(to ? { lte: new Date(String(to)) } : {}),
-          }
-        : undefined;
-    const scopedWhere = {
-      ...(branchFilter === undefined ? {} : { branchId: branchFilter }),
+    const createdAt = buildDashboardDateFilter(from, to);
+    const branchWhere =
+      branchFilter === undefined ? {} : { branchId: branchFilter };
+    const saleWhere: Prisma.SaleWhereInput = {
+      ...branchWhere,
       ...(createdAt ? { createdAt } : {}),
     };
+    const paymentWhere: Prisma.PaymentWhereInput = {
+      ...branchWhere,
+      ...(createdAt ? { createdAt } : {}),
+    };
+    const expenseWhere: Prisma.ExpenseWhereInput = {
+      ...branchWhere,
+      ...(createdAt ? { createdAt } : {}),
+    };
+    const stockWhere: Prisma.StockWhereInput | undefined =
+      branchFilter === undefined ? undefined : { branchId: branchFilter };
 
-    const [sales, payments, expenses, stocks] = await Promise.all([
+    const [sales, payments, expenses, stocks, openCashRegisters] =
+      await Promise.all([
       prisma.sale.findMany({
-        where: scopedWhere,
-        include: { items: true },
+        where: saleWhere,
+        include: {
+          branch: { select: { id: true, name: true } },
+          customer: { select: { id: true, name: true } },
+          items: {
+            include: {
+              product: {
+                select: { id: true, name: true, sku: true, brand: true },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
       }),
-      prisma.payment.findMany({ where: scopedWhere }),
-      prisma.expense.findMany({ where: scopedWhere }),
+      prisma.payment.findMany({ where: paymentWhere }),
+      prisma.expense.findMany({ where: expenseWhere }),
       prisma.stock.findMany({
-        where:
-          branchFilter === undefined
-            ? undefined
-            : { branchId: branchFilter },
+        where: stockWhere,
         include: {
           product: { select: { id: true, name: true, sku: true, brand: true } },
           branch: { select: { id: true, name: true } },
         },
+      }),
+      prisma.cashRegister.findMany({
+        where: {
+          ...(branchFilter === undefined ? {} : { branchId: branchFilter }),
+          status: "OPEN",
+        },
+        include: {
+          branch: { select: { id: true, name: true } },
+          user: { select: { id: true, name: true } },
+        },
+        orderBy: { openingTime: "desc" },
       }),
     ]);
 
@@ -83,9 +154,84 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     const stockAlerts = stocks.filter(
       (stock) => stock.quantity <= stock.minStock,
     );
+    const criticalStockAlerts = stockAlerts.filter(
+      (stock) => stock.quantity <= stock.criticalStock,
+    );
+    const warningStockAlerts = stockAlerts.filter(
+      (stock) => stock.quantity > stock.criticalStock,
+    );
+
+    const paymentBreakdown = payments.reduce<Record<string, number>>(
+      (breakdown, payment) => {
+        const method = payment.paymentMethod.toUpperCase();
+        breakdown[method] = (breakdown[method] || 0) + payment.amount;
+        return breakdown;
+      },
+      {},
+    );
+
+    const expenseBreakdown = expenses.reduce<Record<string, number>>(
+      (breakdown, expense) => {
+        const category = expense.category.toUpperCase();
+        breakdown[category] = (breakdown[category] || 0) + expense.amount;
+        return breakdown;
+      },
+      {},
+    );
+
+    const topProductsMap = new Map<
+      number,
+      {
+        productId: number;
+        name: string;
+        sku: string;
+        brand: string;
+        units: number;
+        revenue: number;
+        estimatedCost: number;
+      }
+    >();
+
+    sales.forEach((sale) => {
+      sale.items.forEach((item) => {
+        const product = item.product;
+        const current = topProductsMap.get(item.productId) || {
+          productId: item.productId,
+          name: product.name,
+          sku: product.sku,
+          brand: product.brand,
+          units: 0,
+          revenue: 0,
+          estimatedCost: 0,
+        };
+
+        current.units += item.quantity;
+        current.revenue += item.subtotal;
+        current.estimatedCost += Number(item.unitCost || 0) * item.quantity;
+        topProductsMap.set(item.productId, current);
+      });
+    });
+
+    const topProducts = Array.from(topProductsMap.values())
+      .sort((a, b) => b.revenue - a.revenue || b.units - a.units)
+      .slice(0, 8);
+    const recentSales = sales.slice(0, 8).map((sale) => ({
+      id: sale.id,
+      totalAmount: sale.totalAmount,
+      balance: sale.balance,
+      status: sale.status,
+      paymentMethod: sale.paymentMethod,
+      customerName: sale.customer?.name || "Consumidor final",
+      branchName: sale.branch.name,
+      createdAt: sale.createdAt,
+    }));
 
     res.status(200).json({
-      scope: { branchId: branchId || "ALL", from: from || null, to: to || null },
+      scope: {
+        branchId: branchId || "ALL",
+        from: createdAt?.gte || null,
+        to: createdAt?.lte || null,
+      },
       kpis: {
         totalBilled,
         totalCollected,
@@ -94,16 +240,38 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         grossProfit: totalBilled - totalCost,
         netProfit: totalBilled - totalCost - totalExpenses,
         stockAlerts: stockAlerts.length,
+        criticalStockAlerts: criticalStockAlerts.length,
+        warningStockAlerts: warningStockAlerts.length,
         salesCount: sales.length,
+        openCashRegisters: openCashRegisters.length,
       },
       stockAlerts: stockAlerts.slice(0, 50),
+      inventoryHealth: {
+        critical: criticalStockAlerts.slice(0, 20),
+        warning: warningStockAlerts.slice(0, 20),
+        healthyCount: Math.max(stocks.length - stockAlerts.length, 0),
+      },
+      paymentBreakdown,
+      expenseBreakdown,
+      topProducts,
+      recentSales,
+      openCashRegisters: openCashRegisters.slice(0, 10).map((cashRegister) => ({
+        id: cashRegister.id,
+        branchId: cashRegister.branchId,
+        branchName: cashRegister.branch.name,
+        userName: cashRegister.user.name,
+        initialBalance: cashRegister.initialBalance,
+        openingTime: cashRegister.openingTime,
+      })),
     });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error
         ? error.message
         : "No se pudo generar el resumen del dashboard.";
-    res.status(400).json({ error: errorMsg });
+    res
+      .status(responseStatusForDashboardError(error))
+      .json({ error: errorMsg });
   }
 };
 
