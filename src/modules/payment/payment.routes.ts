@@ -1,6 +1,5 @@
 import { Router } from "express";
 import { authenticateToken } from "../../middlewares/auth.middleware";
-import { authorizeBranchAccess } from "../../middlewares/branch.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import {
   registerAccountPayment,
@@ -14,7 +13,6 @@ router.post(
   "/account",
   authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
-  authorizeBranchAccess(),
   registerAccountPayment,
 );
 
@@ -22,7 +20,6 @@ router.post(
   "/",
   authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
-  authorizeBranchAccess(),
   registerDebtCollection,
 );
 

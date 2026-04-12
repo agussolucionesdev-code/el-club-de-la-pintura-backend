@@ -3,6 +3,52 @@ import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
+class PaymentBranchAccessError extends Error {}
+
+const allowedAccountPaymentMethods = new Set([
+  "CASH",
+  "DEBIT",
+  "CREDIT",
+  "TRANSFER",
+  "MIXED",
+]);
+
+const parsePositiveInt = (value: unknown, fieldName: string) => {
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${fieldName} invalido.`);
+  }
+
+  return parsed;
+};
+
+const parsePositiveAmount = (value: unknown) => {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error("El monto de integracion debe ser mayor a cero.");
+  }
+
+  return parsed;
+};
+
+const parseAccountPaymentMethod = (value: unknown) => {
+  if (typeof value !== "string") {
+    throw new Error("El medio de pago es obligatorio.");
+  }
+
+  const normalizedMethod = value.trim().toUpperCase();
+
+  if (!allowedAccountPaymentMethods.has(normalizedMethod)) {
+    throw new Error(
+      "El medio de pago seleccionado no es valido para cobrar una cuenta corriente.",
+    );
+  }
+
+  return normalizedMethod;
+};
+
 export const registerAccountPayment = async (
   req: AuthRequest,
   res: Response,
@@ -10,7 +56,6 @@ export const registerAccountPayment = async (
   try {
     const authUser = getAuthUser(req);
     const { saleId, amount, paymentMethod, cashRegisterId } = req.body;
-    const paymentAmount = Number(amount);
 
     if (!authUser) {
       return res.status(401).json({
@@ -18,13 +63,17 @@ export const registerAccountPayment = async (
       });
     }
 
-    if (paymentAmount <= 0) {
-      throw new Error("El monto de integracion debe ser mayor a cero.");
-    }
+    const parsedSaleId = parsePositiveInt(saleId, "Ticket de origen");
+    const parsedCashRegisterId = parsePositiveInt(
+      cashRegisterId,
+      "Turno de caja",
+    );
+    const paymentAmount = parsePositiveAmount(amount);
+    const normalizedPaymentMethod = parseAccountPaymentMethod(paymentMethod);
 
     const result = await prisma.$transaction(async (tx) => {
       const activeRegister = await tx.cashRegister.findUnique({
-        where: { id: Number(cashRegisterId) },
+        where: { id: parsedCashRegisterId },
       });
 
       if (!activeRegister || activeRegister.status !== "OPEN") {
@@ -37,14 +86,24 @@ export const registerAccountPayment = async (
         authUser.role !== "ADMIN" &&
         !authUser.branchIds.includes(activeRegister.branchId)
       ) {
-        throw new Error("No tienes acceso a la sucursal de esta caja.");
+        throw new PaymentBranchAccessError(
+          "No tienes acceso a la sucursal de esta caja.",
+        );
       }
 
       const targetSale = await tx.sale.findUnique({
-        where: { id: Number(saleId) },
+        where: { id: parsedSaleId },
       });
 
       if (!targetSale) throw new Error("Ticket de origen no encontrado.");
+      if (
+        authUser.role !== "ADMIN" &&
+        !authUser.branchIds.includes(targetSale.branchId)
+      ) {
+        throw new PaymentBranchAccessError(
+          "No tienes acceso a la sucursal de esta cuenta.",
+        );
+      }
       if (targetSale.status === "PAID" || targetSale.balance <= 0) {
         throw new Error("Esta cuenta ya se encuentra saldada.");
       }
@@ -70,7 +129,7 @@ export const registerAccountPayment = async (
       const newPayment = await tx.payment.create({
         data: {
           amount: paymentAmount,
-          paymentMethod,
+          paymentMethod: normalizedPaymentMethod,
           saleId: targetSale.id,
           userId: authUser.id,
           branchId: targetSale.branchId,
@@ -90,7 +149,7 @@ export const registerAccountPayment = async (
           paymentId: newPayment.id,
           saleId: targetSale.id,
           amount: paymentAmount,
-          paymentMethod,
+          paymentMethod: normalizedPaymentMethod,
           previousBalance: targetSale.balance,
           newBalance,
           status: newStatus,
@@ -112,7 +171,9 @@ export const registerAccountPayment = async (
       error instanceof Error
         ? error.message
         : "Error critico al registrar el pago.";
-    res.status(400).json({ error: errorMsg });
+    const statusCode = error instanceof PaymentBranchAccessError ? 403 : 400;
+
+    res.status(statusCode).json({ error: errorMsg });
   }
 };
 
