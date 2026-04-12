@@ -1,7 +1,20 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
+import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+
+const parseBinaryResponse = (
+  response: IncomingMessage,
+  callback: (error: Error | null, body: Buffer) => void,
+) => {
+  const chunks: Buffer[] = [];
+
+  response.on("data", (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  response.on("end", () => callback(null, Buffer.concat(chunks)));
+};
 
 describe("Dashboard ERP por sucursal", () => {
   const runId = Date.now();
@@ -191,6 +204,34 @@ describe("Dashboard ERP por sucursal", () => {
   it("bloquea dashboard de una sucursal no asignada al encargado", async () => {
     const response = await request(app)
       .get(`/api/dashboard/summary?branchId=${branchBId}`)
+      .set("Authorization", `Bearer ${managerToken}`);
+
+    expect(response.status).toBe(403);
+  });
+
+  it("exporta Excel filtrado con resumen, ventas, cobranzas y gastos", async () => {
+    const response = await request(app)
+      .get(`/api/dashboard/export?branchId=${branchAId}`)
+      .set("Authorization", `Bearer ${managerToken}`)
+      .buffer(true)
+      .parse(parseBinaryResponse as never);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    expect(response.headers["content-disposition"]).toContain(
+      "Reporte_Contable_ElClub",
+    );
+
+    const body = Buffer.from(response.body as Uint8Array);
+    expect(body.length).toBeGreaterThan(1000);
+    expect(body.subarray(0, 2).toString()).toBe("PK");
+  });
+
+  it("bloquea exportacion Excel de una sucursal no asignada al encargado", async () => {
+    const response = await request(app)
+      .get(`/api/dashboard/export?branchId=${branchBId}`)
       .set("Authorization", `Bearer ${managerToken}`);
 
     expect(response.status).toBe(403);

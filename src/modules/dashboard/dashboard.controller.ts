@@ -666,3 +666,235 @@ export const exportFinancialReportToExcel = async (
       .json({ error: "Fallo en la generación del documento contable." });
   }
 };
+
+export const exportScopedFinancialReportToExcel = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const authUser = getAuthUser(req);
+    const { branchId, from, to } = req.query;
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const branchFilter = buildBranchFilter(branchId, authUser);
+    const createdAt = buildDashboardDateFilter(from, to);
+    const branchWhere =
+      branchFilter === undefined ? {} : { branchId: branchFilter };
+    const saleWhere: Prisma.SaleWhereInput = {
+      ...branchWhere,
+      ...(createdAt ? { createdAt } : {}),
+    };
+    const paymentWhere: Prisma.PaymentWhereInput = {
+      ...branchWhere,
+      ...(createdAt ? { createdAt } : {}),
+    };
+    const expenseWhere: Prisma.ExpenseWhereInput = {
+      ...branchWhere,
+      ...(createdAt ? { createdAt } : {}),
+    };
+
+    const [sales, payments, expenses] = await Promise.all([
+      prisma.sale.findMany({
+        where: saleWhere,
+        include: {
+          branch: { select: { id: true, name: true } },
+          customer: { select: { id: true, name: true, document: true } },
+          items: {
+            include: {
+              product: {
+                select: { id: true, name: true, sku: true, brand: true },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.payment.findMany({
+        where: paymentWhere,
+        include: {
+          branch: { select: { id: true, name: true } },
+          user: { select: { id: true, name: true } },
+          sale: { select: { id: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+      prisma.expense.findMany({
+        where: expenseWhere,
+        include: {
+          branch: { select: { id: true, name: true } },
+          user: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    const totalBilled = sales.reduce((sum, sale) => sum + sale.totalAmount, 0);
+    const totalCollected = payments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0,
+    );
+    const totalExpenses = expenses.reduce(
+      (sum, expense) => sum + expense.amount,
+      0,
+    );
+    const totalDebt = sales.reduce((sum, sale) => sum + sale.balance, 0);
+    const totalCost = sales.reduce(
+      (saleSum, sale) =>
+        saleSum +
+        sale.items.reduce(
+          (itemSum, item) =>
+            itemSum + Number(item.unitCost || 0) * item.quantity,
+          0,
+        ),
+      0,
+    );
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "El Club de la Pintura ERP";
+    workbook.created = new Date();
+
+    const summarySheet = workbook.addWorksheet("Resumen");
+    summarySheet.columns = [
+      { header: "Indicador", key: "metric", width: 34 },
+      { header: "Valor", key: "value", width: 24 },
+    ];
+    summarySheet.addRows([
+      { metric: "Sucursal", value: branchId || "ALL" },
+      { metric: "Desde", value: createdAt?.gte || "ALL" },
+      { metric: "Hasta", value: createdAt?.lte || "ALL" },
+      { metric: "Ventas", value: sales.length },
+      { metric: "Facturado", value: totalBilled },
+      { metric: "Cobrado", value: totalCollected },
+      { metric: "Deuda", value: totalDebt },
+      { metric: "Costo estimado", value: totalCost },
+      { metric: "Gastos", value: totalExpenses },
+      {
+        metric: "Resultado neto",
+        value: totalBilled - totalCost - totalExpenses,
+      },
+    ]);
+
+    const salesSheet = workbook.addWorksheet("Ventas");
+    salesSheet.columns = [
+      { header: "Fecha", key: "date", width: 20 },
+      { header: "Ticket", key: "id", width: 10 },
+      { header: "Sucursal", key: "branch", width: 24 },
+      { header: "Cliente", key: "customer", width: 28 },
+      { header: "Estado", key: "status", width: 14 },
+      { header: "Medio de Pago", key: "method", width: 16 },
+      { header: "Total Facturado", key: "total", width: 16 },
+      { header: "Saldo", key: "balance", width: 16 },
+      { header: "Costo Estimado", key: "cost", width: 16 },
+      { header: "Margen Bruto", key: "grossProfit", width: 16 },
+      { header: "Items", key: "items", width: 60 },
+    ];
+
+    sales.forEach((sale) => {
+      const estimatedCost = sale.items.reduce(
+        (sum, item) => sum + Number(item.unitCost || 0) * item.quantity,
+        0,
+      );
+      salesSheet.addRow({
+        date: sale.createdAt,
+        id: sale.id,
+        branch: sale.branch.name,
+        customer: sale.customer?.name || "Consumidor Final",
+        status: sale.status,
+        method: sale.paymentMethod,
+        total: sale.totalAmount,
+        balance: sale.balance,
+        cost: estimatedCost,
+        grossProfit: sale.totalAmount - estimatedCost,
+        items: sale.items
+          .map(
+            (item) =>
+              `${item.quantity} x ${item.product.name} (${item.product.sku})`,
+          )
+          .join("; "),
+      });
+    });
+
+    const paymentsSheet = workbook.addWorksheet("Cobranzas");
+    paymentsSheet.columns = [
+      { header: "Fecha", key: "date", width: 20 },
+      { header: "ID", key: "id", width: 10 },
+      { header: "Sucursal", key: "branch", width: 24 },
+      { header: "Ticket", key: "saleId", width: 10 },
+      { header: "Usuario", key: "user", width: 24 },
+      { header: "Medio", key: "method", width: 16 },
+      { header: "Monto", key: "amount", width: 16 },
+    ];
+    payments.forEach((payment) => {
+      paymentsSheet.addRow({
+        date: payment.createdAt,
+        id: payment.id,
+        branch: payment.branch.name,
+        saleId: payment.sale.id,
+        user: payment.user.name,
+        method: payment.paymentMethod,
+        amount: payment.amount,
+      });
+    });
+
+    const expensesSheet = workbook.addWorksheet("Gastos");
+    expensesSheet.columns = [
+      { header: "Fecha", key: "date", width: 20 },
+      { header: "ID", key: "id", width: 10 },
+      { header: "Sucursal", key: "branch", width: 24 },
+      { header: "Usuario", key: "user", width: 24 },
+      { header: "Categoria", key: "category", width: 18 },
+      { header: "Tipo", key: "type", width: 14 },
+      { header: "Motivo", key: "reason", width: 40 },
+      { header: "Monto", key: "amount", width: 16 },
+    ];
+    expenses.forEach((expense) => {
+      expensesSheet.addRow({
+        date: expense.createdAt,
+        id: expense.id,
+        branch: expense.branch.name,
+        user: expense.user.name,
+        category: expense.category,
+        type: expense.type,
+        reason: expense.reason,
+        amount: expense.amount,
+      });
+    });
+
+    [summarySheet, salesSheet, paymentsSheet, expensesSheet].forEach((sheet) => {
+      sheet.getRow(1).font = { bold: true };
+      sheet.views = [{ state: "frozen", ySplit: 1 }];
+      sheet.autoFilter = {
+        from: { row: 1, column: 1 },
+        to: { row: 1, column: sheet.columnCount },
+      };
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=Reporte_Contable_ElClub_${new Date()
+        .toISOString()
+        .slice(0, 10)}.xlsx`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error: unknown) {
+    console.error("Error exportando a Excel:", error);
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "Fallo en la generacion del documento contable.";
+    res
+      .status(responseStatusForDashboardError(error))
+      .json({ error: errorMsg });
+  }
+};

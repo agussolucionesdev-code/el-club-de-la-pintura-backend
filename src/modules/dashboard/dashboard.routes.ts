@@ -8,7 +8,7 @@ import {
   getExpensesAnalytics,
   getProductsAnalytics,
   getCreditRiskAnalytics,
-  exportFinancialReportToExcel,
+  exportScopedFinancialReportToExcel,
   getDashboardSummary,
 } from "./dashboard.controller";
 
@@ -41,6 +41,10 @@ router.get(
   validate(dashboardFilterSchema),
   getCreditRiskAnalytics,
 );
-router.get("/export", authorizeRoles("ADMIN"), exportFinancialReportToExcel);
+router.get(
+  "/export",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  exportScopedFinancialReportToExcel,
+);
 
 export default router;
