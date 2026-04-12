@@ -2,6 +2,11 @@ import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
+class BranchAccessDeniedError extends Error {}
+
+const responseStatusForStockError = (error: unknown) =>
+  error instanceof BranchAccessDeniedError ? 403 : 400;
+
 const ensureBranchAccess = (
   branchId: number,
   authUser: { role: string; branchIds: number[] },
@@ -9,7 +14,9 @@ const ensureBranchAccess = (
   if (authUser.role === "ADMIN") return;
 
   if (!authUser.branchIds.includes(branchId)) {
-    throw new Error("No tienes acceso a la sucursal indicada.");
+    throw new BranchAccessDeniedError(
+      "No tienes acceso a la sucursal indicada.",
+    );
   }
 };
 
@@ -165,7 +172,7 @@ export const getStockTransfers = async (req: AuthRequest, res: Response) => {
       error instanceof Error
         ? error.message
         : "No se pudo listar el historial de transferencias.";
-    res.status(400).json({ error: errorMsg });
+    res.status(responseStatusForStockError(error)).json({ error: errorMsg });
   }
 };
 
@@ -228,7 +235,7 @@ export const getReorderSuggestions = async (
       error instanceof Error
         ? error.message
         : "No se pudieron calcular las sugerencias de reposicion.";
-    res.status(400).json({ error: errorMsg });
+    res.status(responseStatusForStockError(error)).json({ error: errorMsg });
   }
 };
 
@@ -313,7 +320,7 @@ export const updateStock = async (req: AuthRequest, res: Response) => {
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error ? error.message : "Error desconocido";
-    res.status(400).json({ error: errorMsg });
+    res.status(responseStatusForStockError(error)).json({ error: errorMsg });
   }
 };
 
@@ -455,7 +462,7 @@ export const transferStockBetweenBranches = async (
       error instanceof Error
         ? error.message
         : "No se pudo transferir el stock.";
-    res.status(400).json({ error: errorMsg });
+    res.status(responseStatusForStockError(error)).json({ error: errorMsg });
   }
 };
 
@@ -491,6 +498,10 @@ export const updateStockThresholds = async (
       data: updatedThreshold,
     });
   } catch (error: unknown) {
+    if (error instanceof BranchAccessDeniedError) {
+      return res.status(403).json({ error: error.message });
+    }
+
     res
       .status(400)
       .json({ error: "No se pudo actualizar el umbral de stock." });
