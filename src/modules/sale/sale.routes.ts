@@ -9,6 +9,7 @@ import {
   getSaleById,
   createSale,
   getPendingAccounts,
+  generateSaleReceiptPdf,
 } from "./sale.controller";
 
 const router = Router();
@@ -21,6 +22,7 @@ router.get(
   getPendingAccounts,
 );
 router.get("/", getSales);
+router.get("/:id/receipt/pdf", generateSaleReceiptPdf);
 router.get("/:id", getSaleById);
 router.post("/", authorizeBranchAccess(), validate(createSaleSchema), createSale);
 
