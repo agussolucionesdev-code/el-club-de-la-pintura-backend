@@ -1,4 +1,5 @@
 import { Response } from "express";
+import PDFDocument from "pdfkit";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
@@ -48,6 +49,19 @@ const parseAccountPaymentMethod = (value: unknown) => {
 
   return normalizedMethod;
 };
+
+const formatMoney = (amount: number) =>
+  `$ ${amount.toLocaleString("es-AR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const formatReceiptDate = (date: Date) =>
+  date.toLocaleString("es-AR", {
+    dateStyle: "short",
+    timeStyle: "short",
+    timeZone: "America/Argentina/Buenos_Aires",
+  });
 
 export const registerAccountPayment = async (
   req: AuthRequest,
@@ -193,15 +207,100 @@ export const generatePrintableReceipt = async (
   res: Response,
 ) => {
   try {
-    const paymentId = Number(req.params.paymentId);
+    const authUser = getAuthUser(req);
+    const paymentId = parsePositiveInt(req.params.paymentId, "Pago");
 
-    res.status(200).json({
-      message: "Ruta de generacion de PDF en backend activa y escuchando.",
-      paymentId,
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const payment = await prisma.payment.findUnique({
+      where: { id: paymentId },
+      include: {
+        branch: true,
+        cashRegister: true,
+        sale: {
+          include: {
+            customer: true,
+          },
+        },
+        user: true,
+      },
     });
+
+    if (!payment) {
+      return res.status(404).json({ error: "Pago no encontrado." });
+    }
+
+    if (
+      authUser.role !== "ADMIN" &&
+      !authUser.branchIds.includes(payment.branchId)
+    ) {
+      return res.status(403).json({
+        error: "No tienes acceso al comprobante de esta sucursal.",
+      });
+    }
+
+    const internalReceipt = await prisma.internalReceipt.findFirst({
+      where: {
+        paymentId: payment.id,
+        receiptType: "PAYMENT",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!internalReceipt) {
+      return res.status(404).json({
+        error: "No se encontro el comprobante interno de este pago.",
+      });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${internalReceipt.receiptNumber}.pdf"`,
+    );
+
+    const doc = new PDFDocument({
+      size: [226.77, 560],
+      margin: 18,
+    });
+
+    doc.pipe(res);
+    doc.fontSize(13).text("El Club de la Pintura", { align: "center" });
+    doc.moveDown(0.3);
+    doc
+      .fontSize(8)
+      .text("Comprobante interno de pago - No fiscal", { align: "center" });
+    doc.moveDown(0.8);
+    doc.fontSize(8).text(`Recibo: ${internalReceipt.receiptNumber}`);
+    doc.text(`Fecha: ${formatReceiptDate(payment.createdAt)}`);
+    doc.text(`Sucursal: ${payment.branch.name}`);
+    doc.text(`Caja: ${payment.cashRegisterId ?? "Sin caja vinculada"}`);
+    doc.text(`Cajero: ${payment.user.name}`);
+    doc.moveDown(0.8);
+    doc.text(`Ticket origen: #${payment.saleId}`);
+    doc.text(`Cliente: ${payment.sale.customer?.name ?? "Consumidor Final"}`);
+    doc.text(`Retiro autorizado: ${payment.sale.pickedUpBy ?? "No informado"}`);
+    doc.moveDown(0.8);
+    doc.text(`Medio de pago: ${payment.paymentMethod}`);
+    doc.fontSize(12).text(`Importe cobrado: ${formatMoney(payment.amount)}`);
+    doc.fontSize(8).text(`Saldo posterior: ${formatMoney(payment.sale.balance)}`);
+    doc.text(`Estado de cuenta: ${payment.sale.status}`);
+    doc.moveDown(1);
+    doc.text("Este comprobante es interno y auditable.", { align: "center" });
+    doc.text("No reemplaza factura fiscal.", { align: "center" });
+    doc.end();
   } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "Fallo al procesar el recibo en el servidor.";
+
     res
-      .status(500)
-      .json({ error: "Fallo al procesar el recibo en el servidor." });
+      .status(400)
+      .json({ error: errorMsg });
   }
 };

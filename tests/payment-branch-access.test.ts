@@ -1,7 +1,20 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
+import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+
+const parseBinaryResponse = (
+  response: IncomingMessage,
+  callback: (error: Error | null, body: Buffer) => void,
+) => {
+  const chunks: Buffer[] = [];
+
+  response.on("data", (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  response.on("end", () => callback(null, Buffer.concat(chunks)));
+};
 
 describe("Cobranzas de cuenta corriente por sucursal", () => {
   const runId = Date.now();
@@ -20,6 +33,8 @@ describe("Cobranzas de cuenta corriente por sucursal", () => {
   let cashRegisterBId = 0;
   let saleAId = 0;
   let saleBId = 0;
+  let paymentAId = 0;
+  let paymentBId = 0;
 
   beforeAll(async () => {
     const [branchA, branchB] = await Promise.all([
@@ -109,6 +124,18 @@ describe("Cobranzas de cuenta corriente por sucursal", () => {
     saleAId = saleA.id;
     saleBId = saleB.id;
 
+    const branchBPayment = await prisma.payment.create({
+      data: {
+        amount: 10,
+        paymentMethod: "CASH",
+        saleId: saleBId,
+        userId: managerId,
+        branchId: branchBId,
+        cashRegisterId: cashRegisterBId,
+      },
+    });
+    paymentBId = branchBPayment.id;
+
     const loginResponse = await request(app)
       .post("/api/users/login")
       .send(managerCreds);
@@ -165,6 +192,8 @@ describe("Cobranzas de cuenta corriente por sucursal", () => {
         saleId: saleAId,
       },
     });
+
+    paymentAId = response.body.data.payment.id;
   });
 
   it("rechaza sobrepagos y preserva el saldo pendiente", async () => {
@@ -209,6 +238,30 @@ describe("Cobranzas de cuenta corriente por sucursal", () => {
         paymentMethod: "TRANSFER",
         cashRegisterId: cashRegisterBId,
       });
+
+    expect(response.status).toBe(403);
+  });
+
+  it("reimprime el comprobante interno de pago como PDF", async () => {
+    const response = await request(app)
+      .get(`/api/payments/${paymentAId}/receipt/pdf`)
+      .set("Authorization", `Bearer ${managerToken}`)
+      .buffer(true)
+      .parse(parseBinaryResponse as never);
+
+    expect(response.status).toBe(200);
+    expect(response.headers["content-type"]).toContain("application/pdf");
+    expect(response.headers["content-disposition"]).toContain("CP-S");
+
+    const body = Buffer.from(response.body as Uint8Array);
+    expect(body.length).toBeGreaterThan(1000);
+    expect(body.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
+  it("no permite reimprimir comprobantes de otra sucursal", async () => {
+    const response = await request(app)
+      .get(`/api/payments/${paymentBId}/receipt/pdf`)
+      .set("Authorization", `Bearer ${managerToken}`);
 
     expect(response.status).toBe(403);
   });
