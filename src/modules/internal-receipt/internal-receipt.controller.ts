@@ -27,6 +27,8 @@ const receiptTypeTitle: Record<string, string> = {
   PAYMENT: "Comprobante interno de pago",
   EXPENSE: "Comprobante interno de egreso",
   CASH_CLOSE: "Arqueo interno de caja",
+  PURCHASE_ORDER: "Orden interna de compra",
+  PURCHASE_RECEIPT: "Recepcion interna de compra",
 };
 
 type ReceiptPdfRow = [string, string];
@@ -74,6 +76,29 @@ const formatDate = (value: Date | string | null | undefined) => {
     timeStyle: "short",
     timeZone: "America/Argentina/Buenos_Aires",
   });
+};
+
+const formatItemsSummary = (payload: Record<string, unknown>) => {
+  const items = payload.items;
+  if (!Array.isArray(items) || items.length === 0) return "-";
+
+  return items
+    .slice(0, 5)
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return "-";
+      }
+
+      const typedItem = item as Record<string, unknown>;
+      const quantity = Number(typedItem.quantity || 0);
+      const label =
+        typedItem.productName ||
+        typedItem.sku ||
+        `Producto #${typedItem.productId || "-"}`;
+
+      return `${quantity} x ${label}`;
+    })
+    .join("\n");
 };
 
 const buildReceiptRows = (
@@ -162,6 +187,31 @@ const buildReceiptRows = (
       ["Observaciones", getPayloadText(payload, "observations")],
       ["Cobranzas", getPayloadText(payload, "paymentsCount", "0")],
       ["Egresos", getPayloadText(payload, "expensesCount", "0")],
+    ];
+  }
+
+  if (receiptType === "PURCHASE_ORDER") {
+    return [
+      ["Orden", getPayloadText(payload, "purchaseOrderId")],
+      ["Proveedor", getPayloadText(payload, "supplierName", "Sin proveedor")],
+      ["Estado", getPayloadText(payload, "status")],
+      ["Renglones", getPayloadText(payload, "itemsCount", "0")],
+      ["Unidades", getPayloadText(payload, "totalUnits", "0")],
+      ["Total estimado", formatMoney(getPayloadNumber(payload, "estimatedTotal"))],
+      ["Productos", formatItemsSummary(payload)],
+    ];
+  }
+
+  if (receiptType === "PURCHASE_RECEIPT") {
+    return [
+      ["Recepcion", getPayloadText(payload, "purchaseReceiptId")],
+      ["Orden vinculada", getPayloadText(payload, "purchaseOrderId")],
+      ["Proveedor", getPayloadText(payload, "supplierName", "Sin proveedor")],
+      ["Motivo / remito", getPayloadText(payload, "reason")],
+      ["Renglones", getPayloadText(payload, "itemsCount", "0")],
+      ["Unidades recibidas", getPayloadText(payload, "totalUnits", "0")],
+      ["Total recibido", formatMoney(getPayloadNumber(payload, "estimatedTotal"))],
+      ["Productos", formatItemsSummary(payload)],
     ];
   }
 

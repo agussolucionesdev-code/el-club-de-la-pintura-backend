@@ -6,7 +6,9 @@ type InternalReceiptType =
   | "SALE_REFUND"
   | "PAYMENT"
   | "EXPENSE"
-  | "CASH_CLOSE";
+  | "CASH_CLOSE"
+  | "PURCHASE_ORDER"
+  | "PURCHASE_RECEIPT";
 
 interface CreateInternalReceiptInput {
   receiptType: InternalReceiptType;
@@ -26,6 +28,8 @@ const receiptTypePrefix: Record<InternalReceiptType, string> = {
   PAYMENT: "PAG",
   EXPENSE: "EGR",
   CASH_CLOSE: "CJA",
+  PURCHASE_ORDER: "OC",
+  PURCHASE_RECEIPT: "REC",
 };
 
 const toReceiptJson = (payload: Record<string, unknown>) =>

@@ -2,11 +2,23 @@ import { Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
 interface PurchaseItem {
   productId: number;
   quantity: number;
   unitCost?: number;
+}
+
+interface PurchaseReferenceProduct {
+  id: number;
+  name: string;
+  sku: string;
+}
+
+interface PurchaseReferenceSnapshot {
+  products: PurchaseReferenceProduct[];
+  supplier: { id: number; companyName: string } | null;
 }
 
 const ensureBranchAccess = (
@@ -82,27 +94,136 @@ const assertPurchaseReferences = async (
   tx: Prisma.TransactionClient,
   items: PurchaseItem[],
   supplierId: number | null,
-) => {
+): Promise<PurchaseReferenceSnapshot> => {
   const productIds = Array.from(new Set(items.map((item) => item.productId)));
   const existingProducts = await tx.product.findMany({
     where: { id: { in: productIds }, isActive: true },
-    select: { id: true },
+    select: { id: true, name: true, sku: true },
   });
 
   if (existingProducts.length !== productIds.length) {
     throw new Error("Uno o mas productos de la compra no existen o no estan activos.");
   }
 
+  let supplier: PurchaseReferenceSnapshot["supplier"] = null;
   if (supplierId) {
-    const supplier = await tx.supplier.findFirst({
+    supplier = await tx.supplier.findFirst({
       where: { id: supplierId, isActive: true },
-      select: { id: true },
+      select: { id: true, companyName: true },
     });
 
     if (!supplier) {
       throw new Error("El proveedor indicado no existe o esta inactivo.");
     }
   }
+
+  return { products: existingProducts, supplier };
+};
+
+const buildPurchaseReceiptPayload = ({
+  items,
+  references,
+  supplierId,
+  purchaseOrderId,
+  purchaseReceiptId,
+  status,
+  reason,
+}: {
+  items: PurchaseItem[];
+  references: PurchaseReferenceSnapshot;
+  supplierId: number | null;
+  purchaseOrderId?: string | null;
+  purchaseReceiptId?: string | null;
+  status?: string;
+  reason?: string;
+}) => {
+  const productById = new Map(
+    references.products.map((product) => [product.id, product]),
+  );
+  const totalUnits = items.reduce((sum, item) => sum + item.quantity, 0);
+  const estimatedTotal = items.reduce(
+    (sum, item) => sum + item.quantity * (item.unitCost || 0),
+    0,
+  );
+
+  return {
+    purchaseOrderId,
+    purchaseReceiptId,
+    supplierId,
+    supplierName: references.supplier?.companyName || null,
+    status,
+    reason,
+    itemsCount: items.length,
+    totalUnits,
+    estimatedTotal,
+    items: items.map((item) => {
+      const product = productById.get(item.productId);
+
+      return {
+        productId: item.productId,
+        sku: product?.sku || null,
+        productName: product?.name || null,
+        quantity: item.quantity,
+        unitCost: item.unitCost,
+        subtotal: item.quantity * (item.unitCost || 0),
+      };
+    }),
+  };
+};
+
+const toPayloadRecord = (payload: unknown) => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {} as Record<string, unknown>;
+  }
+
+  return payload as Record<string, unknown>;
+};
+
+const attachInternalReceiptRefs = async <T extends { id: string; branchId: number }>(
+  records: T[],
+  receiptType: "PURCHASE_ORDER" | "PURCHASE_RECEIPT",
+  payloadKey: "purchaseOrderId" | "purchaseReceiptId",
+) => {
+  if (records.length === 0) return records;
+
+  const branchIds = Array.from(new Set(records.map((record) => record.branchId)));
+  const internalReceipts = await prisma.internalReceipt.findMany({
+    where: {
+      branchId: { in: branchIds },
+      receiptType,
+    },
+    select: {
+      id: true,
+      receiptNumber: true,
+      payload: true,
+    },
+  });
+
+  const receiptBySourceId = new Map<
+    string,
+    { id: string; receiptNumber: string }
+  >();
+
+  for (const receipt of internalReceipts) {
+    const payload = toPayloadRecord(receipt.payload);
+    const sourceId = payload[payloadKey];
+    if (sourceId) {
+      receiptBySourceId.set(String(sourceId), {
+        id: receipt.id,
+        receiptNumber: receipt.receiptNumber,
+      });
+    }
+  }
+
+  return records.map((record) => {
+    const internalReceipt = receiptBySourceId.get(record.id);
+
+    return {
+      ...record,
+      internalReceiptId: internalReceipt?.id || null,
+      internalReceiptNumber: internalReceipt?.receiptNumber || null,
+    };
+  });
 };
 
 export const getPurchaseOrders = async (req: AuthRequest, res: Response) => {
@@ -124,7 +245,13 @@ export const getPurchaseOrders = async (req: AuthRequest, res: Response) => {
       take: 150,
     });
 
-    res.status(200).json({ data: orders });
+    const ordersWithReceipts = await attachInternalReceiptRefs(
+      orders,
+      "PURCHASE_ORDER",
+      "purchaseOrderId",
+    );
+
+    res.status(200).json({ data: ordersWithReceipts });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error
@@ -153,7 +280,13 @@ export const getPurchaseReceipts = async (req: AuthRequest, res: Response) => {
       take: 150,
     });
 
-    res.status(200).json({ data: receipts });
+    const receiptsWithInternalReceipts = await attachInternalReceiptRefs(
+      receipts,
+      "PURCHASE_RECEIPT",
+      "purchaseReceiptId",
+    );
+
+    res.status(200).json({ data: receiptsWithInternalReceipts });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error
@@ -179,7 +312,7 @@ export const createPurchaseOrder = async (req: AuthRequest, res: Response) => {
     ensureBranchAccess(branchId, authUser);
 
     const purchaseOrder = await prisma.$transaction(async (tx) => {
-      await assertPurchaseReferences(tx, items, supplierId);
+      const references = await assertPurchaseReferences(tx, items, supplierId);
 
       const createdOrder = await tx.purchaseOrder.create({
         data: {
@@ -191,6 +324,20 @@ export const createPurchaseOrder = async (req: AuthRequest, res: Response) => {
         },
       });
 
+      const internalReceipt = await createInternalReceipt(tx, {
+        receiptType: "PURCHASE_ORDER",
+        branchId,
+        sourceId: createdOrder.id,
+        createdBy: authUser.id,
+        payload: buildPurchaseReceiptPayload({
+          items,
+          references,
+          supplierId,
+          purchaseOrderId: createdOrder.id,
+          status: createdOrder.status,
+        }),
+      });
+
       await tx.auditLog.create({
         data: {
           actorUserId: authUser.id,
@@ -198,11 +345,19 @@ export const createPurchaseOrder = async (req: AuthRequest, res: Response) => {
           action: "PURCHASE_ORDER_CREATED",
           entityType: "PurchaseOrder",
           entityId: createdOrder.id,
-          metadata: toJsonPayload({ supplierId, itemCount: items.length }),
+          metadata: toJsonPayload({
+            supplierId,
+            itemCount: items.length,
+            internalReceiptId: internalReceipt.id,
+          }),
         },
       });
 
-      return createdOrder;
+      return {
+        ...createdOrder,
+        internalReceiptId: internalReceipt.id,
+        internalReceiptNumber: internalReceipt.receiptNumber,
+      };
     });
 
     res.status(201).json({
@@ -243,7 +398,7 @@ export const receivePurchaseReceipt = async (
     ensureBranchAccess(branchId, authUser);
 
     const result = await prisma.$transaction(async (tx) => {
-      await assertPurchaseReferences(tx, items, supplierId);
+      const references = await assertPurchaseReferences(tx, items, supplierId);
 
       if (purchaseOrderId) {
         const order = await tx.purchaseOrder.findUnique({
@@ -316,6 +471,22 @@ export const receivePurchaseReceipt = async (
         });
       }
 
+      const internalReceipt = await createInternalReceipt(tx, {
+        receiptType: "PURCHASE_RECEIPT",
+        branchId,
+        sourceId: receipt.id,
+        createdBy: authUser.id,
+        payload: buildPurchaseReceiptPayload({
+          items,
+          references,
+          supplierId,
+          purchaseOrderId,
+          purchaseReceiptId: receipt.id,
+          reason: String(req.body.reason || "Recepcion de compra interna"),
+          status: "RECEIVED",
+        }),
+      });
+
       await tx.auditLog.create({
         data: {
           actorUserId: authUser.id,
@@ -327,11 +498,20 @@ export const receivePurchaseReceipt = async (
             supplierId,
             purchaseOrderId,
             itemCount: items.length,
+            internalReceiptId: internalReceipt.id,
           }),
         },
       });
 
-      return { receipt, updatedStocks: updatedItems };
+      return {
+        receipt: {
+          ...receipt,
+          internalReceiptId: internalReceipt.id,
+          internalReceiptNumber: internalReceipt.receiptNumber,
+        },
+        updatedStocks: updatedItems,
+        internalReceipt,
+      };
     });
 
     res.status(201).json({
