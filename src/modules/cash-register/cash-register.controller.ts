@@ -10,6 +10,12 @@ interface CashRegisterShift {
   expenses: { amount: number }[];
 }
 
+interface CashDenominationBreakdown {
+  denomination: number;
+  quantity: number;
+  subtotal: number;
+}
+
 const normalizePaymentMethod = (paymentMethod: string) =>
   paymentMethod.trim().toUpperCase() || "UNKNOWN";
 
@@ -17,6 +23,41 @@ const roundMoney = (value: number) => Math.round(value * 100) / 100;
 
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const normalizeDenominationBreakdown = (
+  value: unknown,
+): CashDenominationBreakdown[] => {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return null;
+      }
+
+      const typedItem = item as Record<string, unknown>;
+      const denomination = Number(typedItem.denomination);
+      const quantity = Number(typedItem.quantity);
+
+      if (
+        !Number.isFinite(denomination) ||
+        denomination <= 0 ||
+        !Number.isInteger(quantity) ||
+        quantity < 0
+      ) {
+        return null;
+      }
+
+      return {
+        denomination: roundMoney(denomination),
+        quantity,
+        subtotal: roundMoney(denomination * quantity),
+      };
+    })
+    .filter((item): item is CashDenominationBreakdown => Boolean(item))
+    .filter((item) => item.quantity > 0)
+    .sort((a, b) => b.denomination - a.denomination);
+};
 
 const buildCashRegisterSummary = (shift: CashRegisterShift) => {
   const paymentsByMethod = shift.payments.reduce<Record<string, number>>(
@@ -183,8 +224,20 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
       observations,
       localPendingOperations = 0,
       localFailedOperations = 0,
+      denominationBreakdown,
     } = req.body;
-    const countedBalance = Number(actualBalance);
+    const cashDenominationBreakdown =
+      normalizeDenominationBreakdown(denominationBreakdown);
+    const denominationTotal = roundMoney(
+      cashDenominationBreakdown.reduce((acc, item) => acc + item.subtotal, 0),
+    );
+    const hasExplicitActualBalance =
+      actualBalance !== undefined && actualBalance !== null && actualBalance !== "";
+    const countedBalance = hasExplicitActualBalance
+      ? Number(actualBalance)
+      : cashDenominationBreakdown.length > 0
+        ? denominationTotal
+        : Number.NaN;
 
     if (!authUser) {
       return res.status(401).json({
@@ -195,6 +248,16 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
     if (!Number.isFinite(countedBalance) || countedBalance < 0) {
       return res.status(400).json({
         error: "El dinero fisico contado debe ser un monto valido y no negativo.",
+      });
+    }
+
+    if (
+      cashDenominationBreakdown.length > 0 &&
+      Math.abs(roundMoney(countedBalance - denominationTotal)) > 0.01
+    ) {
+      return res.status(400).json({
+        error:
+          "El total declarado no coincide con el conteo por denominaciones.",
       });
     }
 
@@ -285,6 +348,9 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           localFailedOperations: parsedLocalFailedOperations,
           serverPendingSyncOperations,
           serverRejectedSyncOperations,
+          denominationBreakdown: cashDenominationBreakdown,
+          denominationTotal,
+          countedByDenominations: cashDenominationBreakdown.length > 0,
         },
       });
 
@@ -305,6 +371,8 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
             serverRejectedSyncOperations,
             localPendingOperations: parsedLocalPendingOperations,
             localFailedOperations: parsedLocalFailedOperations,
+            denominationTotal,
+            countedByDenominations: cashDenominationBreakdown.length > 0,
             internalReceiptId: receipt.id,
             internalReceiptNumber: receipt.receiptNumber,
           }),
@@ -326,6 +394,9 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           localFailedOperations: parsedLocalFailedOperations,
           serverPendingSyncOperations,
           serverRejectedSyncOperations,
+          denominationBreakdown: cashDenominationBreakdown,
+          denominationTotal,
+          countedByDenominations: cashDenominationBreakdown.length > 0,
         },
       },
       receipt: result.receipt,

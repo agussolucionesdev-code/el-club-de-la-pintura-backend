@@ -102,6 +102,25 @@ const formatItemsSummary = (payload: Record<string, unknown>) => {
     .join("\n");
 };
 
+const formatDenominationBreakdown = (payload: Record<string, unknown>) => {
+  const denominations = payload.denominationBreakdown;
+  if (!Array.isArray(denominations) || denominations.length === 0) return "-";
+
+  return denominations
+    .slice(0, 12)
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return "-";
+      }
+
+      const typedItem = item as Record<string, unknown>;
+      return `${typedItem.quantity || 0} x ${formatMoney(
+        Number(typedItem.denomination || 0),
+      )} = ${formatMoney(Number(typedItem.subtotal || 0))}`;
+    })
+    .join("\n");
+};
+
 const buildReceiptRows = (
   receiptType: string,
   payload: Record<string, unknown>,
@@ -193,10 +212,15 @@ const buildReceiptRows = (
       ["Egresos", formatMoney(getPayloadNumber(payload, "totalExpenses"))],
       ["Esperado", formatMoney(getPayloadNumber(payload, "expectedBalance"))],
       ["Contado", formatMoney(getPayloadNumber(payload, "actualBalance"))],
+      [
+        "Conteo declarado",
+        formatMoney(getPayloadNumber(payload, "denominationTotal")),
+      ],
       ["Diferencia", formatMoney(getPayloadNumber(payload, "discrepancy"))],
       ["Observaciones", getPayloadText(payload, "observations")],
       ["Cobranzas", getPayloadText(payload, "paymentsCount", "0")],
       ["Cant. egresos", getPayloadText(payload, "expensesCount", "0")],
+      ["Denominaciones", formatDenominationBreakdown(payload)],
       ["Sync local pendiente", getPayloadText(payload, "localPendingOperations", "0")],
       ["Sync local conflictos", getPayloadText(payload, "localFailedOperations", "0")],
       [

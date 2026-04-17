@@ -218,6 +218,11 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         observations: "Faltante robotizado de prueba",
         localPendingOperations: 2,
         localFailedOperations: 1,
+        denominationBreakdown: [
+          { denomination: 500, quantity: 1 },
+          { denomination: 100, quantity: 2 },
+          { denomination: 20, quantity: 2 },
+        ],
       });
 
     expect(closeResponse.status).toBe(200);
@@ -238,6 +243,8 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         localFailedOperations: 1,
         serverPendingSyncOperations: 1,
         serverRejectedSyncOperations: 1,
+        denominationTotal: 740,
+        countedByDenominations: true,
       },
     });
     expect(closeResponse.body.receipt.receiptNumber).toContain("CJA");
@@ -250,7 +257,14 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       localFailedOperations: 1,
       serverPendingSyncOperations: 1,
       serverRejectedSyncOperations: 1,
+      denominationTotal: 740,
+      countedByDenominations: true,
     });
+    expect(closeResponse.body.receipt.payload.denominationBreakdown).toEqual([
+      { denomination: 500, quantity: 1, subtotal: 500 },
+      { denomination: 100, quantity: 2, subtotal: 200 },
+      { denomination: 20, quantity: 2, subtotal: 40 },
+    ]);
 
     const audit = await prisma.auditLog.findFirst({
       where: {
@@ -293,6 +307,30 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.error).toContain("dinero fisico contado");
+
+    await prisma.cashRegister.delete({ where: { id: invalidRegister.id } });
+  });
+
+  it("rechaza cierres cuando el conteo por denominaciones no coincide", async () => {
+    const invalidRegister = await prisma.cashRegister.create({
+      data: {
+        initialBalance: 100,
+        branchId,
+        userId: operatorId,
+        status: "OPEN",
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/cash-registers/${invalidRegister.id}/close`)
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .send({
+        actualBalance: 1000,
+        denominationBreakdown: [{ denomination: 500, quantity: 1 }],
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("denominaciones");
 
     await prisma.cashRegister.delete({ where: { id: invalidRegister.id } });
   });
