@@ -17,6 +17,40 @@ interface IncomingSyncOperation {
 const SYNC_STATUS_PROCESSING = "PROCESSING";
 const SYNC_STATUS_ACCEPTED = "ACCEPTED";
 const SYNC_STATUS_REJECTED = "REJECTED";
+const DEFAULT_SYNC_DEVICE_ID = "browser-unknown";
+const MAX_SYNC_STATUS_LIMIT = 100;
+
+const firstTextValue = (value: unknown) => {
+  if (Array.isArray(value)) {
+    const firstValue = value.find((item) => String(item || "").trim() !== "");
+    return firstValue === undefined ? "" : String(firstValue);
+  }
+
+  if (typeof value === "string" || typeof value === "number") {
+    return String(value);
+  }
+
+  return "";
+};
+
+const resolveSyncDeviceId = (req: AuthRequest) => {
+  const headerDeviceId = firstTextValue(req.headers["x-sync-device-id"]);
+  const queryDeviceId = firstTextValue(req.query.deviceId);
+  const bodyDeviceId = firstTextValue(
+    req.body && typeof req.body === "object"
+      ? (req.body as Record<string, unknown>).deviceId
+      : undefined,
+  );
+
+  const deviceId = (headerDeviceId || queryDeviceId || bodyDeviceId).trim();
+  return deviceId ? deviceId.slice(0, 120) : DEFAULT_SYNC_DEVICE_ID;
+};
+
+const resolveStatusLimit = (value: unknown) => {
+  const limit = Number(firstTextValue(value));
+  if (!Number.isInteger(limit) || limit <= 0) return 50;
+  return Math.min(limit, MAX_SYNC_STATUS_LIMIT);
+};
 
 const getPayload = (operation: IncomingSyncOperation) => {
   if (
@@ -86,6 +120,48 @@ const resolveBranchWhere = (
   }
 
   return branchId;
+};
+
+const checkpointBranchIdFromScope = (branchId: number) =>
+  Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+
+const persistSyncCheckpoint = async ({
+  deviceId,
+  userId,
+  branchId,
+  lastPulledAt,
+  lastPushedAt,
+}: {
+  deviceId: string;
+  userId: number;
+  branchId: number | null;
+  lastPulledAt?: Date;
+  lastPushedAt?: Date;
+}) => {
+  const data: Prisma.SyncCheckpointUpdateInput = {};
+  if (lastPulledAt) data.lastPulledAt = lastPulledAt;
+  if (lastPushedAt) data.lastPushedAt = lastPushedAt;
+
+  const existingCheckpoint = await prisma.syncCheckpoint.findFirst({
+    where: { deviceId, userId, branchId },
+  });
+
+  if (existingCheckpoint) {
+    return prisma.syncCheckpoint.update({
+      where: { id: existingCheckpoint.id },
+      data,
+    });
+  }
+
+  return prisma.syncCheckpoint.create({
+    data: {
+      deviceId,
+      userId,
+      branchId,
+      lastPulledAt,
+      lastPushedAt,
+    },
+  });
 };
 
 const recordSyncAudit = async (
@@ -408,6 +484,7 @@ export const pullSyncSnapshot = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const branchId = Number(req.query.branchId || 0);
+    const deviceId = resolveSyncDeviceId(req);
 
     if (!authUser) {
       return res.status(401).json({
@@ -457,10 +534,19 @@ export const pullSyncSnapshot = async (req: AuthRequest, res: Response) => {
         }),
       ]);
 
+    const checkpointAt = new Date();
+    const syncCheckpoint = await persistSyncCheckpoint({
+      deviceId,
+      userId: authUser.id,
+      branchId: checkpointBranchIdFromScope(branchId),
+      lastPulledAt: checkpointAt,
+    });
+
     res.status(200).json({
-      serverTime: new Date().toISOString(),
-      checkpoint: new Date().toISOString(),
-      scope: { branchId },
+      serverTime: checkpointAt.toISOString(),
+      checkpoint: checkpointAt.toISOString(),
+      scope: { branchId, deviceId },
+      syncCheckpoint,
       data: {
         branches,
         products,
@@ -480,6 +566,8 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const branchId = Number(req.query.branchId || 0);
+    const deviceId = resolveSyncDeviceId(req);
+    const limit = resolveStatusLimit(req.query.limit);
 
     if (!authUser) {
       return res.status(401).json({
@@ -487,30 +575,58 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const branchWhere = resolveBranchWhere(branchId, authUser);
-    const where =
-      branchWhere === undefined ? undefined : { branchId: branchWhere };
+    if (authUser.role === "EMPLOYEE") {
+      return res.status(403).json({
+        error:
+          "El estado global de sincronizacion queda reservado para encargados y administradores.",
+      });
+    }
 
-    const operations = await prisma.syncOperation.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    });
+    const branchWhere = resolveBranchWhere(branchId, authUser);
+    const operationWhere: Prisma.SyncOperationWhereInput =
+      branchWhere === undefined ? {} : { branchId: branchWhere };
+    const checkpointWhere: Prisma.SyncCheckpointWhereInput = {
+      userId: authUser.id,
+      ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
+    };
+
+    const [operations, counterRows, checkpoints] = await Promise.all([
+      prisma.syncOperation.findMany({
+        where: operationWhere,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+      }),
+      prisma.syncOperation.groupBy({
+        by: ["status"],
+        where: operationWhere,
+        _count: { _all: true },
+      }),
+      prisma.syncCheckpoint.findMany({
+        where: checkpointWhere,
+        orderBy: { updatedAt: "desc" },
+        take: 25,
+      }),
+    ]);
+
+    const countersByStatus = counterRows.reduce<Record<string, number>>(
+      (acc, row) => {
+        acc[row.status] = row._count._all;
+        return acc;
+      },
+      {},
+    );
 
     res.status(200).json({
       serverTime: new Date().toISOString(),
-      scope: { branchId },
+      scope: { branchId, deviceId, limit },
       operations,
+      checkpoints,
       counters: {
-        accepted: operations.filter(
-          (operation) => operation.status === SYNC_STATUS_ACCEPTED,
-        ).length,
-        rejected: operations.filter(
-          (operation) => operation.status === SYNC_STATUS_REJECTED,
-        ).length,
-        processing: operations.filter(
-          (operation) => operation.status === SYNC_STATUS_PROCESSING,
-        ).length,
+        accepted: countersByStatus[SYNC_STATUS_ACCEPTED] || 0,
+        rejected: countersByStatus[SYNC_STATUS_REJECTED] || 0,
+        processing: countersByStatus[SYNC_STATUS_PROCESSING] || 0,
+        pending: countersByStatus.PENDING || 0,
+        total: counterRows.reduce((acc, row) => acc + row._count._all, 0),
       },
     });
   } catch (error: unknown) {
@@ -525,6 +641,8 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
 export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
+    const requestedBranchId = Number(req.body.branchId || 0);
+    const deviceId = resolveSyncDeviceId(req);
     const operations = Array.isArray(req.body.operations)
       ? (req.body.operations as IncomingSyncOperation[])
       : [];
@@ -533,6 +651,10 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       return res.status(401).json({
         error: "No se pudo validar la identidad del usuario.",
       });
+    }
+
+    if (requestedBranchId > 0) {
+      resolveBranchWhere(requestedBranchId, authUser);
     }
 
     const acceptedOperationIds: string[] = [];
@@ -674,12 +796,22 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       }
     }
 
+    const checkpointAt = new Date();
+    const syncCheckpoint = await persistSyncCheckpoint({
+      deviceId,
+      userId: authUser.id,
+      branchId: checkpointBranchIdFromScope(requestedBranchId),
+      lastPushedAt: checkpointAt,
+    });
+
     res.status(202).json({
       message:
         "Operaciones offline procesadas por el motor de sincronizacion.",
       acceptedOperationIds,
       rejectedOperations,
-      serverTime: new Date().toISOString(),
+      serverTime: checkpointAt.toISOString(),
+      scope: { branchId: requestedBranchId, deviceId },
+      syncCheckpoint,
     });
   } catch (error) {
     console.error("Error en push de sincronizacion:", error);
