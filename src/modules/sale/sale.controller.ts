@@ -44,6 +44,88 @@ const parseCancellationReason = (value: unknown) => {
   return value.trim().slice(0, 500);
 };
 
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
+const normalizePaymentMethod = (value: unknown) => {
+  const method = String(value || "").trim().toUpperCase();
+  if (!method) throw new Error("El medio de pago es obligatorio.");
+  return method;
+};
+
+const parseImmediatePayments = ({
+  isCredit,
+  paymentMethod,
+  payments,
+  totalAmount,
+}: {
+  isCredit: boolean;
+  paymentMethod: unknown;
+  payments: unknown;
+  totalAmount: number;
+}) => {
+  if (isCredit) return [];
+
+  if (!Array.isArray(payments) || payments.length === 0) {
+    return [
+      {
+        paymentMethod: normalizePaymentMethod(paymentMethod),
+        amount: roundMoney(totalAmount),
+      },
+    ];
+  }
+
+  const parsedPayments = payments.map((payment) => {
+    if (!payment || typeof payment !== "object" || Array.isArray(payment)) {
+      throw new Error("Los pagos de la venta tienen un formato invalido.");
+    }
+
+    const typedPayment = payment as Record<string, unknown>;
+    const method = normalizePaymentMethod(typedPayment.paymentMethod);
+    const amount = Number(typedPayment.amount);
+
+    if (method === "CREDIT_ACCOUNT") {
+      throw new Error(
+        "La cuenta corriente no puede mezclarse como medio de pago inmediato.",
+      );
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error("Cada pago debe tener un importe positivo.");
+    }
+
+    return {
+      paymentMethod: method,
+      amount: roundMoney(amount),
+    };
+  });
+
+  const paidAmount = roundMoney(
+    parsedPayments.reduce((sum, payment) => sum + payment.amount, 0),
+  );
+
+  if (Math.abs(paidAmount - roundMoney(totalAmount)) > 0.01) {
+    throw new Error(
+      "La suma de los pagos no coincide con el total de la venta.",
+    );
+  }
+
+  return parsedPayments;
+};
+
+const resolveSalePaymentMethod = (
+  fallbackPaymentMethod: unknown,
+  immediatePayments: { paymentMethod: string; amount: number }[],
+) => {
+  if (immediatePayments.length === 0) return "CREDIT_ACCOUNT";
+
+  const uniqueMethods = new Set(
+    immediatePayments.map((payment) => payment.paymentMethod),
+  );
+
+  if (uniqueMethods.size > 1) return "MIXED";
+  return immediatePayments[0]?.paymentMethod || normalizePaymentMethod(fallbackPaymentMethod);
+};
+
 const calculateAvailableCash = (shift: {
   initialBalance: number;
   payments: { amount: number; paymentMethod: string }[];
@@ -292,6 +374,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       cashRegisterId,
       customerId,
       paymentMethod,
+      payments,
       totalAmount,
       items,
       pickedUpBy,
@@ -305,8 +388,11 @@ export const createSale = async (req: AuthRequest, res: Response) => {
 
     const parsedBranchId = Number(branchId);
     ensureBranchAccess(parsedBranchId, authUser);
+    const parsedTotalAmount = Number(totalAmount) > 0 ? Number(totalAmount) : 0.01;
+    const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
+    const isCredit = normalizedPaymentMethod === "CREDIT_ACCOUNT";
 
-    if (paymentMethod === "CREDIT_ACCOUNT") {
+    if (isCredit) {
       if (!customerId) {
         throw new Error(
           "Operacion rechazada: Las ventas en cuenta corriente exigen un cliente titular registrado.",
@@ -318,6 +404,17 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         );
       }
     }
+
+    const immediatePayments = parseImmediatePayments({
+      isCredit,
+      paymentMethod: normalizedPaymentMethod,
+      payments,
+      totalAmount: parsedTotalAmount,
+    });
+    const salePaymentMethod = resolveSalePaymentMethod(
+      normalizedPaymentMethod,
+      immediatePayments,
+    );
 
     const result = await prisma.$transaction(async (tx) => {
       const activeRegister = await tx.cashRegister.findUnique({
@@ -336,14 +433,13 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         );
       }
 
-      const isCredit = paymentMethod === "CREDIT_ACCOUNT";
       const initialStatus = isCredit ? "PENDING" : "PAID";
-      const initialBalance = isCredit ? Number(totalAmount) : 0;
+      const initialBalance = isCredit ? parsedTotalAmount : 0;
 
       const newSale = await tx.sale.create({
         data: {
-          totalAmount: Number(totalAmount),
-          paymentMethod,
+          totalAmount: parsedTotalAmount,
+          paymentMethod: salePaymentMethod,
           status: initialStatus,
           balance: initialBalance,
           pickedUpBy: isCredit ? pickedUpBy : null,
@@ -398,31 +494,39 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      const immediatePayment = !isCredit
-        ? await tx.payment.create({
-            data: {
-              amount: Number(totalAmount),
-              paymentMethod,
-              saleId: newSale.id,
-              userId: authUser.id,
-              branchId: parsedBranchId,
-              cashRegisterId: Number(cashRegisterId),
-            },
-          })
-        : null;
+      const createdPayments = [];
+      for (const payment of immediatePayments) {
+        const createdPayment = await tx.payment.create({
+          data: {
+            amount: payment.amount,
+            paymentMethod: payment.paymentMethod,
+            saleId: newSale.id,
+            userId: authUser.id,
+            branchId: parsedBranchId,
+            cashRegisterId: Number(cashRegisterId),
+          },
+        });
+        createdPayments.push(createdPayment);
+      }
 
       const receipt = await createInternalReceipt(tx, {
         receiptType: "SALE",
         branchId: parsedBranchId,
         cashRegisterId: Number(cashRegisterId),
         saleId: newSale.id,
-        paymentId: immediatePayment?.id,
+        paymentId: createdPayments.length === 1 ? createdPayments[0]?.id : null,
         sourceId: newSale.id,
         createdBy: authUser.id,
         payload: {
           saleId: newSale.id,
-          totalAmount: Number(totalAmount),
-          paymentMethod,
+          totalAmount: parsedTotalAmount,
+          paymentMethod: salePaymentMethod,
+          payments: createdPayments.map((payment) => ({
+            id: payment.id,
+            amount: payment.amount,
+            paymentMethod: payment.paymentMethod,
+          })),
+          paymentsCount: createdPayments.length,
           status: initialStatus,
           balance: initialBalance,
           customerId: customerId ? Number(customerId) : null,
@@ -436,8 +540,10 @@ export const createSale = async (req: AuthRequest, res: Response) => {
 
     res.status(201).json({
       message:
-        paymentMethod === "CREDIT_ACCOUNT"
+        salePaymentMethod === "CREDIT_ACCOUNT"
           ? "Venta a credito registrada."
+          : salePaymentMethod === "MIXED"
+            ? "Venta procesada con pagos multiples."
           : "Venta procesada con exito.",
       data: result.sale,
       receipt: result.receipt,

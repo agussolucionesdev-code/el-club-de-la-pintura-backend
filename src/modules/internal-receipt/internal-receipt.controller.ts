@@ -121,6 +121,24 @@ const formatDenominationBreakdown = (payload: Record<string, unknown>) => {
     .join("\n");
 };
 
+const formatPaymentsSummary = (payload: Record<string, unknown>) => {
+  const payments = payload.payments;
+  if (!Array.isArray(payments) || payments.length === 0) return "-";
+
+  return payments
+    .map((payment) => {
+      if (!payment || typeof payment !== "object" || Array.isArray(payment)) {
+        return "-";
+      }
+
+      const typedPayment = payment as Record<string, unknown>;
+      return `${typedPayment.paymentMethod || "PAGO"}: ${formatMoney(
+        Number(typedPayment.amount || 0),
+      )}`;
+    })
+    .join("\n");
+};
+
 const buildReceiptRows = (
   receiptType: string,
   payload: Record<string, unknown>,
@@ -129,6 +147,7 @@ const buildReceiptRows = (
     return [
       ["Ticket", `#${getPayloadText(payload, "saleId")}`],
       ["Medio principal", getPayloadText(payload, "paymentMethod")],
+      ["Pagos", formatPaymentsSummary(payload)],
       ["Estado", getPayloadText(payload, "status")],
       ["Total", formatMoney(getPayloadNumber(payload, "totalAmount"))],
       ["Saldo pendiente", formatMoney(getPayloadNumber(payload, "balance"))],

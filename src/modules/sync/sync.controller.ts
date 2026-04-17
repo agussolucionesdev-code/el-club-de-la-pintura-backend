@@ -187,6 +187,69 @@ const recordSyncAudit = async (
     });
 };
 
+const roundSyncMoney = (value: number) => Math.round(value * 100) / 100;
+
+const normalizeSyncPaymentMethod = (value: unknown) => {
+  const method = String(value || "").trim().toUpperCase();
+  if (!method) throw new Error("El medio de pago offline es obligatorio.");
+  return method;
+};
+
+const parseOfflineSalePayments = (
+  payload: Record<string, unknown>,
+  paymentMethod: string,
+  totalAmount: number,
+  isCredit: boolean,
+) => {
+  if (isCredit) return [];
+
+  if (!Array.isArray(payload.payments) || payload.payments.length === 0) {
+    return [{ paymentMethod, amount: roundSyncMoney(totalAmount) }];
+  }
+
+  const parsedPayments = payload.payments.map((payment) => {
+    if (!payment || typeof payment !== "object" || Array.isArray(payment)) {
+      throw new Error("Los pagos offline tienen formato invalido.");
+    }
+
+    const typedPayment = payment as Record<string, unknown>;
+    const method = normalizeSyncPaymentMethod(typedPayment.paymentMethod);
+    const amount = Number(typedPayment.amount);
+
+    if (method === "CREDIT_ACCOUNT") {
+      throw new Error("La cuenta corriente offline no puede mezclarse con pagos.");
+    }
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new Error("Cada pago offline debe tener un importe positivo.");
+    }
+
+    return { paymentMethod: method, amount: roundSyncMoney(amount) };
+  });
+
+  const paidAmount = roundSyncMoney(
+    parsedPayments.reduce((sum, payment) => sum + payment.amount, 0),
+  );
+
+  if (Math.abs(paidAmount - roundSyncMoney(totalAmount)) > 0.01) {
+    throw new Error(
+      "La suma de pagos offline no coincide con el total de la venta.",
+    );
+  }
+
+  return parsedPayments;
+};
+
+const resolveOfflineSalePaymentMethod = (
+  paymentMethod: string,
+  payments: { paymentMethod: string; amount: number }[],
+) => {
+  if (payments.length === 0) return "CREDIT_ACCOUNT";
+  const uniqueMethods = new Set(payments.map((payment) => payment.paymentMethod));
+  if (uniqueMethods.size > 1) return "MIXED";
+  return payments[0]?.paymentMethod || paymentMethod;
+};
+
 const replaySaleOperation = async (
   operation: IncomingSyncOperation,
   authUser: { id: number; role: string; branchIds: number[] },
@@ -194,7 +257,7 @@ const replaySaleOperation = async (
   const payload = getPayload(operation);
   const branchId = Number(payload.branchId);
   const cashRegisterId = Number(payload.cashRegisterId);
-  const paymentMethod = String(payload.paymentMethod || "CASH");
+  const paymentMethod = normalizeSyncPaymentMethod(payload.paymentMethod || "CASH");
   const totalAmount = Number(payload.totalAmount);
   const customerId =
     payload.customerId === null || payload.customerId === undefined
@@ -224,10 +287,20 @@ const replaySaleOperation = async (
     }
 
     const isCredit = paymentMethod === "CREDIT_ACCOUNT";
+    const immediatePayments = parseOfflineSalePayments(
+      payload,
+      paymentMethod,
+      totalAmount,
+      isCredit,
+    );
+    const salePaymentMethod = resolveOfflineSalePaymentMethod(
+      paymentMethod,
+      immediatePayments,
+    );
     const sale = await tx.sale.create({
       data: {
         totalAmount,
-        paymentMethod,
+        paymentMethod: salePaymentMethod,
         status: isCredit ? "PENDING" : "PAID",
         balance: isCredit ? totalAmount : 0,
         pickedUpBy: isCredit ? pickedUpBy : null,
@@ -282,31 +355,39 @@ const replaySaleOperation = async (
       });
     }
 
-    const payment = !isCredit
-      ? await tx.payment.create({
-          data: {
-            amount: totalAmount,
-            paymentMethod,
-            saleId: sale.id,
-            userId: authUser.id,
-            branchId,
-            cashRegisterId,
-          },
-        })
-      : null;
+    const createdPayments = [];
+    for (const payment of immediatePayments) {
+      const createdPayment = await tx.payment.create({
+        data: {
+          amount: payment.amount,
+          paymentMethod: payment.paymentMethod,
+          saleId: sale.id,
+          userId: authUser.id,
+          branchId,
+          cashRegisterId,
+        },
+      });
+      createdPayments.push(createdPayment);
+    }
 
     await createInternalReceipt(tx, {
       receiptType: "SALE",
       branchId,
       cashRegisterId,
       saleId: sale.id,
-      paymentId: payment?.id,
+      paymentId: createdPayments.length === 1 ? createdPayments[0]?.id : null,
       sourceId: sale.id,
       createdBy: authUser.id,
       payload: {
         saleId: sale.id,
         totalAmount,
-        paymentMethod,
+        paymentMethod: salePaymentMethod,
+        payments: createdPayments.map((payment) => ({
+          id: payment.id,
+          amount: payment.amount,
+          paymentMethod: payment.paymentMethod,
+        })),
+        paymentsCount: createdPayments.length,
         status: isCredit ? "PENDING" : "PAID",
         balance: isCredit ? totalAmount : 0,
         customerId,
