@@ -1,7 +1,20 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
+import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+
+const parseBinaryResponse = (
+  response: IncomingMessage,
+  callback: (error: Error | null, body: Buffer) => void,
+) => {
+  const chunks: Buffer[] = [];
+
+  response.on("data", (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  response.on("end", () => callback(null, Buffer.concat(chunks)));
+};
 
 describe("Inventario ERP: transferencias y reposicion sugerida", () => {
   const runId = Date.now();
@@ -17,6 +30,7 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
   let branchCId = 0;
   let productId = 0;
   let transferId = "";
+  let transferInternalReceiptId = "";
 
   beforeAll(async () => {
     const [branchA, branchB, branchC] = await Promise.all([
@@ -96,6 +110,9 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
   });
 
   afterAll(async () => {
+    await prisma.internalReceipt.deleteMany({
+      where: { createdBy: operatorId },
+    });
     await prisma.auditLog.deleteMany({
       where: { actorUserId: operatorId },
     });
@@ -124,9 +141,26 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
 
     expect(transferResponse.status).toBe(201);
     expect(transferResponse.body.data.transfer.quantity).toBe(2);
+    expect(transferResponse.body.data.transfer.internalReceiptNumber).toContain(
+      "TRF",
+    );
     expect(transferResponse.body.data.source.quantity).toBe(5);
 
     transferId = transferResponse.body.data.transfer.id;
+    transferInternalReceiptId =
+      transferResponse.body.data.transfer.internalReceiptId;
+
+    const pdfResponse = await request(app)
+      .get(`/api/internal-receipts/${transferInternalReceiptId}/pdf`)
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .buffer(true)
+      .parse(parseBinaryResponse as never);
+
+    expect(pdfResponse.status).toBe(200);
+    expect(pdfResponse.headers["content-type"]).toContain("application/pdf");
+    expect(pdfResponse.headers["content-disposition"]).toContain("TRF");
+    const pdfBody = Buffer.from(pdfResponse.body as Uint8Array);
+    expect(pdfBody.subarray(0, 4).toString()).toBe("%PDF");
 
     const historyResponse = await request(app)
       .get(`/api/stock/transfers?branchId=${branchAId}`)
@@ -148,7 +182,29 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
       product: { id: productId },
       fromBranch: { id: branchAId },
       toBranch: { id: branchBId },
+      internalReceiptId: transferInternalReceiptId,
     });
+
+    const targetHistoryResponse = await request(app)
+      .get(`/api/stock/transfers?branchId=${branchBId}`)
+      .set("Authorization", `Bearer ${operatorToken}`);
+
+    expect(targetHistoryResponse.status).toBe(200);
+    const targetTransfer = targetHistoryResponse.body.data.find(
+      (item: { id: string }) => item.id === transferId,
+    );
+
+    expect(targetTransfer.internalReceiptId).toBeDefined();
+    expect(targetTransfer.internalReceiptId).not.toBe(transferInternalReceiptId);
+
+    const targetPdfResponse = await request(app)
+      .get(`/api/internal-receipts/${targetTransfer.internalReceiptId}/pdf`)
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .buffer(true)
+      .parse(parseBinaryResponse as never);
+
+    expect(targetPdfResponse.status).toBe(200);
+    expect(targetPdfResponse.headers["content-disposition"]).toContain("TRF");
   });
 
   it("calcula reposicion por sucursal y respeta el alcance consolidado del encargado", async () => {

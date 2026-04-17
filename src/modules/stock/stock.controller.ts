@@ -1,6 +1,7 @@
 import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
 class BranchAccessDeniedError extends Error {}
 
@@ -34,6 +35,14 @@ const resolveBranchScope = (
 
   ensureBranchAccess(branchId, authUser);
   return branchId;
+};
+
+const toPayloadRecord = (payload: unknown) => {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {} as Record<string, unknown>;
+  }
+
+  return payload as Record<string, unknown>;
 };
 
 export const getStockByBranch = async (req: AuthRequest, res: Response) => {
@@ -158,14 +167,57 @@ export const getStockTransfers = async (req: AuthRequest, res: Response) => {
       products.map((product) => [product.id, product]),
     );
     const branchById = new Map(branches.map((branch) => [branch.id, branch]));
+    const internalReceipts = await prisma.internalReceipt.findMany({
+      where: {
+        receiptType: "STOCK_TRANSFER",
+        branchId: { in: branchIds },
+      },
+      select: {
+        id: true,
+        branchId: true,
+        receiptNumber: true,
+        payload: true,
+      },
+    });
+    const receiptByTransferId = new Map<
+      string,
+      { id: string; receiptNumber: string }
+    >();
+
+    for (const receipt of internalReceipts) {
+      const payload = toPayloadRecord(receipt.payload);
+      const stockTransferId = payload.stockTransferId;
+      if (stockTransferId) {
+        receiptByTransferId.set(`${String(stockTransferId)}:${receipt.branchId}`, {
+          id: receipt.id,
+          receiptNumber: receipt.receiptNumber,
+        });
+      }
+    }
 
     res.status(200).json({
-      data: transfers.map((transfer) => ({
-        ...transfer,
-        product: productById.get(transfer.productId) || null,
-        fromBranch: branchById.get(transfer.fromBranchId) || null,
-        toBranch: branchById.get(transfer.toBranchId) || null,
-      })),
+      data: transfers.map((transfer) => {
+        const preferredBranchId =
+          branchId > 0
+            ? branchId
+            : authUser.role === "ADMIN" ||
+                authUser.branchIds.includes(transfer.fromBranchId)
+              ? transfer.fromBranchId
+              : transfer.toBranchId;
+        const internalReceipt =
+          receiptByTransferId.get(`${transfer.id}:${preferredBranchId}`) ||
+          receiptByTransferId.get(`${transfer.id}:${transfer.fromBranchId}`) ||
+          receiptByTransferId.get(`${transfer.id}:${transfer.toBranchId}`);
+
+        return {
+          ...transfer,
+          product: productById.get(transfer.productId) || null,
+          fromBranch: branchById.get(transfer.fromBranchId) || null,
+          toBranch: branchById.get(transfer.toBranchId) || null,
+          internalReceiptId: internalReceipt?.id || null,
+          internalReceiptNumber: internalReceipt?.receiptNumber || null,
+        };
+      }),
     });
   } catch (error: unknown) {
     const errorMsg =
@@ -440,6 +492,59 @@ export const transferStockBetweenBranches = async (
         },
       });
 
+      const [product, transferBranches] = await Promise.all([
+        tx.product.findUnique({
+          where: { id: parsedProductId },
+          select: { id: true, name: true, sku: true, brand: true, category: true },
+        }),
+        tx.branch.findMany({
+          where: { id: { in: [parsedFromBranchId, parsedToBranchId] } },
+          select: { id: true, name: true },
+        }),
+      ]);
+      const branchById = new Map(
+        transferBranches.map((branch) => [branch.id, branch]),
+      );
+      const transferReceiptPayload = {
+        stockTransferId: transfer.id,
+        productId: parsedProductId,
+        productName: product?.name || null,
+        sku: product?.sku || null,
+        brand: product?.brand || null,
+        category: product?.category || null,
+        fromBranchId: parsedFromBranchId,
+        fromBranchName:
+          branchById.get(parsedFromBranchId)?.name ||
+          `Sucursal #${parsedFromBranchId}`,
+        toBranchId: parsedToBranchId,
+        toBranchName:
+          branchById.get(parsedToBranchId)?.name ||
+          `Sucursal #${parsedToBranchId}`,
+        quantity: parsedQuantity,
+        reason: transferReason,
+        status: transfer.status,
+      };
+      const originReceipt = await createInternalReceipt(tx, {
+        receiptType: "STOCK_TRANSFER",
+        branchId: parsedFromBranchId,
+        sourceId: transfer.id,
+        createdBy: authUser.id,
+        payload: {
+          ...transferReceiptPayload,
+          direction: "OUT",
+        },
+      });
+      const destinationReceipt = await createInternalReceipt(tx, {
+        receiptType: "STOCK_TRANSFER",
+        branchId: parsedToBranchId,
+        sourceId: transfer.id,
+        createdBy: authUser.id,
+        payload: {
+          ...transferReceiptPayload,
+          direction: "IN",
+        },
+      });
+
       await tx.auditLog.create({
         data: {
           actorUserId: authUser.id,
@@ -447,10 +552,28 @@ export const transferStockBetweenBranches = async (
           action: "STOCK_TRANSFER_COMPLETED",
           entityType: "StockTransfer",
           entityId: transfer.id,
+          metadata: {
+            originInternalReceiptId: originReceipt.id,
+            originInternalReceiptNumber: originReceipt.receiptNumber,
+            destinationInternalReceiptId: destinationReceipt.id,
+            destinationInternalReceiptNumber: destinationReceipt.receiptNumber,
+          },
         },
       });
 
-      return { transfer, source: updatedSource, target: updatedTarget };
+      return {
+        transfer: {
+          ...transfer,
+          internalReceiptId: originReceipt.id,
+          internalReceiptNumber: originReceipt.receiptNumber,
+        },
+        source: updatedSource,
+        target: updatedTarget,
+        internalReceipts: {
+          origin: originReceipt,
+          destination: destinationReceipt,
+        },
+      };
     });
 
     res.status(201).json({

@@ -29,6 +29,7 @@ const receiptTypeTitle: Record<string, string> = {
   CASH_CLOSE: "Arqueo interno de caja",
   PURCHASE_ORDER: "Orden interna de compra",
   PURCHASE_RECEIPT: "Recepcion interna de compra",
+  STOCK_TRANSFER: "Transferencia interna de stock",
 };
 
 type ReceiptPdfRow = [string, string];
@@ -212,6 +213,19 @@ const buildReceiptRows = (
       ["Unidades recibidas", getPayloadText(payload, "totalUnits", "0")],
       ["Total recibido", formatMoney(getPayloadNumber(payload, "estimatedTotal"))],
       ["Productos", formatItemsSummary(payload)],
+    ];
+  }
+
+  if (receiptType === "STOCK_TRANSFER") {
+    return [
+      ["Transferencia", getPayloadText(payload, "stockTransferId")],
+      ["Producto", getPayloadText(payload, "productName")],
+      ["SKU", getPayloadText(payload, "sku")],
+      ["Origen", getPayloadText(payload, "fromBranchName")],
+      ["Destino", getPayloadText(payload, "toBranchName")],
+      ["Cantidad", getPayloadText(payload, "quantity", "0")],
+      ["Motivo", getPayloadText(payload, "reason")],
+      ["Estado", getPayloadText(payload, "status")],
     ];
   }
 
