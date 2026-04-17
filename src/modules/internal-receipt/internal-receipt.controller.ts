@@ -182,12 +182,31 @@ const buildReceiptRows = (
       ["Apertura", formatDate(getPayloadText(payload, "openedAt"))],
       ["Cierre", formatDate(getPayloadText(payload, "closedAt"))],
       ["Fondo inicial", formatMoney(getPayloadNumber(payload, "initialBalance"))],
+      [
+        "Ingresos efectivo",
+        formatMoney(getPayloadNumber(payload, "totalCashPayments")),
+      ],
+      [
+        "Ingresos no efectivo",
+        formatMoney(getPayloadNumber(payload, "totalNonCashPayments")),
+      ],
+      ["Egresos", formatMoney(getPayloadNumber(payload, "totalExpenses"))],
       ["Esperado", formatMoney(getPayloadNumber(payload, "expectedBalance"))],
       ["Contado", formatMoney(getPayloadNumber(payload, "actualBalance"))],
       ["Diferencia", formatMoney(getPayloadNumber(payload, "discrepancy"))],
       ["Observaciones", getPayloadText(payload, "observations")],
       ["Cobranzas", getPayloadText(payload, "paymentsCount", "0")],
-      ["Egresos", getPayloadText(payload, "expensesCount", "0")],
+      ["Cant. egresos", getPayloadText(payload, "expensesCount", "0")],
+      ["Sync local pendiente", getPayloadText(payload, "localPendingOperations", "0")],
+      ["Sync local conflictos", getPayloadText(payload, "localFailedOperations", "0")],
+      [
+        "Sync servidor pendiente",
+        getPayloadText(payload, "serverPendingSyncOperations", "0"),
+      ],
+      [
+        "Sync servidor conflictos",
+        getPayloadText(payload, "serverRejectedSyncOperations", "0"),
+      ],
     ];
   }
 

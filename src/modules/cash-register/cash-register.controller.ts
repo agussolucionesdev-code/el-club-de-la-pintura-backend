@@ -1,25 +1,62 @@
+import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
-const calculateExpectedCashBalance = (shift: {
+interface CashRegisterShift {
   initialBalance: number;
   payments: { amount: number; paymentMethod: string }[];
   expenses: { amount: number }[];
-}) => {
+}
+
+const normalizePaymentMethod = (paymentMethod: string) =>
+  paymentMethod.trim().toUpperCase() || "UNKNOWN";
+
+const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
+const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const buildCashRegisterSummary = (shift: CashRegisterShift) => {
+  const paymentsByMethod = shift.payments.reduce<Record<string, number>>(
+    (acc, payment) => {
+      const method = normalizePaymentMethod(payment.paymentMethod);
+      acc[method] = roundMoney((acc[method] || 0) + payment.amount);
+      return acc;
+    },
+    {},
+  );
+
   const totalCashPayments = shift.payments.reduce((acc, payment) => {
-    return payment.paymentMethod.toUpperCase() === "CASH"
+    return normalizePaymentMethod(payment.paymentMethod) === "CASH"
       ? acc + payment.amount
       : acc;
   }, 0);
 
+  const totalPayments = shift.payments.reduce(
+    (acc, payment) => acc + payment.amount,
+    0,
+  );
   const totalExpenses = shift.expenses.reduce(
     (acc, expense) => acc + expense.amount,
     0,
   );
+  const expectedBalance =
+    shift.initialBalance + totalCashPayments - totalExpenses;
 
-  return shift.initialBalance + totalCashPayments - totalExpenses;
+  return {
+    initialBalance: roundMoney(shift.initialBalance),
+    paymentsByMethod,
+    totalPayments: roundMoney(totalPayments),
+    totalCashPayments: roundMoney(totalCashPayments),
+    totalNonCashPayments: roundMoney(totalPayments - totalCashPayments),
+    totalExpenses: roundMoney(totalExpenses),
+    netCashMovement: roundMoney(totalCashPayments - totalExpenses),
+    expectedBalance: roundMoney(expectedBalance),
+    paymentsCount: shift.payments.length,
+    expensesCount: shift.expenses.length,
+  };
 };
 
 export const getActiveShift = async (req: AuthRequest, res: Response) => {
@@ -58,13 +95,14 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const currentExpectedBalance = calculateExpectedCashBalance(activeShift);
+    const cashSummary = buildCashRegisterSummary(activeShift);
 
     res.status(200).json({
       message: "Turno activo recuperado.",
       data: {
         ...activeShift,
-        currentExpectedBalance,
+        currentExpectedBalance: cashSummary.expectedBalance,
+        cashSummary,
       },
     });
   } catch (error: unknown) {
@@ -140,11 +178,23 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const { id } = req.params;
-    const { actualBalance, observations } = req.body;
+    const {
+      actualBalance,
+      observations,
+      localPendingOperations = 0,
+      localFailedOperations = 0,
+    } = req.body;
+    const countedBalance = Number(actualBalance);
 
     if (!authUser) {
       return res.status(401).json({
         error: "No se pudo validar la identidad del operador.",
+      });
+    }
+
+    if (!Number.isFinite(countedBalance) || countedBalance < 0) {
+      return res.status(400).json({
+        error: "El dinero fisico contado debe ser un monto valido y no negativo.",
       });
     }
 
@@ -171,8 +221,29 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const expectedBalance = calculateExpectedCashBalance(shift);
-    const discrepancy = Number(actualBalance) - expectedBalance;
+    const cashSummary = buildCashRegisterSummary(shift);
+    const expectedBalance = cashSummary.expectedBalance;
+    const discrepancy = roundMoney(countedBalance - expectedBalance);
+    const parsedLocalPendingOperations = Math.max(
+      0,
+      Number(localPendingOperations) || 0,
+    );
+    const parsedLocalFailedOperations = Math.max(
+      0,
+      Number(localFailedOperations) || 0,
+    );
+    const [serverPendingSyncOperations, serverRejectedSyncOperations] =
+      await Promise.all([
+        prisma.syncOperation.count({
+          where: {
+            branchId: shift.branchId,
+            status: { in: ["PENDING", "PROCESSING"] },
+          },
+        }),
+        prisma.syncOperation.count({
+          where: { branchId: shift.branchId, status: "REJECTED" },
+        }),
+      ]);
 
     const result = await prisma.$transaction(async (tx) => {
       const closedShift = await tx.cashRegister.update({
@@ -181,7 +252,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           status: "CLOSED",
           closingTime: new Date(),
           expectedBalance,
-          actualBalance: Number(actualBalance),
+          actualBalance: countedBalance,
           discrepancy,
           observations: observations || null,
         },
@@ -199,11 +270,44 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           closedAt: closedShift.closingTime,
           initialBalance: shift.initialBalance,
           expectedBalance,
-          actualBalance: Number(actualBalance),
+          actualBalance: countedBalance,
           discrepancy,
           observations: observations || null,
-          paymentsCount: shift.payments.length,
-          expensesCount: shift.expenses.length,
+          totalCashPayments: cashSummary.totalCashPayments,
+          totalNonCashPayments: cashSummary.totalNonCashPayments,
+          totalPayments: cashSummary.totalPayments,
+          totalExpenses: cashSummary.totalExpenses,
+          netCashMovement: cashSummary.netCashMovement,
+          paymentsCount: cashSummary.paymentsCount,
+          expensesCount: cashSummary.expensesCount,
+          paymentsByMethod: cashSummary.paymentsByMethod,
+          localPendingOperations: parsedLocalPendingOperations,
+          localFailedOperations: parsedLocalFailedOperations,
+          serverPendingSyncOperations,
+          serverRejectedSyncOperations,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: shift.branchId,
+          action: "cash_register.closed",
+          entityType: "CashRegister",
+          entityId: String(shift.id),
+          metadata: toJsonPayload({
+            expectedBalance,
+            actualBalance: countedBalance,
+            discrepancy,
+            totalCashPayments: cashSummary.totalCashPayments,
+            totalExpenses: cashSummary.totalExpenses,
+            serverPendingSyncOperations,
+            serverRejectedSyncOperations,
+            localPendingOperations: parsedLocalPendingOperations,
+            localFailedOperations: parsedLocalFailedOperations,
+            internalReceiptId: receipt.id,
+            internalReceiptNumber: receipt.receiptNumber,
+          }),
         },
       });
 
@@ -212,7 +316,18 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
 
     res.status(200).json({
       message: "El turno ha sido cerrado y arqueado correctamente.",
-      data: result.closedShift,
+      data: {
+        ...result.closedShift,
+        cashSummary: {
+          ...cashSummary,
+          actualBalance: countedBalance,
+          discrepancy,
+          localPendingOperations: parsedLocalPendingOperations,
+          localFailedOperations: parsedLocalFailedOperations,
+          serverPendingSyncOperations,
+          serverRejectedSyncOperations,
+        },
+      },
       receipt: result.receipt,
     });
   } catch (error: unknown) {
