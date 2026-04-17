@@ -10,6 +10,7 @@ import {
   createSale,
   getPendingAccounts,
   generateSaleReceiptPdf,
+  cancelSale,
 } from "./sale.controller";
 
 const router = Router();
@@ -23,6 +24,7 @@ router.get(
 );
 router.get("/", getSales);
 router.get("/:id/receipt/pdf", generateSaleReceiptPdf);
+router.post("/:id/cancel", authorizeRoles("ADMIN", "ENCARGADO"), cancelSale);
 router.get("/:id", getSaleById);
 router.post("/", authorizeBranchAccess(), validate(createSaleSchema), createSale);
 

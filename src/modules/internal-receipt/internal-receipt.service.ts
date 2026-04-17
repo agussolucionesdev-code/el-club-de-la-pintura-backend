@@ -1,6 +1,11 @@
 import { Prisma } from "@prisma/client";
 
-type InternalReceiptType = "SALE" | "PAYMENT" | "EXPENSE" | "CASH_CLOSE";
+type InternalReceiptType =
+  | "SALE"
+  | "SALE_CANCEL"
+  | "PAYMENT"
+  | "EXPENSE"
+  | "CASH_CLOSE";
 
 interface CreateInternalReceiptInput {
   receiptType: InternalReceiptType;
@@ -15,6 +20,7 @@ interface CreateInternalReceiptInput {
 
 const receiptTypePrefix: Record<InternalReceiptType, string> = {
   SALE: "VTA",
+  SALE_CANCEL: "ANU",
   PAYMENT: "PAG",
   EXPENSE: "EGR",
   CASH_CLOSE: "CJA",

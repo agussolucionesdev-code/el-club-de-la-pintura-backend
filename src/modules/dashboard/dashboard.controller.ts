@@ -9,6 +9,8 @@ class DashboardAccessDeniedError extends Error {}
 const responseStatusForDashboardError = (error: unknown) =>
   error instanceof DashboardAccessDeniedError ? 403 : 400;
 
+const ACTIVE_SALE_STATUS_FILTER = { not: "CANCELLED" };
+
 const parseDashboardDate = (value: unknown, endOfDay = false) => {
   if (value === undefined || value === null || value === "") return undefined;
 
@@ -82,10 +84,12 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       branchFilter === undefined ? {} : { branchId: branchFilter };
     const saleWhere: Prisma.SaleWhereInput = {
       ...branchWhere,
+      status: ACTIVE_SALE_STATUS_FILTER,
       ...(createdAt ? { createdAt } : {}),
     };
     const paymentWhere: Prisma.PaymentWhereInput = {
       ...branchWhere,
+      sale: { status: ACTIVE_SALE_STATUS_FILTER },
       ...(createdAt ? { createdAt } : {}),
     };
     const expenseWhere: Prisma.ExpenseWhereInput = {
@@ -282,22 +286,32 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
   try {
     const { branchId, startDate, endDate } = req.query;
 
-    const whereClause: any = {};
-    if (branchId) whereClause.branchId = Number(branchId);
+    const saleWhereClause: any = { status: ACTIVE_SALE_STATUS_FILTER };
+    const expenseWhereClause: any = {};
+    if (branchId) {
+      saleWhereClause.branchId = Number(branchId);
+      expenseWhereClause.branchId = Number(branchId);
+    }
 
     if (startDate || endDate) {
-      whereClause.createdAt = {};
-      if (startDate) whereClause.createdAt.gte = new Date(String(startDate));
-      if (endDate) whereClause.createdAt.lte = new Date(String(endDate));
+      const createdAt = {};
+      if (startDate) {
+        (createdAt as { gte?: Date }).gte = new Date(String(startDate));
+      }
+      if (endDate) {
+        (createdAt as { lte?: Date }).lte = new Date(String(endDate));
+      }
+      saleWhereClause.createdAt = createdAt;
+      expenseWhereClause.createdAt = createdAt;
     }
 
     const [sales, expenses] = await Promise.all([
       prisma.sale.findMany({
-        where: whereClause,
+        where: saleWhereClause,
         include: { items: true, payments: true },
       }),
       prisma.expense.findMany({
-        where: whereClause,
+        where: expenseWhereClause,
       }),
     ]);
 
@@ -457,7 +471,7 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
 
     const rankingLimit = limit ? Number(limit) : 10;
 
-    const saleWhereClause: any = {};
+    const saleWhereClause: any = { status: ACTIVE_SALE_STATUS_FILTER };
     if (branchId) saleWhereClause.branchId = Number(branchId);
     if (startDate || endDate) {
       saleWhereClause.createdAt = {};
@@ -687,10 +701,12 @@ export const exportScopedFinancialReportToExcel = async (
       branchFilter === undefined ? {} : { branchId: branchFilter };
     const saleWhere: Prisma.SaleWhereInput = {
       ...branchWhere,
+      status: ACTIVE_SALE_STATUS_FILTER,
       ...(createdAt ? { createdAt } : {}),
     };
     const paymentWhere: Prisma.PaymentWhereInput = {
       ...branchWhere,
+      sale: { status: ACTIVE_SALE_STATUS_FILTER },
       ...(createdAt ? { createdAt } : {}),
     };
     const expenseWhere: Prisma.ExpenseWhereInput = {

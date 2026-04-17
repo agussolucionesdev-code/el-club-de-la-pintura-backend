@@ -5,6 +5,13 @@ import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
 class SaleBranchAccessError extends Error {}
+class SaleNotFoundError extends Error {}
+
+const responseStatusForSaleError = (error: unknown) => {
+  if (error instanceof SaleBranchAccessError) return 403;
+  if (error instanceof SaleNotFoundError) return 404;
+  return 400;
+};
 
 const parsePositiveInt = (value: unknown, fieldName: string) => {
   const parsed = Number(value);
@@ -29,6 +36,14 @@ const formatReceiptDate = (date: Date) =>
     timeZone: "America/Argentina/Buenos_Aires",
   });
 
+const parseCancellationReason = (value: unknown) => {
+  if (typeof value !== "string" || value.trim().length < 5) {
+    throw new Error("Debe indicar un motivo de anulacion claro.");
+  }
+
+  return value.trim().slice(0, 500);
+};
+
 const ensureBranchAccess = (
   branchId: number,
   authUser: { role: string; branchIds: number[] },
@@ -37,6 +52,138 @@ const ensureBranchAccess = (
 
   if (!authUser.branchIds.includes(branchId)) {
     throw new SaleBranchAccessError("No tienes acceso a la sucursal indicada.");
+  }
+};
+
+export const cancelSale = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const saleId = parsePositiveInt(req.params.id, "Venta");
+    const reason = parseCancellationReason(req.body?.reason);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del operador.",
+      });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const sale = await tx.sale.findUnique({
+        where: { id: saleId },
+        include: {
+          items: true,
+          payments: true,
+        },
+      });
+
+      if (!sale) {
+        throw new SaleNotFoundError("Venta o ticket no encontrado.");
+      }
+
+      ensureBranchAccess(sale.branchId, authUser);
+
+      if (sale.status === "CANCELLED") {
+        throw new Error("Esta venta ya fue anulada previamente.");
+      }
+
+      if (sale.payments.length > 0) {
+        throw new Error(
+          "La venta tiene cobranzas aplicadas. Para evitar descuadres de caja, debe procesarse con el modulo formal de devoluciones.",
+        );
+      }
+
+      for (const item of sale.items) {
+        await tx.stock.update({
+          where: {
+            productId_branchId: {
+              productId: item.productId,
+              branchId: sale.branchId,
+            },
+          },
+          data: {
+            quantity: {
+              increment: item.quantity,
+            },
+          },
+        });
+
+        await tx.movement.create({
+          data: {
+            type: "IN",
+            quantity: item.quantity,
+            reason: `Anulacion de venta #${sale.id}: ${reason}`,
+            productId: item.productId,
+            branchId: sale.branchId,
+            userId: authUser.id,
+          },
+        });
+      }
+
+      const cancelledSale = await tx.sale.update({
+        where: { id: sale.id },
+        data: {
+          status: "CANCELLED",
+          balance: 0,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: sale.branchId,
+          action: "SALE_CANCELLED",
+          entityType: "Sale",
+          entityId: String(sale.id),
+          metadata: {
+            reason,
+            previousStatus: sale.status,
+            previousBalance: sale.balance,
+            totalAmount: sale.totalAmount,
+            restoredItems: sale.items.map((item) => ({
+              productId: item.productId,
+              quantity: item.quantity,
+            })),
+          },
+        },
+      });
+
+      const receipt = await createInternalReceipt(tx, {
+        receiptType: "SALE_CANCEL",
+        branchId: sale.branchId,
+        cashRegisterId: sale.cashRegisterId,
+        saleId: sale.id,
+        sourceId: sale.id,
+        createdBy: authUser.id,
+        payload: {
+          saleId: sale.id,
+          reason,
+          previousStatus: sale.status,
+          previousBalance: sale.balance,
+          totalAmount: sale.totalAmount,
+          restoredItemsCount: sale.items.length,
+          restoredItems: sale.items.map((item) => ({
+            productId: item.productId,
+            quantity: item.quantity,
+            subtotal: item.subtotal,
+          })),
+        },
+      });
+
+      return { sale: cancelledSale, receipt };
+    });
+
+    res.status(200).json({
+      message: "Venta anulada correctamente. Stock y deuda fueron revertidos.",
+      data: result.sale,
+      receipt: result.receipt,
+    });
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "Error critico al anular la venta.";
+
+    res.status(responseStatusForSaleError(error)).json({ error: errorMsg });
   }
 };
 
