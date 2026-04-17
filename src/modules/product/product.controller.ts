@@ -2,6 +2,7 @@
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { Prisma } from "@prisma/client";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 // Importación de utilidades de procesamiento y almacenamiento
 import * as xlsx from "xlsx";
 import cloudinary from "../../config/cloudinary";
@@ -16,6 +17,102 @@ const normalizeProductName = (name: string): string => {
   // Limpia espacios dobles
   cleanName = cleanName.replace(/\s{2,}/g, " ");
   return cleanName;
+};
+
+const parseOptionalStockInput = (stock: unknown) => {
+  if (stock === undefined || stock === null || stock === "") return null;
+
+  const parsedStock = Number(stock);
+  if (!Number.isInteger(parsedStock) || parsedStock < 0) {
+    throw new Error("El stock informado debe ser un numero entero positivo.");
+  }
+
+  return parsedStock;
+};
+
+const parseStockBranchId = (body: Record<string, unknown>) => {
+  const rawBranchId = body.stockBranchId ?? body.branchId;
+  const branchId = Number(rawBranchId);
+
+  if (!Number.isInteger(branchId) || branchId <= 0) {
+    throw new Error(
+      "Para modificar stock desde catalogo debes elegir una sucursal especifica.",
+    );
+  }
+
+  return branchId;
+};
+
+const ensureProductBranchAccess = (
+  branchId: number,
+  authUser: { role: string; branchIds: number[] },
+) => {
+  if (authUser.role === "ADMIN") return;
+
+  if (!authUser.branchIds.includes(branchId)) {
+    throw new Error("No tienes permisos para modificar stock en esa sucursal.");
+  }
+};
+
+const isOperationalProductError = (error: unknown) =>
+  error instanceof Error &&
+  (error.message.includes("stock informado") ||
+    error.message.includes("modificar stock") ||
+    error.message.includes("sucursal especifica") ||
+    error.message.includes("sucursal indicada"));
+
+const applyCatalogStockSnapshot = async (
+  tx: Prisma.TransactionClient,
+  {
+    productId,
+    branchId,
+    quantity,
+    userId,
+    reason,
+  }: {
+    productId: number;
+    branchId: number;
+    quantity: number;
+    userId: number;
+    reason: string;
+  },
+) => {
+  const branch = await tx.branch.findUnique({ where: { id: branchId } });
+  if (!branch) {
+    throw new Error("La sucursal indicada para stock no existe.");
+  }
+
+  const currentStock = await tx.stock.findUnique({
+    where: { productId_branchId: { productId, branchId } },
+  });
+  const previousQuantity = currentStock?.quantity || 0;
+  const delta = quantity - previousQuantity;
+
+  const stock = await tx.stock.upsert({
+    where: { productId_branchId: { productId, branchId } },
+    update: { quantity },
+    create: {
+      productId,
+      branchId,
+      quantity,
+      minStock: 5,
+    },
+  });
+
+  if (delta !== 0) {
+    await tx.movement.create({
+      data: {
+        type: "CATALOG_ADJUST",
+        quantity: delta,
+        reason,
+        productId,
+        branchId,
+        userId,
+      },
+    });
+  }
+
+  return stock;
 };
 
 // ============================================================================
@@ -81,8 +178,9 @@ export const getProducts = async (req: Request, res: Response) => {
 // ============================================================================
 // CREACIÓN INDIVIDUAL: Ingreso de nuevo producto
 // ============================================================================
-export const createProduct = async (req: Request, res: Response) => {
+export const createProduct = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const {
       sku,
       barcode,
@@ -103,15 +201,33 @@ export const createProduct = async (req: Request, res: Response) => {
       images,
       supplierId,
       stock,
+      stockBranchId,
+      branchId,
       status,
       metadata: reqMetadata,
       ...extraData
     } = req.body;
 
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
     if (!sku || !name || !brand || !category) {
       return res.status(400).json({
         error: "Los campos sku, name, brand y category son requeridos.",
       });
+    }
+
+    const parsedStock = parseOptionalStockInput(stock);
+    const parsedStockBranchId =
+      parsedStock === null
+        ? null
+        : parseStockBranchId({ stockBranchId, branchId });
+
+    if (parsedStockBranchId !== null) {
+      ensureProductBranchAccess(parsedStockBranchId, authUser);
     }
 
     const existingSku = await prisma.product.findUnique({ where: { sku } });
@@ -132,15 +248,17 @@ export const createProduct = async (req: Request, res: Response) => {
 
     const flatMetadata = {
       ...(reqMetadata || {}),
-      ...(stock !== undefined && {
-        stock: Number(stock),
-        initialStockImported: Number(stock),
+      ...(parsedStock !== null && {
+        stock: parsedStock,
+        initialStockImported: parsedStock,
+        stockBranchId: parsedStockBranchId,
       }),
       ...(status && { status }),
       ...extraData,
     };
 
-    const newProduct = await prisma.product.create({
+    const newProduct = await prisma.$transaction(async (tx) => {
+      const createdProduct = await tx.product.create({
       data: {
         sku,
         barcode: barcode || null,
@@ -165,22 +283,46 @@ export const createProduct = async (req: Request, res: Response) => {
         metadata:
           Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
       },
+      });
+
+      if (parsedStock !== null && parsedStockBranchId !== null) {
+        await applyCatalogStockSnapshot(tx, {
+          productId: createdProduct.id,
+          branchId: parsedStockBranchId,
+          quantity: parsedStock,
+          userId: authUser.id,
+          reason: "Alta de stock inicial desde catalogo",
+        });
+      }
+
+      return tx.product.findUnique({
+        where: { id: createdProduct.id },
+        include: {
+          supplier: { select: { id: true, companyName: true } },
+          stocks: true,
+        },
+      });
     });
 
     res.status(201).json(newProduct);
   } catch (error) {
-    console.error("Error al crear el producto:", error);
-    res
-      .status(500)
-      .json({ error: "Hubo un problema al registrar el producto." });
+    if (!isOperationalProductError(error)) {
+      console.error("Error al crear el producto:", error);
+    }
+    const errorMsg =
+      error instanceof Error
+        ? error.message
+        : "Hubo un problema al registrar el producto.";
+    res.status(400).json({ error: errorMsg });
   }
 };
 
 // ============================================================================
 // ACTUALIZACIÓN: Modificación de producto existente
 // ============================================================================
-export const updateProduct = async (req: Request, res: Response) => {
+export const updateProduct = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { id } = req.params;
     const {
       sku,
@@ -203,10 +345,28 @@ export const updateProduct = async (req: Request, res: Response) => {
       images,
       supplierId,
       stock,
+      stockBranchId,
+      branchId,
       status,
       metadata: reqMetadata,
       ...extraData
     } = req.body;
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const parsedStock = parseOptionalStockInput(stock);
+    const parsedStockBranchId =
+      parsedStock === null
+        ? null
+        : parseStockBranchId({ stockBranchId, branchId });
+
+    if (parsedStockBranchId !== null) {
+      ensureProductBranchAccess(parsedStockBranchId, authUser);
+    }
 
     const activeProduct = await prisma.product.findFirst({
       where: { id: Number(id), isActive: true },
@@ -226,9 +386,10 @@ export const updateProduct = async (req: Request, res: Response) => {
     const flatMetadata = {
       ...existingMeta,
       ...(reqMetadata || {}),
-      ...(stock !== undefined && {
-        stock: Number(stock),
-        initialStockImported: Number(stock),
+      ...(parsedStock !== null && {
+        stock: parsedStock,
+        initialStockImported: parsedStock,
+        stockBranchId: parsedStockBranchId,
       }),
       ...(status && { status }),
       ...extraData,
@@ -254,7 +415,8 @@ export const updateProduct = async (req: Request, res: Response) => {
             finalCost * (1 + finalMargin / 100) * (1 + finalIva / 100),
           );
 
-    const updatedProduct = await prisma.product.update({
+    const updatedProduct = await prisma.$transaction(async (tx) => {
+      await tx.product.update({
       where: { id: Number(id) },
       data: {
         sku,
@@ -280,27 +442,34 @@ export const updateProduct = async (req: Request, res: Response) => {
         metadata:
           Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
       },
-    });
-
-    if (stock !== undefined) {
-      await prisma.stock.upsert({
-        where: {
-          productId_branchId: { productId: Number(id), branchId: 1 },
-        },
-        update: { quantity: Number(stock) },
-        create: {
+      });
+      if (parsedStock !== null && parsedStockBranchId !== null) {
+        await applyCatalogStockSnapshot(tx, {
           productId: Number(id),
-          branchId: 1,
-          quantity: Number(stock),
-          minStock: 5,
+          branchId: parsedStockBranchId,
+          quantity: parsedStock,
+          userId: authUser.id,
+          reason: "Ajuste de stock desde catalogo",
+        });
+      }
+
+      return tx.product.findUnique({
+        where: { id: Number(id) },
+        include: {
+          supplier: { select: { id: true, companyName: true } },
+          stocks: true,
         },
       });
-    }
+    });
 
     res.status(200).json(updatedProduct);
   } catch (error) {
-    console.error("Error al actualizar el producto:", error);
-    res.status(500).json({ error: "No se pudo actualizar el producto." });
+    if (!isOperationalProductError(error)) {
+      console.error("Error al actualizar el producto:", error);
+    }
+    const errorMsg =
+      error instanceof Error ? error.message : "No se pudo actualizar el producto.";
+    res.status(400).json({ error: errorMsg });
   }
 };
 

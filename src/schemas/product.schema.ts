@@ -24,6 +24,8 @@ export const createProductSchema = z.object({
     baseType: z.string().optional().nullable(),
     images: z.array(z.string()).optional().default([]),
     stock: z.number().nonnegative().optional().nullable(),
+    stockBranchId: z.number().int().positive().optional().nullable(),
+    branchId: z.number().int().positive().optional().nullable(),
     status: z.string().optional().nullable(),
     metadata: z.record(z.string(), z.any()).optional().nullable(),
     supplierId: z.number().int().positive().optional().nullable(),
