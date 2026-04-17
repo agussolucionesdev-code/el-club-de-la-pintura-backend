@@ -1,7 +1,20 @@
 import request from "supertest";
 import bcrypt from "bcrypt";
+import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+
+const parseBinaryResponse = (
+  response: IncomingMessage,
+  callback: (error: Error | null, body: Buffer) => void,
+) => {
+  const chunks: Buffer[] = [];
+
+  response.on("data", (chunk: Buffer | string) => {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  });
+  response.on("end", () => callback(null, Buffer.concat(chunks)));
+};
 
 describe("Anulacion operativa de ventas", () => {
   const runId = Date.now();
@@ -175,6 +188,10 @@ describe("Anulacion operativa de ventas", () => {
         cashRegisterId: cashRegisterAId,
       },
     });
+    await prisma.stock.update({
+      where: { productId_branchId: { productId, branchId: branchAId } },
+      data: { quantity: { decrement: 1 } },
+    });
 
     const [managerLogin, employeeLogin] = await Promise.all([
       request(app).post("/api/users/login").send(managerCreds),
@@ -235,14 +252,63 @@ describe("Anulacion operativa de ventas", () => {
     expect(response.status).toBe(403);
   });
 
-  it("bloquea ventas con cobranzas para no descuadrar caja", async () => {
+  it("devuelve ventas cobradas con reversa de caja y stock", async () => {
+    const stockBeforeRefund = await prisma.stock.findUnique({
+      where: { productId_branchId: { productId, branchId: branchAId } },
+    });
+    expect(stockBeforeRefund?.quantity).toBe(4);
+
     const response = await request(app)
       .post(`/api/sales/${paidSaleId}/cancel`)
       .set("Authorization", `Bearer ${managerToken}`)
       .send({ reason: "Cliente devolvio producto pago" });
 
-    expect(response.status).toBe(400);
-    expect(response.body.error).toContain("cobranzas aplicadas");
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      id: paidSaleId,
+      status: "CANCELLED",
+      balance: 0,
+    });
+    expect(response.body.receipt).toMatchObject({
+      receiptType: "SALE_REFUND",
+      branchId: branchAId,
+      saleId: paidSaleId,
+    });
+
+    const pdfResponse = await request(app)
+      .get(`/api/internal-receipts/${response.body.receipt.id}/pdf`)
+      .set("Authorization", `Bearer ${managerToken}`)
+      .buffer(true)
+      .parse(parseBinaryResponse as never);
+
+    expect(pdfResponse.status).toBe(200);
+    expect(pdfResponse.headers["content-type"]).toContain("application/pdf");
+    expect(pdfResponse.headers["content-disposition"]).toContain("DEV");
+    const pdfBody = Buffer.from(pdfResponse.body as Uint8Array);
+    expect(pdfBody.subarray(0, 4).toString()).toBe("%PDF");
+
+    const refundPayment = await prisma.payment.findFirst({
+      where: {
+        saleId: paidSaleId,
+        amount: -150,
+      },
+    });
+    expect(refundPayment).toMatchObject({
+      paymentMethod: "CASH",
+      branchId: branchAId,
+      cashRegisterId: cashRegisterAId,
+    });
+
+    const stockAfterRefund = await prisma.stock.findUnique({
+      where: { productId_branchId: { productId, branchId: branchAId } },
+    });
+    expect(stockAfterRefund?.quantity).toBe(5);
+
+    const cashResponse = await request(app)
+      .get(`/api/cash-registers/${branchAId}/active`)
+      .set("Authorization", `Bearer ${managerToken}`);
+    expect(cashResponse.status).toBe(200);
+    expect(cashResponse.body.data.currentExpectedBalance).toBe(1000);
   });
 
   it("anula una venta a cuenta sin pagos, restaura stock y sale de reportes", async () => {
@@ -319,7 +385,7 @@ describe("Anulacion operativa de ventas", () => {
       .get(`/api/dashboard/summary?branchId=${branchAId}`)
       .set("Authorization", `Bearer ${managerToken}`);
     expect(dashboardResponse.status).toBe(200);
-    expect(dashboardResponse.body.kpis.totalBilled).toBe(150);
+    expect(dashboardResponse.body.kpis.totalBilled).toBe(0);
     expect(dashboardResponse.body.kpis.totalDebt).toBe(0);
     expect(
       dashboardResponse.body.topProducts.some(

@@ -44,6 +44,25 @@ const parseCancellationReason = (value: unknown) => {
   return value.trim().slice(0, 500);
 };
 
+const calculateAvailableCash = (shift: {
+  initialBalance: number;
+  payments: { amount: number; paymentMethod: string }[];
+  expenses: { amount: number }[];
+}) => {
+  const totalCashPayments = shift.payments.reduce((acc, payment) => {
+    return payment.paymentMethod.toUpperCase() === "CASH"
+      ? acc + payment.amount
+      : acc;
+  }, 0);
+
+  const totalExpenses = shift.expenses.reduce(
+    (acc, expense) => acc + expense.amount,
+    0,
+  );
+
+  return shift.initialBalance + totalCashPayments - totalExpenses;
+};
+
 const ensureBranchAccess = (
   branchId: number,
   authUser: { role: string; branchIds: number[] },
@@ -86,10 +105,46 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
         throw new Error("Esta venta ya fue anulada previamente.");
       }
 
-      if (sale.payments.length > 0) {
-        throw new Error(
-          "La venta tiene cobranzas aplicadas. Para evitar descuadres de caja, debe procesarse con el modulo formal de devoluciones.",
-        );
+      const originalPayments = sale.payments.filter(
+        (payment) => payment.amount > 0,
+      );
+      const refundAmount = originalPayments.reduce(
+        (sum, payment) => sum + payment.amount,
+        0,
+      );
+      const cashRefundAmount = originalPayments.reduce((sum, payment) => {
+        return payment.paymentMethod.toUpperCase() === "CASH"
+          ? sum + payment.amount
+          : sum;
+      }, 0);
+      let refundCashRegisterId: number | null = null;
+
+      if (originalPayments.length > 0) {
+        const activeRefundRegister = await tx.cashRegister.findFirst({
+          where: {
+            branchId: sale.branchId,
+            status: "OPEN",
+          },
+          include: {
+            payments: true,
+            expenses: true,
+          },
+        });
+
+        if (!activeRefundRegister) {
+          throw new Error(
+            "Debe haber una caja abierta en la sucursal para procesar la devolucion.",
+          );
+        }
+
+        const availableCash = calculateAvailableCash(activeRefundRegister);
+        if (cashRefundAmount > availableCash) {
+          throw new Error(
+            "No hay efectivo suficiente en la caja abierta para procesar la devolucion.",
+          );
+        }
+
+        refundCashRegisterId = activeRefundRegister.id;
       }
 
       for (const item of sale.items) {
@@ -127,11 +182,38 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
         },
       });
 
+      const refundPayments = [];
+      if (originalPayments.length > 0) {
+        if (!refundCashRegisterId) {
+          throw new Error(
+            "No se pudo asociar la devolucion a una caja abierta.",
+          );
+        }
+
+        for (const payment of originalPayments) {
+          const refundPayment = await tx.payment.create({
+            data: {
+              amount: -payment.amount,
+              paymentMethod: payment.paymentMethod,
+              saleId: sale.id,
+              userId: authUser.id,
+              branchId: sale.branchId,
+              cashRegisterId: refundCashRegisterId,
+            },
+          });
+
+          refundPayments.push(refundPayment);
+        }
+      }
+
+      const isRefund = refundPayments.length > 0;
+      const receiptType = isRefund ? "SALE_REFUND" : "SALE_CANCEL";
+
       await tx.auditLog.create({
         data: {
           actorUserId: authUser.id,
           branchId: sale.branchId,
-          action: "SALE_CANCELLED",
+          action: isRefund ? "SALE_REFUNDED" : "SALE_CANCELLED",
           entityType: "Sale",
           entityId: String(sale.id),
           metadata: {
@@ -143,14 +225,17 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
               productId: item.productId,
               quantity: item.quantity,
             })),
+            refundedAmount: refundAmount,
+            refundPaymentIds: refundPayments.map((payment) => payment.id),
+            refundCashRegisterId,
           },
         },
       });
 
       const receipt = await createInternalReceipt(tx, {
-        receiptType: "SALE_CANCEL",
+        receiptType,
         branchId: sale.branchId,
-        cashRegisterId: sale.cashRegisterId,
+        cashRegisterId: refundCashRegisterId ?? sale.cashRegisterId,
         saleId: sale.id,
         sourceId: sale.id,
         createdBy: authUser.id,
@@ -160,6 +245,15 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
           previousStatus: sale.status,
           previousBalance: sale.balance,
           totalAmount: sale.totalAmount,
+          refundedAmount: refundAmount,
+          refundPaymentIds: refundPayments.map((payment) => payment.id),
+          refundCashRegisterId,
+          originalPayments: originalPayments.map((payment) => ({
+            id: payment.id,
+            amount: payment.amount,
+            paymentMethod: payment.paymentMethod,
+            cashRegisterId: payment.cashRegisterId,
+          })),
           restoredItemsCount: sale.items.length,
           restoredItems: sale.items.map((item) => ({
             productId: item.productId,
@@ -173,7 +267,10 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
     });
 
     res.status(200).json({
-      message: "Venta anulada correctamente. Stock y deuda fueron revertidos.",
+      message:
+        result.receipt.receiptType === "SALE_REFUND"
+          ? "Venta devuelta correctamente. Stock, caja y reportes fueron revertidos."
+          : "Venta anulada correctamente. Stock y deuda fueron revertidos.",
       data: result.sale,
       receipt: result.receipt,
     });

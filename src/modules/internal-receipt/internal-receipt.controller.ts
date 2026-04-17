@@ -23,6 +23,7 @@ const buildReceiptBranchWhere = (
 const receiptTypeTitle: Record<string, string> = {
   SALE: "Ticket interno de venta",
   SALE_CANCEL: "Anulacion interna de venta",
+  SALE_REFUND: "Devolucion interna de venta",
   PAYMENT: "Comprobante interno de pago",
   EXPENSE: "Comprobante interno de egreso",
   CASH_CLOSE: "Arqueo interno de caja",
@@ -115,6 +116,18 @@ const buildReceiptRows = (
         formatMoney(getPayloadNumber(payload, "previousBalance")),
       ],
       ["Total original", formatMoney(getPayloadNumber(payload, "totalAmount"))],
+      ["Items restaurados", getPayloadText(payload, "restoredItemsCount", "0")],
+    ];
+  }
+
+  if (receiptType === "SALE_REFUND") {
+    return [
+      ["Venta devuelta", `#${getPayloadText(payload, "saleId")}`],
+      ["Motivo", getPayloadText(payload, "reason")],
+      ["Estado anterior", getPayloadText(payload, "previousStatus")],
+      ["Total original", formatMoney(getPayloadNumber(payload, "totalAmount"))],
+      ["Importe devuelto", formatMoney(getPayloadNumber(payload, "refundedAmount"))],
+      ["Caja de devolucion", `#${getPayloadText(payload, "refundCashRegisterId")}`],
       ["Items restaurados", getPayloadText(payload, "restoredItemsCount", "0")],
     ];
   }
