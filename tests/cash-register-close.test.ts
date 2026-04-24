@@ -210,13 +210,50 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       },
     });
 
+    const blockedCloseResponse = await request(app)
+      .post(`/api/cash-registers/${cashRegisterId}/close`)
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .send({
+        actualBalance: 740,
+        observations: "Intento con sync pendiente",
+        localPendingOperations: 2,
+        localFailedOperations: 1,
+        denominationBreakdown: [
+          { denomination: 500, quantity: 1 },
+          { denomination: 100, quantity: 2 },
+          { denomination: 20, quantity: 2 },
+        ],
+      });
+
+    expect(blockedCloseResponse.status).toBe(409);
+    expect(blockedCloseResponse.body.data).toMatchObject({
+      cashRegisterId,
+      expectedBalance: 750,
+      actualBalance: 740,
+      discrepancy: -10,
+      localPendingOperations: 2,
+      serverPendingSyncOperations: 1,
+    });
+
+    await prisma.syncOperation.updateMany({
+      where: {
+        userId: operatorId,
+        branchId,
+        status: "PROCESSING",
+      },
+      data: {
+        status: "ACCEPTED",
+        processedAt: new Date(),
+      },
+    });
+
     const closeResponse = await request(app)
       .post(`/api/cash-registers/${cashRegisterId}/close`)
       .set("Authorization", `Bearer ${operatorToken}`)
       .send({
         actualBalance: 740,
         observations: "Faltante robotizado de prueba",
-        localPendingOperations: 2,
+        localPendingOperations: 0,
         localFailedOperations: 1,
         denominationBreakdown: [
           { denomination: 500, quantity: 1 },
@@ -239,9 +276,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         expectedBalance: 750,
         actualBalance: 740,
         discrepancy: -10,
-        localPendingOperations: 2,
+        localPendingOperations: 0,
         localFailedOperations: 1,
-        serverPendingSyncOperations: 1,
+        serverPendingSyncOperations: 0,
         serverRejectedSyncOperations: 1,
         denominationTotal: 740,
         countedByDenominations: true,
@@ -253,9 +290,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       totalNonCashPayments: 500,
       totalExpenses: 150,
       discrepancy: -10,
-      localPendingOperations: 2,
+      localPendingOperations: 0,
       localFailedOperations: 1,
-      serverPendingSyncOperations: 1,
+      serverPendingSyncOperations: 0,
       serverRejectedSyncOperations: 1,
       denominationTotal: 740,
       countedByDenominations: true,

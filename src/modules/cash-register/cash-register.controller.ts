@@ -308,6 +308,24 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
         }),
       ]);
 
+    if (parsedLocalPendingOperations > 0 || serverPendingSyncOperations > 0) {
+      return res.status(409).json({
+        error:
+          "No se puede cerrar la caja con operaciones offline o sincronizaciones pendientes. Sincronice primero y vuelva a intentar.",
+        data: {
+          cashRegisterId: shift.id,
+          branchId: shift.branchId,
+          expectedBalance,
+          actualBalance: countedBalance,
+          discrepancy,
+          localPendingOperations: parsedLocalPendingOperations,
+          localFailedOperations: parsedLocalFailedOperations,
+          serverPendingSyncOperations,
+          serverRejectedSyncOperations,
+        },
+      });
+    }
+
     const result = await prisma.$transaction(async (tx) => {
       const closedShift = await tx.cashRegister.update({
         where: { id: Number(id) },
