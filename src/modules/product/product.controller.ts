@@ -473,12 +473,34 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
   }
 };
 
-export const deleteProduct = async (req: Request, res: Response) => {
+export const deleteProduct = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { id } = req.params;
-    await prisma.product.update({
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
+    const archivedProduct = await prisma.product.update({
       where: { id: Number(id) },
       data: { isActive: false },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: authUser.id,
+        action: "PRODUCT_ARCHIVED",
+        entityType: "Product",
+        entityId: String(archivedProduct.id),
+        metadata: {
+          sku: archivedProduct.sku,
+          name: archivedProduct.name,
+          brand: archivedProduct.brand,
+        },
+      },
     });
     res.status(200).json({ message: "Producto retirado del catálogo." });
   } catch (error) {
@@ -489,8 +511,16 @@ export const deleteProduct = async (req: Request, res: Response) => {
 // ============================================================================
 // 💣 VACIADO MASIVO NUCLEAR (ELIMINA TODOS LOS PRODUCTOS ACTIVOS)
 // ============================================================================
-export const deleteAllProducts = async (req: Request, res: Response) => {
+export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
+
+    if (!authUser) {
+      return res.status(401).json({
+        error: "No se pudo validar la identidad del usuario.",
+      });
+    }
+
     const totalActive = await prisma.product.count({
       where: { isActive: true },
     });
@@ -504,6 +534,19 @@ export const deleteAllProducts = async (req: Request, res: Response) => {
     const result = await prisma.product.updateMany({
       where: { isActive: true },
       data: { isActive: false },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: authUser.id,
+        action: "PRODUCT_CATALOG_ARCHIVED",
+        entityType: "Product",
+        entityId: "ALL_ACTIVE",
+        metadata: {
+          deletedCount: result.count,
+          reason: "Archivado masivo desde catalogo/listas de precios",
+        },
+      },
     });
 
     res.status(200).json({
