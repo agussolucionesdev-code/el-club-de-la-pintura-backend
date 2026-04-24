@@ -295,6 +295,25 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
         });
       }
 
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: parsedStockBranchId,
+          action: "PRODUCT_CREATED",
+          entityType: "Product",
+          entityId: String(createdProduct.id),
+          metadata: {
+            sku,
+            name: createdProduct.name,
+            brand,
+            category,
+            retailPrice:
+              retailPrice !== undefined ? Number(retailPrice) : null,
+            initialStock: parsedStock,
+          },
+        },
+      });
+
       return tx.product.findUnique({
         where: { id: createdProduct.id },
         include: {
@@ -452,6 +471,35 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
           reason: "Ajuste de stock desde catalogo",
         });
       }
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: parsedStockBranchId,
+          action: "PRODUCT_UPDATED",
+          entityType: "Product",
+          entityId: String(id),
+          metadata: {
+            previous: {
+              sku: activeProduct.sku,
+              name: activeProduct.name,
+              brand: activeProduct.brand,
+              category: activeProduct.category,
+              costPrice: activeProduct.costPrice,
+              retailPrice: activeProduct.retailPrice,
+            },
+            next: {
+              sku,
+              name: name ? normalizeProductName(name) : activeProduct.name,
+              brand,
+              category,
+              costPrice: finalCost,
+              retailPrice: calculatedRetail,
+              stock: parsedStock,
+            },
+          },
+        },
+      });
 
       return tx.product.findUnique({
         where: { id: Number(id) },
