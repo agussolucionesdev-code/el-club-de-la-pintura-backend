@@ -306,7 +306,13 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       .send({ actualBalance: -1 });
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain("dinero fisico contado");
+    expect(response.body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining("dinero fisico contado"),
+        }),
+      ]),
+    );
 
     await prisma.cashRegister.delete({ where: { id: invalidRegister.id } });
   });
