@@ -52,8 +52,6 @@ export const authorizeBranchAccess =
     }
 
     if (branchId === 0) {
-      if (options.allowAllBranches) return next();
-
       return res.status(403).json({
         error: "Este perfil no puede operar sobre todas las sucursales.",
       });
