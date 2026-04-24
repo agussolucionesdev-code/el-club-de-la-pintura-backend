@@ -557,7 +557,7 @@ export const deleteProduct = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// 💣 VACIADO MASIVO NUCLEAR (ELIMINA TODOS LOS PRODUCTOS ACTIVOS)
+// Archivado masivo controlado de productos activos.
 // ============================================================================
 export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
   try {
