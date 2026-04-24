@@ -207,7 +207,7 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
     expect(targetPdfResponse.headers["content-disposition"]).toContain("TRF");
   });
 
-  it("calcula reposicion por sucursal y respeta el alcance consolidado del encargado", async () => {
+  it("calcula reposicion por sucursal y reserva el consolidado para administradores", async () => {
     const branchResponse = await request(app)
       .get(`/api/stock/reorder-suggestions?branchId=${branchAId}`)
       .set("Authorization", `Bearer ${operatorToken}`);
@@ -228,12 +228,7 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
       .get("/api/stock/reorder-suggestions?branchId=0")
       .set("Authorization", `Bearer ${operatorToken}`);
 
-    expect(consolidatedResponse.status).toBe(200);
-    expect(
-      consolidatedResponse.body.data.some(
-        (item: { branchId: number }) => item.branchId === branchCId,
-      ),
-    ).toBe(false);
+    expect(consolidatedResponse.status).toBe(403);
   });
 
   it("bloquea transferencias y consultas de sucursales no asignadas", async () => {

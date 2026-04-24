@@ -209,6 +209,14 @@ describe("Dashboard ERP por sucursal", () => {
     expect(response.status).toBe(403);
   });
 
+  it("bloquea dashboard consolidado para encargados", async () => {
+    const response = await request(app)
+      .get("/api/dashboard/summary?branchId=0")
+      .set("Authorization", `Bearer ${managerToken}`);
+
+    expect(response.status).toBe(403);
+  });
+
   it("exporta Excel filtrado con resumen, ventas, cobranzas y gastos", async () => {
     const response = await request(app)
       .get(`/api/dashboard/export?branchId=${branchAId}`)
@@ -232,6 +240,14 @@ describe("Dashboard ERP por sucursal", () => {
   it("bloquea exportacion Excel de una sucursal no asignada al encargado", async () => {
     const response = await request(app)
       .get(`/api/dashboard/export?branchId=${branchBId}`)
+      .set("Authorization", `Bearer ${managerToken}`);
+
+    expect(response.status).toBe(403);
+  });
+
+  it("bloquea exportacion Excel consolidada para encargados", async () => {
+    const response = await request(app)
+      .get("/api/dashboard/export?branchId=0")
       .set("Authorization", `Bearer ${managerToken}`);
 
     expect(response.status).toBe(403);

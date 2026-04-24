@@ -55,7 +55,10 @@ const buildBranchFilter = (
   }
 
   if (branchId === 0) {
-    return authUser.role === "ADMIN" ? undefined : { in: authUser.branchIds };
+    if (authUser.role === "ADMIN") return undefined;
+    throw new DashboardAccessDeniedError(
+      "Solo un administrador puede consultar el consolidado de todas las sucursales.",
+    );
   }
 
   if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {

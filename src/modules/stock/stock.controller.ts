@@ -30,7 +30,10 @@ const resolveBranchScope = (
   }
 
   if (branchId === 0) {
-    return authUser.role === "ADMIN" ? undefined : { in: authUser.branchIds };
+    if (authUser.role === "ADMIN") return undefined;
+    throw new BranchAccessDeniedError(
+      "Solo un administrador puede consultar el consolidado de todas las sucursales.",
+    );
   }
 
   ensureBranchAccess(branchId, authUser);
