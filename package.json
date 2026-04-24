@@ -9,7 +9,8 @@
     "test": "jest --detectOpenHandles",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
-    "db:status": "prisma migrate status"
+    "db:status": "prisma migrate status",
+    "db:seed": "ts-node prisma/seed.ts"
   },
   "keywords": [],
   "author": "",
