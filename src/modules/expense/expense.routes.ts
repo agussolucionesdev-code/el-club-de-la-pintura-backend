@@ -8,7 +8,7 @@ import { registerExpense, getExpenses } from "./expense.controller";
 
 const router = Router();
 
-router.use(authenticateToken, authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"));
+router.use(authenticateToken, authorizeRoles("ADMIN", "ENCARGADO"));
 
 router.get("/", getExpenses);
 router.post(
