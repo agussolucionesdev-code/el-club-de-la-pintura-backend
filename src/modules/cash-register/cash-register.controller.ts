@@ -16,6 +16,13 @@ interface CashDenominationBreakdown {
   subtotal: number;
 }
 
+interface CashRegisterSyncSafety {
+  localPendingOperations: number;
+  localFailedOperations: number;
+  serverPendingSyncOperations: number;
+  serverRejectedSyncOperations: number;
+}
+
 const normalizePaymentMethod = (paymentMethod: string) =>
   paymentMethod.trim().toUpperCase() || "UNKNOWN";
 
@@ -100,6 +107,38 @@ const buildCashRegisterSummary = (shift: CashRegisterShift) => {
   };
 };
 
+const buildCashRegisterSyncSafety = async (
+  branchId: number,
+  localPendingOperations = 0,
+  localFailedOperations = 0,
+): Promise<CashRegisterSyncSafety> => {
+  const [serverPendingSyncOperations, serverRejectedSyncOperations] =
+    await Promise.all([
+      prisma.syncOperation.count({
+        where: {
+          branchId,
+          status: { in: ["PENDING", "PROCESSING"] },
+        },
+      }),
+      prisma.syncOperation.count({
+        where: { branchId, status: "REJECTED" },
+      }),
+    ]);
+
+  return {
+    localPendingOperations: Math.max(0, Number(localPendingOperations) || 0),
+    localFailedOperations: Math.max(0, Number(localFailedOperations) || 0),
+    serverPendingSyncOperations,
+    serverRejectedSyncOperations,
+  };
+};
+
+const hasBlockingSyncRisk = (syncSafety: CashRegisterSyncSafety) =>
+  syncSafety.localPendingOperations > 0 ||
+  syncSafety.localFailedOperations > 0 ||
+  syncSafety.serverPendingSyncOperations > 0 ||
+  syncSafety.serverRejectedSyncOperations > 0;
+
 export const getActiveShift = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -137,6 +176,7 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
     }
 
     const cashSummary = buildCashRegisterSummary(activeShift);
+    const syncSafety = await buildCashRegisterSyncSafety(branchId);
 
     res.status(200).json({
       message: "Turno activo recuperado.",
@@ -144,6 +184,10 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
         ...activeShift,
         currentExpectedBalance: cashSummary.expectedBalance,
         cashSummary,
+        syncSafety: {
+          ...syncSafety,
+          canClose: !hasBlockingSyncRisk(syncSafety),
+        },
       },
     });
   } catch (error: unknown) {
@@ -287,41 +331,23 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
     const cashSummary = buildCashRegisterSummary(shift);
     const expectedBalance = cashSummary.expectedBalance;
     const discrepancy = roundMoney(countedBalance - expectedBalance);
-    const parsedLocalPendingOperations = Math.max(
-      0,
-      Number(localPendingOperations) || 0,
+    const syncSafety = await buildCashRegisterSyncSafety(
+      shift.branchId,
+      localPendingOperations,
+      localFailedOperations,
     );
-    const parsedLocalFailedOperations = Math.max(
-      0,
-      Number(localFailedOperations) || 0,
-    );
-    const [serverPendingSyncOperations, serverRejectedSyncOperations] =
-      await Promise.all([
-        prisma.syncOperation.count({
-          where: {
-            branchId: shift.branchId,
-            status: { in: ["PENDING", "PROCESSING"] },
-          },
-        }),
-        prisma.syncOperation.count({
-          where: { branchId: shift.branchId, status: "REJECTED" },
-        }),
-      ]);
 
-    if (parsedLocalPendingOperations > 0 || serverPendingSyncOperations > 0) {
+    if (hasBlockingSyncRisk(syncSafety)) {
       return res.status(409).json({
         error:
-          "No se puede cerrar la caja con operaciones offline o sincronizaciones pendientes. Sincronice primero y vuelva a intentar.",
+          "No se puede cerrar la caja con operaciones offline pendientes o conflictos de sincronizacion sin resolver. Sincronice, resuelva los conflictos y vuelva a intentar.",
         data: {
           cashRegisterId: shift.id,
           branchId: shift.branchId,
           expectedBalance,
           actualBalance: countedBalance,
           discrepancy,
-          localPendingOperations: parsedLocalPendingOperations,
-          localFailedOperations: parsedLocalFailedOperations,
-          serverPendingSyncOperations,
-          serverRejectedSyncOperations,
+          ...syncSafety,
         },
       });
     }
@@ -362,10 +388,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           paymentsCount: cashSummary.paymentsCount,
           expensesCount: cashSummary.expensesCount,
           paymentsByMethod: cashSummary.paymentsByMethod,
-          localPendingOperations: parsedLocalPendingOperations,
-          localFailedOperations: parsedLocalFailedOperations,
-          serverPendingSyncOperations,
-          serverRejectedSyncOperations,
+          ...syncSafety,
           denominationBreakdown: cashDenominationBreakdown,
           denominationTotal,
           countedByDenominations: cashDenominationBreakdown.length > 0,
@@ -385,10 +408,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
             discrepancy,
             totalCashPayments: cashSummary.totalCashPayments,
             totalExpenses: cashSummary.totalExpenses,
-            serverPendingSyncOperations,
-            serverRejectedSyncOperations,
-            localPendingOperations: parsedLocalPendingOperations,
-            localFailedOperations: parsedLocalFailedOperations,
+            ...syncSafety,
             denominationTotal,
             countedByDenominations: cashDenominationBreakdown.length > 0,
             internalReceiptId: receipt.id,
@@ -408,10 +428,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           ...cashSummary,
           actualBalance: countedBalance,
           discrepancy,
-          localPendingOperations: parsedLocalPendingOperations,
-          localFailedOperations: parsedLocalFailedOperations,
-          serverPendingSyncOperations,
-          serverRejectedSyncOperations,
+          ...syncSafety,
           denominationBreakdown: cashDenominationBreakdown,
           denominationTotal,
           countedByDenominations: cashDenominationBreakdown.length > 0,

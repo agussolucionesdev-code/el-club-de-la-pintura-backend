@@ -209,6 +209,13 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         CARD: 500,
       },
     });
+    expect(activeResponse.body.data.syncSafety).toMatchObject({
+      localPendingOperations: 0,
+      localFailedOperations: 0,
+      serverPendingSyncOperations: 1,
+      serverRejectedSyncOperations: 1,
+      canClose: false,
+    });
 
     const blockedCloseResponse = await request(app)
       .post(`/api/cash-registers/${cashRegisterId}/close`)
@@ -232,7 +239,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       actualBalance: 740,
       discrepancy: -10,
       localPendingOperations: 2,
+      localFailedOperations: 1,
       serverPendingSyncOperations: 1,
+      serverRejectedSyncOperations: 1,
     });
 
     await prisma.syncOperation.updateMany({
@@ -247,6 +256,45 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       },
     });
 
+    const blockedConflictResponse = await request(app)
+      .post(`/api/cash-registers/${cashRegisterId}/close`)
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .send({
+        actualBalance: 740,
+        observations: "Intento con conflictos de sync",
+        localPendingOperations: 0,
+        localFailedOperations: 1,
+        denominationBreakdown: [
+          { denomination: 500, quantity: 1 },
+          { denomination: 100, quantity: 2 },
+          { denomination: 20, quantity: 2 },
+        ],
+      });
+
+    expect(blockedConflictResponse.status).toBe(409);
+    expect(blockedConflictResponse.body.data).toMatchObject({
+      cashRegisterId,
+      expectedBalance: 750,
+      actualBalance: 740,
+      discrepancy: -10,
+      localPendingOperations: 0,
+      localFailedOperations: 1,
+      serverPendingSyncOperations: 0,
+      serverRejectedSyncOperations: 1,
+    });
+
+    await prisma.syncOperation.updateMany({
+      where: {
+        userId: operatorId,
+        branchId,
+        status: "REJECTED",
+      },
+      data: {
+        status: "ACCEPTED",
+        processedAt: new Date(),
+      },
+    });
+
     const closeResponse = await request(app)
       .post(`/api/cash-registers/${cashRegisterId}/close`)
       .set("Authorization", `Bearer ${operatorToken}`)
@@ -254,7 +302,7 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         actualBalance: 740,
         observations: "Faltante robotizado de prueba",
         localPendingOperations: 0,
-        localFailedOperations: 1,
+        localFailedOperations: 0,
         denominationBreakdown: [
           { denomination: 500, quantity: 1 },
           { denomination: 100, quantity: 2 },
@@ -277,9 +325,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         actualBalance: 740,
         discrepancy: -10,
         localPendingOperations: 0,
-        localFailedOperations: 1,
+        localFailedOperations: 0,
         serverPendingSyncOperations: 0,
-        serverRejectedSyncOperations: 1,
+        serverRejectedSyncOperations: 0,
         denominationTotal: 740,
         countedByDenominations: true,
       },
@@ -291,9 +339,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
       totalExpenses: 150,
       discrepancy: -10,
       localPendingOperations: 0,
-      localFailedOperations: 1,
+      localFailedOperations: 0,
       serverPendingSyncOperations: 0,
-      serverRejectedSyncOperations: 1,
+      serverRejectedSyncOperations: 0,
       denominationTotal: 740,
       countedByDenominations: true,
     });
