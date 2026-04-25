@@ -10,11 +10,13 @@ describe("Motor offline ERP: checkpoints y estado de sincronizacion", () => {
     email: `robot_sync_${runId}@elclub.com`,
     password: "supersecretpassword",
   };
+  const offlineCustomerDocument = `SYNC-CUST-${runId}`;
 
   let operatorToken = "";
   let operatorId = 0;
   let branchAId = 0;
   let branchBId = 0;
+  let syncedCustomerId = 0;
 
   beforeAll(async () => {
     const [branchA, branchB] = await Promise.all([
@@ -82,6 +84,17 @@ describe("Motor offline ERP: checkpoints y estado de sincronizacion", () => {
   });
 
   afterAll(async () => {
+    if (syncedCustomerId) {
+      await prisma.auditLog.deleteMany({
+        where: {
+          entityType: "Customer",
+          entityId: String(syncedCustomerId),
+        },
+      });
+    }
+    await prisma.customer.deleteMany({
+      where: { document: offlineCustomerDocument },
+    });
     await prisma.syncCheckpoint.deleteMany({
       where: { userId: operatorId },
     });
@@ -145,5 +158,85 @@ describe("Motor offline ERP: checkpoints y estado de sincronizacion", () => {
 
     expect(statusResponse.status).toBe(400);
     expect(statusResponse.body.error).toContain("No tienes acceso");
+  });
+
+  it("sincroniza altas de clientes offline una sola vez y deja auditoria", async () => {
+    const operationId = `offline-customer-${runId}`;
+    const operationPayload = {
+      id: operationId,
+      idempotencyKey: operationId,
+      type: "CUSTOMER_CREATE",
+      endpoint: "/customers",
+      method: "POST",
+      branchId: branchAId,
+      payload: {
+        branchId: branchAId,
+        name: `Cliente Offline ${runId}`,
+        document: offlineCustomerDocument,
+        type: "CONSUMER",
+        phone: "11 5555-5555",
+        email: `offline_${runId}@cliente.com`,
+        address: "Mostrador",
+      },
+    };
+
+    const firstPushResponse = await request(app)
+      .post("/api/sync/push")
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .set("X-Sync-Device-Id", deviceId)
+      .send({
+        branchId: branchAId,
+        deviceId,
+        operations: [operationPayload],
+      });
+
+    expect(firstPushResponse.status).toBe(202);
+    expect(firstPushResponse.body.acceptedOperationIds).toContain(operationId);
+    expect(firstPushResponse.body.rejectedOperations).toHaveLength(0);
+
+    const syncedCustomer = await prisma.customer.findUnique({
+      where: { document: offlineCustomerDocument },
+    });
+    expect(syncedCustomer).toBeTruthy();
+    expect(syncedCustomer).toMatchObject({
+      name: `Cliente Offline ${runId}`,
+      document: offlineCustomerDocument,
+      type: "CONSUMER",
+      phone: "11 5555-5555",
+      email: `offline_${runId}@cliente.com`,
+      address: "Mostrador",
+    });
+    syncedCustomerId = syncedCustomer?.id || 0;
+
+    const customerAudit = await prisma.auditLog.findFirst({
+      where: {
+        action: "customer.created",
+        entityType: "Customer",
+        entityId: String(syncedCustomerId),
+        branchId: branchAId,
+      },
+    });
+    expect(customerAudit).toBeTruthy();
+
+    const duplicatePushResponse = await request(app)
+      .post("/api/sync/push")
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .set("X-Sync-Device-Id", deviceId)
+      .send({
+        branchId: branchAId,
+        deviceId,
+        operations: [operationPayload],
+      });
+
+    expect(duplicatePushResponse.status).toBe(202);
+    expect(duplicatePushResponse.body.acceptedOperationIds).toContain(
+      operationId,
+    );
+    expect(duplicatePushResponse.body.rejectedOperations).toHaveLength(0);
+
+    const customerCount = await prisma.customer.count({
+      where: { document: offlineCustomerDocument },
+    });
+    expect(customerCount).toBe(1);
   });
 });

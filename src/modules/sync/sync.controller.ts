@@ -536,6 +536,75 @@ const replayStockUpdateOperation = async (
   });
 };
 
+const replayCustomerCreateOperation = async (
+  operation: IncomingSyncOperation,
+  authUser: { id: number; role: string; branchIds: number[] },
+) => {
+  const payload = getPayload(operation);
+  const branchId = resolveOperationBranchId(operation);
+  const name = String(payload.name || "").trim();
+  const document = String(payload.document || "").trim() || null;
+  const email = String(payload.email || "").trim() || null;
+  const customerType = String(payload.type || "CONSUMER").trim() || "CONSUMER";
+
+  if (branchId) {
+    ensureBranchAccess(branchId, authUser);
+  } else if (authUser.role !== "ADMIN") {
+    throw new Error("La alta offline de cliente requiere una sucursal valida.");
+  }
+
+  if (name.length < 2) {
+    throw new Error("La alta offline de cliente no tiene nombre valido.");
+  }
+
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    throw new Error("El email del cliente offline no es valido.");
+  }
+
+  if (document) {
+    const existingCustomer = await prisma.customer.findUnique({
+      where: { document },
+    });
+
+    if (existingCustomer) {
+      throw new Error(
+        `Ya existe un cliente registrado con el documento/CUIT ${document}.`,
+      );
+    }
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.create({
+      data: {
+        name,
+        document,
+        type: customerType,
+        phone: String(payload.phone || "").trim() || null,
+        email,
+        address: String(payload.address || "").trim() || null,
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorUserId: authUser.id,
+        branchId,
+        action: "customer.created",
+        entityType: "Customer",
+        entityId: String(customer.id),
+        metadata: toJsonPayload({
+          name: customer.name,
+          document: customer.document,
+          type: customer.type,
+          source: "offline-sync",
+          offlineOperationId: operation.id,
+          idempotencyKey: operation.idempotencyKey,
+        }),
+      },
+    });
+  });
+};
+
 const replayOperation = async (
   operation: IncomingSyncOperation,
   authUser: { id: number; role: string; branchIds: number[] },
@@ -555,6 +624,11 @@ const replayOperation = async (
 
   if (method === "PUT" && endpoint === "/stock/update") {
     await replayStockUpdateOperation(operation, authUser);
+    return;
+  }
+
+  if (method === "POST" && endpoint === "/customers") {
+    await replayCustomerCreateOperation(operation, authUser);
     return;
   }
 
