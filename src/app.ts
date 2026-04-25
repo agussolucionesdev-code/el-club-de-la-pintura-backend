@@ -28,6 +28,7 @@ import dashboardRoutes from "./modules/dashboard/dashboard.routes";
 import syncRoutes from "./modules/sync/sync.routes";
 import purchaseRoutes from "./modules/purchase/purchase.routes";
 import internalReceiptRoutes from "./modules/internal-receipt/internal-receipt.routes";
+import auditLogRoutes from "./modules/audit-log/audit-log.routes";
 
 // Inicialización de la aplicación Express
 const app: Application = express();
@@ -69,6 +70,7 @@ app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/sync", syncRoutes);
 app.use("/api/purchases", purchaseRoutes);
 app.use("/api/internal-receipts", internalReceiptRoutes);
+app.use("/api/audit-logs", auditLogRoutes);
 
 // ============================================================================
 // 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)

@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
@@ -65,6 +66,29 @@ const parseBranchId = (id: unknown) => {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 };
 
+const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const auditBranchAction = async (
+  req: Request,
+  action: string,
+  entityId: string,
+  metadata: Record<string, unknown>,
+) => {
+  const authUser = getAuthUser(req as AuthRequest);
+  if (!authUser) return;
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId: authUser.id,
+      action,
+      entityType: "Branch",
+      entityId,
+      metadata: toJsonPayload(metadata),
+    },
+  });
+};
+
 export const getBranches = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -110,6 +134,11 @@ export const createBranch = async (req: Request, res: Response) => {
       },
     });
 
+    await auditBranchAction(req, "branch.created", String(newBranch.id), {
+      name: newBranch.name,
+      location: newBranch.location,
+    });
+
     res.status(201).json(newBranch);
   } catch (error) {
     console.error("Error al crear la sucursal:", error);
@@ -141,6 +170,11 @@ export const updateBranch = async (req: Request, res: Response) => {
       },
     });
 
+    await auditBranchAction(req, "branch.updated", String(updatedBranch.id), {
+      name: updatedBranch.name,
+      location: updatedBranch.location,
+    });
+
     res.status(200).json(updatedBranch);
   } catch (error) {
     console.error("Error al actualizar la sucursal:", error);
@@ -167,7 +201,12 @@ export const deleteBranch = async (req: Request, res: Response) => {
       });
     }
 
-    await prisma.branch.delete({ where: { id: branchId } });
+    const deletedBranch = await prisma.branch.delete({ where: { id: branchId } });
+
+    await auditBranchAction(req, "branch.deleted", String(branchId), {
+      name: deletedBranch.name,
+      location: deletedBranch.location,
+    });
 
     res.status(200).json({ message: "Sucursal eliminada correctamente." });
   } catch (error) {
@@ -229,6 +268,10 @@ export const deleteAllBranches = async (req: Request, res: Response) => {
     }
 
     const result = await prisma.branch.deleteMany({});
+
+    await auditBranchAction(req, "branch.bulk_deleted", "ALL", {
+      deletedCount: result.count,
+    });
 
     res.status(200).json({
       message: "Sucursales eliminadas correctamente.",

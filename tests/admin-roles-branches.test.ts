@@ -73,6 +73,9 @@ describe("Administracion segura de roles y sucursales", () => {
   });
 
   afterAll(async () => {
+    await prisma.auditLog.deleteMany({
+      where: { actorUserId: adminId },
+    });
     await prisma.user.deleteMany({
       where: {
         email: { in: [adminCreds.email, managerEmail, employeeEmail] },
@@ -181,5 +184,26 @@ describe("Administracion segura de roles y sucursales", () => {
     expect(response.status).toBe(400);
     expect(response.body.error).toContain("Confirmacion requerida");
     expect(managerId).toBeGreaterThan(0);
+  });
+
+  it("registra y expone auditoria administrativa filtrable", async () => {
+    const response = await request(app)
+      .get("/api/audit-logs?action=branch.deleted&entityType=Branch&limit=10")
+      .set("Authorization", `Bearer ${adminToken}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          actorUserId: adminId,
+          action: "branch.deleted",
+          entityType: "Branch",
+          actor: expect.objectContaining({
+            id: adminId,
+            role: "ADMIN",
+          }),
+        }),
+      ]),
+    );
   });
 });

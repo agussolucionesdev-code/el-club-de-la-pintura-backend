@@ -1,6 +1,7 @@
 import { Response, Request } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
@@ -28,6 +29,28 @@ const countAdmins = () =>
   prisma.user.count({
     where: { role: "ADMIN" },
   });
+
+const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const auditUserAdminAction = async (
+  actorUserId: number | undefined,
+  action: string,
+  entityId: string,
+  metadata: Record<string, unknown>,
+) => {
+  if (!actorUserId) return;
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action,
+      entityType: "User",
+      entityId,
+      metadata: toJsonPayload(metadata),
+    },
+  });
+};
 
 export const authenticateUser = async (req: Request, res: Response) => {
   try {
@@ -176,6 +199,7 @@ export const retrieveRoleCatalog = async (_req: AuthRequest, res: Response) => {
 
 export const onboardEmployee = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { name, email, password, role, branchIds, adminSecret } = req.body;
 
     const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -211,6 +235,12 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
       select: { id: true, name: true, email: true, role: true, branches: true },
     });
 
+    await auditUserAdminAction(authUser?.id, "user.created", String(newUser.id), {
+      email: newUser.email,
+      role: newUser.role,
+      branchIds: newUser.branches.map((branch) => branch.id),
+    });
+
     res
       .status(201)
       .json({ message: "Empleado dado de alta con exito.", employee: newUser });
@@ -229,6 +259,7 @@ export const modifyEmployeeProfile = async (
   try {
     const { id } = req.params;
     const { name, email, role, branchIds } = req.body;
+    const authUser = getAuthUser(req);
     const targetUserId = Number(id);
     const normalizedRole = normalizeRole(role);
 
@@ -283,6 +314,13 @@ export const modifyEmployeeProfile = async (
       select: { id: true, name: true, email: true, role: true, branches: true },
     });
 
+    await auditUserAdminAction(authUser?.id, "user.updated", String(updatedEmployee.id), {
+      email: updatedEmployee.email,
+      previousRole: targetUser.role,
+      newRole: updatedEmployee.role,
+      branchIds: updatedEmployee.branches.map((branch) => branch.id),
+    });
+
     res.status(200).json({
       message: "Perfil operativo actualizado correctamente.",
       employee: updatedEmployee,
@@ -302,12 +340,17 @@ export const resetEmployeePassword = async (
   try {
     const { id } = req.params;
     const { newPassword } = req.body;
+    const authUser = getAuthUser(req);
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     await prisma.user.update({
       where: { id: Number(id) },
       data: { password: hashedPassword },
+    });
+
+    await auditUserAdminAction(authUser?.id, "user.password_reset", String(id), {
+      targetUserId: Number(id),
     });
 
     res.status(200).json({
@@ -351,6 +394,10 @@ export const terminateEmployee = async (req: AuthRequest, res: Response) => {
 
     await prisma.user.delete({ where: { id: targetUserId } });
 
+    await auditUserAdminAction(authUser?.id, "user.deleted", String(targetUserId), {
+      previousRole: targetUser.role,
+    });
+
     res.status(200).json({ message: "Empleado desvinculado y accesos revocados." });
   } catch (error) {
     console.error("Error al desvincular empleado:", error);
@@ -387,6 +434,12 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
       where: { role },
     });
 
+    const authUser = getAuthUser(req);
+    await auditUserAdminAction(authUser?.id, "role.users_deleted", role, {
+      role,
+      deletedCount: result.count,
+    });
+
     res.status(200).json({
       message: `Usuarios con rol ${role} eliminados correctamente.`,
       deletedCount: result.count,
@@ -416,6 +469,12 @@ export const deleteAllOperationalRoleUsers = async (
 
     const result = await prisma.user.deleteMany({
       where: { role: { in: ["ENCARGADO", "EMPLOYEE"] } },
+    });
+
+    const authUser = getAuthUser(req);
+    await auditUserAdminAction(authUser?.id, "role.operational_users_deleted", "OPERATIONAL", {
+      roles: ["ENCARGADO", "EMPLOYEE"],
+      deletedCount: result.count,
     });
 
     res.status(200).json({
