@@ -1,7 +1,11 @@
+import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
+
+const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 
 const calculateAvailableCash = (shift: {
   initialBalance: number;
@@ -133,6 +137,27 @@ export const registerExpense = async (req: AuthRequest, res: Response) => {
           type: type || "VARIABLE",
           previousExpectedBalance: availableCash,
           newExpectedBalance: availableCash - withdrawalAmount,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: activeShift.branchId,
+          action: "expense.created",
+          entityType: "Expense",
+          entityId: String(newExpense.id),
+          metadata: toJsonPayload({
+            amount: withdrawalAmount,
+            reason,
+            category,
+            type: type || "VARIABLE",
+            cashRegisterId: activeShift.id,
+            previousExpectedBalance: availableCash,
+            newExpectedBalance: availableCash - withdrawalAmount,
+            internalReceiptId: receipt.id,
+            internalReceiptNumber: receipt.receiptNumber,
+          }),
         },
       });
 

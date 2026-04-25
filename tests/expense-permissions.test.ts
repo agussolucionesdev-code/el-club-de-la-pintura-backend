@@ -72,6 +72,11 @@ describe("Permisos de egresos de caja", () => {
   });
 
   afterAll(async () => {
+    if (expenseId) {
+      await prisma.auditLog.deleteMany({
+        where: { entityType: "Expense", entityId: String(expenseId) },
+      });
+    }
     await prisma.internalReceipt.deleteMany({ where: { cashRegisterId } });
     if (expenseId) await prisma.expense.deleteMany({ where: { id: expenseId } });
     await prisma.cashRegister.deleteMany({ where: { id: cashRegisterId } });
@@ -107,5 +112,16 @@ describe("Permisos de egresos de caja", () => {
     expect(managerResponse.status).toBe(201);
     expenseId = managerResponse.body.data.id;
     expect(managerResponse.body.receipt.receiptType).toBe("EXPENSE");
+
+    const auditLog = await prisma.auditLog.findFirst({
+      where: {
+        action: "expense.created",
+        entityType: "Expense",
+        entityId: String(expenseId),
+        actorUserId: managerId,
+        branchId,
+      },
+    });
+    expect(auditLog).toBeTruthy();
   });
 });
