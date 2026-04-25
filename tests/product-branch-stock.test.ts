@@ -19,6 +19,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
   let branchAId = 0;
   let branchBId = 0;
   let productId = 0;
+  let supplierId = 0;
   const importedSupplierName = `Marca Importada Sin Datos Falsos ${runId}`;
   const importedSku = `IMP-${runId}`;
 
@@ -69,9 +70,15 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
 
   afterAll(async () => {
     if (productId) {
+      await prisma.auditLog.deleteMany({
+        where: { entityType: "Product", entityId: String(productId) },
+      });
       await prisma.movement.deleteMany({ where: { productId } });
       await prisma.stock.deleteMany({ where: { productId } });
       await prisma.product.deleteMany({ where: { id: productId } });
+    }
+    if (supplierId) {
+      await prisma.supplier.deleteMany({ where: { id: supplierId } });
     }
     await prisma.product.deleteMany({ where: { sku: importedSku } });
     await prisma.supplier.deleteMany({
@@ -145,6 +152,42 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
 
     expect(forbiddenResponse.status).toBe(400);
     expect(forbiddenResponse.body.error).toContain("No tienes permisos");
+  });
+
+  it("permite actualizaciones parciales sin limpiar datos comerciales", async () => {
+    const supplier = await prisma.supplier.create({
+      data: {
+        companyName: `Proveedor Parcial ${runId}`,
+        contactName: "Robot",
+        phone: "Sin especificar",
+        address: "Test",
+      },
+    });
+    supplierId = supplier.id;
+
+    await prisma.product.update({
+      where: { id: productId },
+      data: {
+        barcode: `INT-${runId}`,
+        wholesalePrice: 150,
+        supplierId,
+      },
+    });
+
+    const response = await request(app)
+      .put(`/api/products/${productId}`)
+      .set("Authorization", `Bearer ${managerToken}`)
+      .send({ images: [`https://cdn.example.com/${runId}.jpg`] });
+
+    expect(response.status).toBe(200);
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    expect(product?.barcode).toBe(`INT-${runId}`);
+    expect(product?.wholesalePrice).toBe(150);
+    expect(product?.supplierId).toBe(supplierId);
+    expect(product?.images).toEqual([`https://cdn.example.com/${runId}.jpg`]);
   });
 
   it("bloquea el archivado masivo sin confirmacion de servidor", async () => {

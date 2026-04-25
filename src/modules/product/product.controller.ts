@@ -261,7 +261,7 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
       const createdProduct = await tx.product.create({
       data: {
         sku,
-        barcode: barcode || null,
+        barcode: barcode !== undefined ? barcode || null : undefined,
         name: normalizeProductName(name), // 🧠 Normalizamos al crear
         brand,
         category,
@@ -269,7 +269,7 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
         costPrice: costPrice !== undefined ? Number(costPrice) : null,
         retailPrice: retailPrice !== undefined ? Number(retailPrice) : null,
         wholesalePrice:
-          wholesalePrice !== undefined ? Number(wholesalePrice) : null,
+          wholesalePrice !== undefined ? Number(wholesalePrice) : undefined,
         ivaPercentage:
           ivaPercentage !== undefined ? Number(ivaPercentage) : 21.0,
         color,
@@ -278,8 +278,13 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
         volumeUnit,
         indoorOutdoor,
         baseType,
-        images: images || [],
-        supplierId: supplierId ? Number(supplierId) : null,
+        images: images !== undefined ? images : undefined,
+        supplierId:
+          supplierId !== undefined
+            ? supplierId
+              ? Number(supplierId)
+              : null
+            : undefined,
         metadata:
           Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
       },
@@ -436,10 +441,10 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
 
     const updatedProduct = await prisma.$transaction(async (tx) => {
       await tx.product.update({
-      where: { id: Number(id) },
-      data: {
+        where: { id: Number(id) },
+        data: {
         sku,
-        barcode: barcode || null,
+        barcode: barcode !== undefined ? barcode || null : undefined,
         name: name ? normalizeProductName(name) : activeProduct.name, // 🧠 Normalizamos al actualizar
         brand,
         category,
@@ -449,18 +454,23 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
         ivaPercentage: finalIva,
         retailPrice: calculatedRetail,
         wholesalePrice:
-          wholesalePrice !== undefined ? Number(wholesalePrice) : null,
+          wholesalePrice !== undefined ? Number(wholesalePrice) : undefined,
         color,
         finish,
         volume,
         volumeUnit,
         indoorOutdoor,
         baseType,
-        images: images || [],
-        supplierId: supplierId ? Number(supplierId) : null,
+        images: images !== undefined ? images : undefined,
+        supplierId:
+          supplierId !== undefined
+            ? supplierId
+              ? Number(supplierId)
+              : null
+            : undefined,
         metadata:
           Object.keys(flatMetadata).length > 0 ? flatMetadata : Prisma.DbNull,
-      },
+        },
       });
       if (parsedStock !== null && parsedStockBranchId !== null) {
         await applyCatalogStockSnapshot(tx, {
