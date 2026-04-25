@@ -4,6 +4,31 @@ import jwt from "jsonwebtoken";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
+const VALID_ROLES = ["ADMIN", "ENCARGADO", "EMPLOYEE"] as const;
+type ManagedRole = (typeof VALID_ROLES)[number];
+
+const roleDescriptions: Record<ManagedRole, string> = {
+  ADMIN:
+    "Control total del ERP/POS, usuarios, sucursales, reportes consolidados y configuracion.",
+  ENCARGADO:
+    "Gestion operativa de caja, stock, gastos, clientes, compras y ventas en sucursales asignadas.",
+  EMPLOYEE:
+    "Venta, consulta de stock y operaciones basicas dentro de sus sucursales asignadas.",
+};
+
+const isManagedRole = (role: string): role is ManagedRole =>
+  VALID_ROLES.includes(role as ManagedRole);
+
+const normalizeRole = (role: unknown): ManagedRole | null => {
+  const value = String(role || "").trim().toUpperCase();
+  return isManagedRole(value) ? value : null;
+};
+
+const countAdmins = () =>
+  prisma.user.count({
+    where: { role: "ADMIN" },
+  });
+
 export const authenticateUser = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -117,6 +142,38 @@ export const retrieveWorkforceDirectory = async (
   }
 };
 
+export const retrieveRoleCatalog = async (_req: AuthRequest, res: Response) => {
+  try {
+    const groupedUsers = await prisma.user.groupBy({
+      by: ["role"],
+      _count: { role: true },
+    });
+    const counts = groupedUsers.reduce<Record<string, number>>((acc, item) => {
+      acc[item.role] = item._count.role;
+      return acc;
+    }, {});
+
+    res.status(200).json({
+      roles: VALID_ROLES.map((role) => ({
+        key: role,
+        label:
+          role === "ADMIN"
+            ? "Administrador"
+            : role === "ENCARGADO"
+              ? "Encargado"
+              : "Empleado",
+        description: roleDescriptions[role],
+        immutable: role === "ADMIN",
+        usersCount: counts[role] || 0,
+        canDeleteUsers: role !== "ADMIN",
+      })),
+    });
+  } catch (error) {
+    console.error("Error al recuperar catalogo de roles:", error);
+    res.status(500).json({ error: "Fallo al obtener los roles del sistema." });
+  }
+};
+
 export const onboardEmployee = async (req: AuthRequest, res: Response) => {
   try {
     const { name, email, password, role, branchIds, adminSecret } = req.body;
@@ -172,11 +229,38 @@ export const modifyEmployeeProfile = async (
   try {
     const { id } = req.params;
     const { name, email, role, branchIds } = req.body;
+    const targetUserId = Number(id);
+    const normalizedRole = normalizeRole(role);
+
+    if (!normalizedRole) {
+      return res.status(400).json({ error: "El rol indicado no es valido." });
+    }
+
+    const targetUser = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true },
+    });
+
+    if (!targetUser) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (targetUser.role === "ADMIN" && normalizedRole !== "ADMIN") {
+      const adminCount = await countAdmins();
+      const authUser = getAuthUser(req);
+
+      if (adminCount <= 1 || authUser?.id === targetUserId) {
+        return res.status(409).json({
+          error:
+            "No se puede quitar el rol ADMIN a este usuario porque protege el acceso maestro del sistema.",
+        });
+      }
+    }
 
     const existingUser = await prisma.user.findFirst({
       where: {
         email,
-        id: { not: Number(id) },
+        id: { not: targetUserId },
       },
     });
 
@@ -187,11 +271,11 @@ export const modifyEmployeeProfile = async (
     }
 
     const updatedEmployee = await prisma.user.update({
-      where: { id: Number(id) },
+      where: { id: targetUserId },
       data: {
         name,
         email,
-        role,
+        role: normalizedRole,
         branches: {
           set: (branchIds || []).map((branchId: number) => ({ id: branchId })),
         },
@@ -249,6 +333,22 @@ export const terminateEmployee = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    const targetUser = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true, role: true },
+    });
+
+    if (!targetUser) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (targetUser.role === "ADMIN") {
+      return res.status(409).json({
+        error:
+          "El rol ADMIN es inmutable: no se puede eliminar un usuario administrador desde esta accion.",
+      });
+    }
+
     await prisma.user.delete({ where: { id: targetUserId } });
 
     res.status(200).json({ message: "Empleado desvinculado y accesos revocados." });
@@ -257,6 +357,77 @@ export const terminateEmployee = async (req: AuthRequest, res: Response) => {
     res.status(400).json({
       error:
         "No se puede eliminar un empleado con historial de ventas o cajas (restriccion fiscal).",
+    });
+  }
+};
+
+export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
+  try {
+    const role = normalizeRole(req.params.role);
+    const { confirmationPhrase } = req.body || {};
+
+    if (!role) {
+      return res.status(400).json({ error: "El rol indicado no es valido." });
+    }
+
+    if (role === "ADMIN") {
+      return res.status(409).json({
+        error: "El rol ADMIN no puede ser eliminado ni limpiado masivamente.",
+      });
+    }
+
+    const requiredPhrase = `ELIMINAR ROL ${role}`;
+    if (confirmationPhrase !== requiredPhrase) {
+      return res.status(400).json({
+        error: `Confirmacion requerida: envie la frase exacta ${requiredPhrase}.`,
+      });
+    }
+
+    const result = await prisma.user.deleteMany({
+      where: { role },
+    });
+
+    res.status(200).json({
+      message: `Usuarios con rol ${role} eliminados correctamente.`,
+      deletedCount: result.count,
+    });
+  } catch (error) {
+    console.error("Error al limpiar usuarios por rol:", error);
+    res.status(409).json({
+      error:
+        "No se pueden eliminar usuarios con historial operativo. Revise ventas, cajas, pagos, gastos o movimientos asociados.",
+    });
+  }
+};
+
+export const deleteAllOperationalRoleUsers = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const { confirmationPhrase } = req.body || {};
+    const requiredPhrase = "ELIMINAR ROLES OPERATIVOS";
+
+    if (confirmationPhrase !== requiredPhrase) {
+      return res.status(400).json({
+        error: `Confirmacion requerida: envie la frase exacta ${requiredPhrase}.`,
+      });
+    }
+
+    const result = await prisma.user.deleteMany({
+      where: { role: { in: ["ENCARGADO", "EMPLOYEE"] } },
+    });
+
+    res.status(200).json({
+      message:
+        "Usuarios operativos eliminados correctamente. El rol ADMIN permanece intacto.",
+      deletedCount: result.count,
+    });
+  } catch (error) {
+    console.error("Error al limpiar roles operativos:", error);
+    res.status(409).json({
+      error:
+        "No se pueden eliminar masivamente usuarios con historial operativo. Elimine solo perfiles sin trazabilidad o conserve el historial.",
     });
   }
 };

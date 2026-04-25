@@ -15,6 +15,9 @@ import {
   resetEmployeePassword,
   terminateEmployee,
   getCurrentUserProfile,
+  retrieveRoleCatalog,
+  deleteUsersByRole,
+  deleteAllOperationalRoleUsers,
 } from "./user.controller";
 
 const router = Router();
@@ -26,6 +29,9 @@ router.get("/me", authenticateToken, getCurrentUserProfile);
 router.use(authenticateToken, authorizeRoles("ADMIN"));
 
 router.get("/", retrieveWorkforceDirectory);
+router.get("/roles", retrieveRoleCatalog);
+router.delete("/roles", deleteAllOperationalRoleUsers);
+router.delete("/roles/:role/users", deleteUsersByRole);
 router.post("/", validate(onboardEmployeeSchema), onboardEmployee);
 router.put("/:id", validate(modifyEmployeeSchema), modifyEmployeeProfile);
 router.delete("/:id", terminateEmployee);

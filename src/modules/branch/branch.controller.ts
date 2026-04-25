@@ -2,8 +2,69 @@ import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
-// Obtención del listado de sucursales
-// Consulta a la base de datos y retorno de registros en formato JSON
+type BranchDeletionBlockers = Record<string, number>;
+
+const countBranchDeletionBlockers = async (
+  branchId: number,
+): Promise<BranchDeletionBlockers> => {
+  const [
+    users,
+    stocks,
+    movements,
+    sales,
+    payments,
+    cashRegisters,
+    expenses,
+    outgoingTransfers,
+    incomingTransfers,
+    purchaseOrders,
+    purchaseReceipts,
+    internalReceipts,
+    syncOperations,
+    syncCheckpoints,
+  ] = await Promise.all([
+    prisma.user.count({ where: { branches: { some: { id: branchId } } } }),
+    prisma.stock.count({ where: { branchId } }),
+    prisma.movement.count({ where: { branchId } }),
+    prisma.sale.count({ where: { branchId } }),
+    prisma.payment.count({ where: { branchId } }),
+    prisma.cashRegister.count({ where: { branchId } }),
+    prisma.expense.count({ where: { branchId } }),
+    prisma.stockTransfer.count({ where: { fromBranchId: branchId } }),
+    prisma.stockTransfer.count({ where: { toBranchId: branchId } }),
+    prisma.purchaseOrder.count({ where: { branchId } }),
+    prisma.purchaseReceipt.count({ where: { branchId } }),
+    prisma.internalReceipt.count({ where: { branchId } }),
+    prisma.syncOperation.count({ where: { branchId } }),
+    prisma.syncCheckpoint.count({ where: { branchId } }),
+  ]);
+
+  return {
+    users,
+    stocks,
+    movements,
+    sales,
+    payments,
+    cashRegisters,
+    expenses,
+    outgoingTransfers,
+    incomingTransfers,
+    purchaseOrders,
+    purchaseReceipts,
+    internalReceipts,
+    syncOperations,
+    syncCheckpoints,
+  };
+};
+
+const hasBlockers = (blockers: BranchDeletionBlockers) =>
+  Object.values(blockers).some((count) => count > 0);
+
+const parseBranchId = (id: unknown) => {
+  const branchId = Number(id);
+  return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
+};
+
 export const getBranches = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -22,7 +83,6 @@ export const getBranches = async (req: AuthRequest, res: Response) => {
       orderBy: { name: "asc" },
     });
 
-    // Emisión de respuesta con código HTTP 200 (Éxito)
     res.status(200).json(branches);
   } catch (error) {
     console.error("Error al buscar las sucursales:", error);
@@ -32,27 +92,24 @@ export const getBranches = async (req: AuthRequest, res: Response) => {
   }
 };
 
-// Creación de una nueva sucursal
-// Recepción, validación y persistencia de datos en la base de datos
 export const createBranch = async (req: Request, res: Response) => {
   try {
-    // Extracción de campos desde el cuerpo de la solicitud
     const { name, location } = req.body;
+    const trimmedName = String(name || "").trim();
 
-    // Validación de campos obligatorios
-    if (!name) {
-      return res.status(400).json({ error: "El campo 'name' es requerido." });
+    if (trimmedName.length < 2) {
+      return res
+        .status(400)
+        .json({ error: "El nombre de la sucursal es requerido." });
     }
 
-    // Ejecución de la inserción mediante Prisma
     const newBranch = await prisma.branch.create({
       data: {
-        name,
-        location,
+        name: trimmedName,
+        location: location ? String(location).trim() : null,
       },
     });
 
-    // Emisión de respuesta exitosa con código HTTP 201 (Creado)
     res.status(201).json(newBranch);
   } catch (error) {
     console.error("Error al crear la sucursal:", error);
@@ -60,21 +117,30 @@ export const createBranch = async (req: Request, res: Response) => {
   }
 };
 
-// Actualización de una sucursal existente
-// Identificación del registro por ID y modificación de campos específicos
 export const updateBranch = async (req: Request, res: Response) => {
   try {
-    // Extracción del parámetro ID y de los datos del cuerpo
-    const { id } = req.params;
+    const branchId = parseBranchId(req.params.id);
     const { name, location } = req.body;
+    const trimmedName = String(name || "").trim();
 
-    // Ejecución de la actualización en la base de datos
+    if (!branchId) {
+      return res.status(400).json({ error: "Sucursal invalida." });
+    }
+
+    if (trimmedName.length < 2) {
+      return res
+        .status(400)
+        .json({ error: "El nombre de la sucursal es requerido." });
+    }
+
     const updatedBranch = await prisma.branch.update({
-      where: { id: Number(id) },
-      data: { name, location },
+      where: { id: branchId },
+      data: {
+        name: trimmedName,
+        location: location ? String(location).trim() : null,
+      },
     });
 
-    // Emisión de respuesta con los datos actualizados
     res.status(200).json(updatedBranch);
   } catch (error) {
     console.error("Error al actualizar la sucursal:", error);
@@ -84,24 +150,94 @@ export const updateBranch = async (req: Request, res: Response) => {
   }
 };
 
-// Eliminación de una sucursal
-// Remoción física del registro de la base de datos mediante su identificador
 export const deleteBranch = async (req: Request, res: Response) => {
   try {
-    // Extracción del parámetro ID de la solicitud
-    const { id } = req.params;
+    const branchId = parseBranchId(req.params.id);
 
-    // Ejecución de la eliminación en la base de datos
-    await prisma.branch.delete({
-      where: { id: Number(id) },
-    });
+    if (!branchId) {
+      return res.status(400).json({ error: "Sucursal invalida." });
+    }
 
-    // Emisión de confirmación de eliminación exitosa
+    const blockers = await countBranchDeletionBlockers(branchId);
+    if (hasBlockers(blockers)) {
+      return res.status(409).json({
+        error:
+          "No se puede eliminar una sucursal con usuarios, stock, caja o historial operativo asociado.",
+        data: { branchId, blockers },
+      });
+    }
+
+    await prisma.branch.delete({ where: { id: branchId } });
+
     res.status(200).json({ message: "Sucursal eliminada correctamente." });
   } catch (error) {
     console.error("Error al eliminar la sucursal:", error);
     res
       .status(500)
       .json({ error: "No se pudo eliminar la sucursal. Verifique el ID." });
+  }
+};
+
+export const deleteAllBranches = async (req: Request, res: Response) => {
+  try {
+    const { confirmationPhrase, expectedBranchCount } = req.body || {};
+    const requiredPhrase = "ELIMINAR SUCURSALES";
+
+    if (confirmationPhrase !== requiredPhrase) {
+      return res.status(400).json({
+        error: `Confirmacion requerida: envie la frase exacta ${requiredPhrase}.`,
+      });
+    }
+
+    const branches = await prisma.branch.findMany({
+      select: { id: true, name: true },
+      orderBy: { id: "asc" },
+    });
+    const expectedCount = Number(expectedBranchCount);
+
+    if (
+      expectedBranchCount !== undefined &&
+      (!Number.isInteger(expectedCount) || expectedCount !== branches.length)
+    ) {
+      return res.status(409).json({
+        error:
+          "Las sucursales cambiaron desde que se inicio la accion. Actualice la pantalla y vuelva a confirmar.",
+        data: {
+          expectedBranchCount,
+          currentBranchCount: branches.length,
+        },
+      });
+    }
+
+    const blockersByBranch = await Promise.all(
+      branches.map(async (branch) => ({
+        id: branch.id,
+        name: branch.name,
+        blockers: await countBranchDeletionBlockers(branch.id),
+      })),
+    );
+    const blockedBranches = blockersByBranch.filter((branch) =>
+      hasBlockers(branch.blockers),
+    );
+
+    if (blockedBranches.length > 0) {
+      return res.status(409).json({
+        error:
+          "No se pueden eliminar todas las sucursales porque existen usuarios, stock, caja o historial operativo asociado.",
+        data: { blockedBranches },
+      });
+    }
+
+    const result = await prisma.branch.deleteMany({});
+
+    res.status(200).json({
+      message: "Sucursales eliminadas correctamente.",
+      deletedCount: result.count,
+    });
+  } catch (error) {
+    console.error("Error al eliminar todas las sucursales:", error);
+    res.status(500).json({
+      error: "No se pudieron eliminar masivamente las sucursales.",
+    });
   }
 };
