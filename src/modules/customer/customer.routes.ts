@@ -6,6 +6,7 @@ import {
   deleteCustomer,
 } from "./customer.controller";
 import { authenticateToken } from "../../middlewares/auth.middleware";
+import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import {
   createCustomerSchema,
@@ -33,11 +34,17 @@ router.post(
 router.put(
   "/:id",
   authenticateToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
   validate(updateCustomerSchema),
   updateCustomer,
 );
 
 // 4. Archivar un cliente (Soft Delete)
-router.delete("/:id", authenticateToken, deleteCustomer);
+router.delete(
+  "/:id",
+  authenticateToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  deleteCustomer,
+);
 
 export default router;

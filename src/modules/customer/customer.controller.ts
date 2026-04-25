@@ -1,10 +1,34 @@
-import { Request, Response } from "express";
+import { Prisma } from "@prisma/client";
+import { Response } from "express";
 import prisma from "../../config/db";
+import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+
+const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
+  JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+
+const auditCustomerAction = async (
+  actorUserId: number | undefined,
+  action: string,
+  entityId: string,
+  metadata: Record<string, unknown>,
+) => {
+  if (!actorUserId) return;
+
+  await prisma.auditLog.create({
+    data: {
+      actorUserId,
+      action,
+      entityType: "Customer",
+      entityId,
+      metadata: toJsonPayload(metadata),
+    },
+  });
+};
 
 // ============================================================================
 // LECTURA: Obtener el Directorio Comercial (Solo clientes activos)
 // ============================================================================
-export const getCustomers = async (req: Request, res: Response) => {
+export const getCustomers = async (_req: AuthRequest, res: Response) => {
   try {
     const customers = await prisma.customer.findMany({
       where: { isActive: true },
@@ -42,8 +66,9 @@ export const getCustomers = async (req: Request, res: Response) => {
 // ============================================================================
 // ALTA: Registrar un nuevo Cliente/Contratista
 // ============================================================================
-export const createCustomer = async (req: Request, res: Response) => {
+export const createCustomer = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const { name, document, type, phone, email, address } = req.body;
 
     // 🛡️ BLINDAJE: Evitar CUITs o DNIs duplicados
@@ -70,6 +95,17 @@ export const createCustomer = async (req: Request, res: Response) => {
       },
     });
 
+    await auditCustomerAction(
+      authUser?.id,
+      "customer.created",
+      String(newCustomer.id),
+      {
+        name: newCustomer.name,
+        document: newCustomer.document,
+        type: newCustomer.type,
+      },
+    );
+
     res.status(201).json({
       message: "Perfil comercial incorporado al directorio exitosamente.",
       data: newCustomer,
@@ -86,10 +122,18 @@ export const createCustomer = async (req: Request, res: Response) => {
 // ============================================================================
 // MODIFICACIÓN: Actualizar datos de contacto o perfil
 // ============================================================================
-export const updateCustomer = async (req: Request, res: Response) => {
+export const updateCustomer = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const customerId = Number(req.params.id);
     const data = req.body;
+    const existingCustomer = await prisma.customer.findFirst({
+      where: { id: customerId, isActive: true },
+    });
+
+    if (!existingCustomer) {
+      return res.status(404).json({ error: "Cliente no encontrado." });
+    }
 
     // Si intenta cambiar el documento, verificamos que no pise a otro
     if (data.document) {
@@ -110,6 +154,19 @@ export const updateCustomer = async (req: Request, res: Response) => {
       data,
     });
 
+    await auditCustomerAction(authUser?.id, "customer.updated", String(customerId), {
+      before: {
+        name: existingCustomer.name,
+        document: existingCustomer.document,
+        type: existingCustomer.type,
+      },
+      after: {
+        name: updatedCustomer.name,
+        document: updatedCustomer.document,
+        type: updatedCustomer.type,
+      },
+    });
+
     res.status(200).json({
       message: "Ficha del cliente actualizada correctamente.",
       data: updatedCustomer,
@@ -124,9 +181,17 @@ export const updateCustomer = async (req: Request, res: Response) => {
 // ============================================================================
 // BAJA LÓGICA (Soft Delete): Archivar cliente sin romper el historial contable
 // ============================================================================
-export const deleteCustomer = async (req: Request, res: Response) => {
+export const deleteCustomer = async (req: AuthRequest, res: Response) => {
   try {
+    const authUser = getAuthUser(req);
     const customerId = Number(req.params.id);
+    const customer = await prisma.customer.findFirst({
+      where: { id: customerId, isActive: true },
+    });
+
+    if (!customer) {
+      return res.status(404).json({ error: "Cliente no encontrado." });
+    }
 
     // Verificamos si tiene deuda pendiente antes de borrarlo
     const pendingSales = await prisma.sale.findFirst({
@@ -142,6 +207,12 @@ export const deleteCustomer = async (req: Request, res: Response) => {
     await prisma.customer.update({
       where: { id: customerId },
       data: { isActive: false },
+    });
+
+    await auditCustomerAction(authUser?.id, "customer.archived", String(customerId), {
+      name: customer.name,
+      document: customer.document,
+      type: customer.type,
     });
 
     res
