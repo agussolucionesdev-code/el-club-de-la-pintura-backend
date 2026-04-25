@@ -562,6 +562,11 @@ export const deleteProduct = async (req: AuthRequest, res: Response) => {
 export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
+    const {
+      confirmationPhrase,
+      expectedActiveCount,
+    }: { confirmationPhrase?: unknown; expectedActiveCount?: unknown } =
+      req.body || {};
 
     if (!authUser) {
       return res.status(401).json({
@@ -569,9 +574,31 @@ export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    if (confirmationPhrase !== "VACIAR") {
+      return res.status(400).json({
+        error:
+          "Confirmacion requerida: envie la frase exacta VACIAR para archivar el catalogo activo.",
+      });
+    }
+
     const totalActive = await prisma.product.count({
       where: { isActive: true },
     });
+
+    const expectedCount = Number(expectedActiveCount);
+    if (
+      expectedActiveCount !== undefined &&
+      (!Number.isInteger(expectedCount) || expectedCount !== totalActive)
+    ) {
+      return res.status(409).json({
+        error:
+          "El catalogo cambio desde que se inicio la accion. Actualice la pantalla y vuelva a confirmar.",
+        data: {
+          expectedActiveCount,
+          currentActiveCount: totalActive,
+        },
+      });
+    }
 
     if (totalActive === 0) {
       return res

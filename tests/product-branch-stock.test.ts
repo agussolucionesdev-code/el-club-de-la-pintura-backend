@@ -9,8 +9,13 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
     email: `robot_catalog_${runId}@elclub.com`,
     password: "supersecretpassword",
   };
+  const adminCreds = {
+    email: `robot_catalog_admin_${runId}@elclub.com`,
+    password: "supersecretpassword",
+  };
 
   let managerToken = "";
+  let adminToken = "";
   let branchAId = 0;
   let branchBId = 0;
   let productId = 0;
@@ -29,6 +34,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
     branchBId = branchB.id;
 
     const hashedPassword = await bcrypt.hash(managerCreds.password, 10);
+    const hashedAdminPassword = await bcrypt.hash(adminCreds.password, 10);
     await prisma.user.create({
       data: {
         name: `Robot Catalogo ${runId}`,
@@ -38,12 +44,25 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
         branches: { connect: [{ id: branchBId }] },
       },
     });
+    await prisma.user.create({
+      data: {
+        name: `Robot Catalogo Admin ${runId}`,
+        email: adminCreds.email,
+        password: hashedAdminPassword,
+        role: "ADMIN",
+        branches: { connect: [{ id: branchAId }, { id: branchBId }] },
+      },
+    });
 
     const loginResponse = await request(app)
       .post("/api/users/login")
       .send(managerCreds);
+    const adminLoginResponse = await request(app)
+      .post("/api/users/login")
+      .send(adminCreds);
 
     managerToken = loginResponse.body.token;
+    adminToken = adminLoginResponse.body.token;
   });
 
   afterAll(async () => {
@@ -53,6 +72,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
       await prisma.product.deleteMany({ where: { id: productId } });
     }
     await prisma.user.deleteMany({ where: { email: managerCreds.email } });
+    await prisma.user.deleteMany({ where: { email: adminCreds.email } });
     await prisma.branch.deleteMany({
       where: { id: { in: [branchAId, branchBId] } },
     });
@@ -119,5 +139,20 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
 
     expect(forbiddenResponse.status).toBe(400);
     expect(forbiddenResponse.body.error).toContain("No tienes permisos");
+  });
+
+  it("bloquea el archivado masivo sin confirmacion de servidor", async () => {
+    const response = await request(app)
+      .delete("/api/products/delete-all")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({});
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toContain("Confirmacion requerida");
+
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    expect(product?.isActive).toBe(true);
   });
 });
