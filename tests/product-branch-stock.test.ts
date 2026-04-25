@@ -19,6 +19,8 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
   let branchAId = 0;
   let branchBId = 0;
   let productId = 0;
+  const importedSupplierName = `Marca Importada Sin Datos Falsos ${runId}`;
+  const importedSku = `IMP-${runId}`;
 
   beforeAll(async () => {
     const [branchA, branchB] = await Promise.all([
@@ -71,6 +73,10 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
       await prisma.stock.deleteMany({ where: { productId } });
       await prisma.product.deleteMany({ where: { id: productId } });
     }
+    await prisma.product.deleteMany({ where: { sku: importedSku } });
+    await prisma.supplier.deleteMany({
+      where: { companyName: importedSupplierName },
+    });
     await prisma.user.deleteMany({ where: { email: managerCreds.email } });
     await prisma.user.deleteMany({ where: { email: adminCreds.email } });
     await prisma.branch.deleteMany({
@@ -154,5 +160,38 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
       where: { id: productId },
     });
     expect(product?.isActive).toBe(true);
+  });
+
+  it("importa lista creando proveedores sin CUIT ni email ficticios", async () => {
+    const response = await request(app)
+      .post("/api/products/import")
+      .set("Authorization", `Bearer ${managerToken}`)
+      .send({
+        supplierName: importedSupplierName,
+        globalMargin: 30,
+        globalIva: 21,
+        products: [
+          {
+            sku: importedSku,
+            name: `Latex importado ${runId}`,
+            costPrice: 1234,
+            stock: 0,
+          },
+        ],
+      });
+
+    expect(response.status).toBe(201);
+
+    const supplier = await prisma.supplier.findFirst({
+      where: { companyName: importedSupplierName },
+    });
+
+    expect(supplier).toEqual(
+      expect.objectContaining({
+        cuit: null,
+        email: null,
+        contactName: "Importacion de lista",
+      }),
+    );
   });
 });

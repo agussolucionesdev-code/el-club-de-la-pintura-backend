@@ -687,15 +687,13 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       });
 
       if (!supplier) {
-        const randomCuit = `30-${Math.floor(10000000 + Math.random() * 90000000)}-9`;
-
         supplier = await prisma.supplier.create({
           data: {
             companyName: safeBrandName,
-            phone: "No especificado",
-            email: "generado@automatico.com",
-            cuit: randomCuit,
-            contactName: "Auto-generado",
+            phone: "Sin especificar",
+            email: null,
+            cuit: null,
+            contactName: "Importacion de lista",
             address: "Sin especificar",
             isActive: true,
           },
