@@ -26,18 +26,28 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
   let operatorToken = "";
   let operatorId = 0;
   let branchId = 0;
+  let forbiddenBranchId = 0;
   let productId = 0;
   let cashRegisterId = 0;
   let saleId = 0;
 
   beforeAll(async () => {
-    const branch = await prisma.branch.create({
-      data: {
-        name: `Sucursal Caja Norte ${runId}`,
-        location: "Zona Caja",
-      },
-    });
+    const [branch, forbiddenBranch] = await Promise.all([
+      prisma.branch.create({
+        data: {
+          name: `Sucursal Caja Norte ${runId}`,
+          location: "Zona Caja",
+        },
+      }),
+      prisma.branch.create({
+        data: {
+          name: `Sucursal Caja Bloqueada ${runId}`,
+          location: "Zona Caja Externa",
+        },
+      }),
+    ]);
     branchId = branch.id;
+    forbiddenBranchId = forbiddenBranch.id;
 
     const hashedPassword = await bcrypt.hash(operatorCreds.password, 10);
     const operator = await prisma.user.create({
@@ -185,7 +195,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
     await prisma.cashRegister.deleteMany({ where: { id: cashRegisterId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.user.deleteMany({ where: { email: operatorCreds.email } });
-    await prisma.branch.deleteMany({ where: { id: branchId } });
+    await prisma.branch.deleteMany({
+      where: { id: { in: [branchId, forbiddenBranchId] } },
+    });
     await prisma.$disconnect();
   });
 
@@ -373,6 +385,15 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
     expect(pdfResponse.headers["content-disposition"]).toContain("CJA");
     const pdfBody = Buffer.from(pdfResponse.body as Uint8Array);
     expect(pdfBody.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
+  it("bloquea consulta de caja activa sobre sucursales no asignadas", async () => {
+    const response = await request(app)
+      .get(`/api/cash-registers/${forbiddenBranchId}/active`)
+      .set("Authorization", `Bearer ${operatorToken}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain("No tienes permisos");
   });
 
   it("rechaza cierres con dinero contado invalido", async () => {

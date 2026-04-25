@@ -156,6 +156,12 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
+      return res.status(403).json({
+        error: "No tienes acceso a la caja de la sucursal indicada.",
+      });
+    }
+
     const activeShift = await prisma.cashRegister.findFirst({
       where: {
         branchId,
