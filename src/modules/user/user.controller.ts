@@ -25,6 +25,26 @@ const normalizeRole = (role: unknown): ManagedRole | null => {
   return isManagedRole(value) ? value : null;
 };
 
+const validateAdminSecret = (adminSecret: unknown) => {
+  const requiredSecret = process.env.ADMIN_ONBOARD_SECRET?.trim();
+  if (!requiredSecret) {
+    return {
+      ok: false,
+      error:
+        "ADMIN_ONBOARD_SECRET no esta configurado. No se pueden crear ni promover administradores de forma segura.",
+    };
+  }
+
+  if (String(adminSecret || "") !== requiredSecret) {
+    return {
+      ok: false,
+      error: "La llave maestra para administradores no es valida.",
+    };
+  }
+
+  return { ok: true, error: null };
+};
+
 const countAdmins = () =>
   prisma.user.count({
     where: { role: "ADMIN" },
@@ -209,13 +229,23 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
         .json({ error: "El correo electronico ya pertenece a un empleado." });
     }
 
-    if (
-      role === "ADMIN" &&
-      process.env.ADMIN_ONBOARD_SECRET &&
-      adminSecret !== process.env.ADMIN_ONBOARD_SECRET
-    ) {
+    const normalizedRole = normalizeRole(role || "EMPLOYEE");
+    if (!normalizedRole) {
+      return res.status(400).json({ error: "El rol indicado no es valido." });
+    }
+
+    if (normalizedRole === "ADMIN") {
+      const adminSecretValidation = validateAdminSecret(adminSecret);
+      if (!adminSecretValidation.ok) {
+        return res.status(403).json({
+          error: adminSecretValidation.error,
+        });
+      }
+    }
+
+    if (normalizedRole !== "ADMIN" && adminSecret) {
       return res.status(403).json({
-        error: "La llave maestra para crear administradores no es valida.",
+        error: "La llave maestra solo se utiliza para altas de administradores.",
       });
     }
 
@@ -226,7 +256,7 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
         name,
         email,
         password: hashedPassword,
-        role: role || "EMPLOYEE",
+        role: normalizedRole,
         branches:
           branchIds && branchIds.length > 0
             ? { connect: branchIds.map((id: number) => ({ id })) }
@@ -258,7 +288,7 @@ export const modifyEmployeeProfile = async (
 ) => {
   try {
     const { id } = req.params;
-    const { name, email, role, branchIds } = req.body;
+    const { name, email, role, branchIds, adminSecret } = req.body;
     const authUser = getAuthUser(req);
     const targetUserId = Number(id);
     const normalizedRole = normalizeRole(role);
@@ -274,6 +304,15 @@ export const modifyEmployeeProfile = async (
 
     if (!targetUser) {
       return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    if (targetUser.role !== "ADMIN" && normalizedRole === "ADMIN") {
+      const adminSecretValidation = validateAdminSecret(adminSecret);
+      if (!adminSecretValidation.ok) {
+        return res.status(403).json({
+          error: adminSecretValidation.error,
+        });
+      }
     }
 
     if (targetUser.role === "ADMIN" && normalizedRole !== "ADMIN") {

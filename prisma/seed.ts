@@ -17,14 +17,18 @@ const getSeedPassword = () => {
 };
 
 const ensureBranch = async (name: string, location: string) => {
-  const existing = await prisma.branch.findFirst({ where: { name } });
+  const normalizedName = name.trim().replace(/\s+/g, " ");
+  const existing = await prisma.branch.findFirst({
+    where: { name: { equals: normalizedName, mode: "insensitive" } },
+    orderBy: { id: "asc" },
+  });
   if (existing) {
     return prisma.branch.update({
       where: { id: existing.id },
       data: { location: existing.location || location },
     });
   }
-  return prisma.branch.create({ data: { name, location } });
+  return prisma.branch.create({ data: { name: normalizedName, location } });
 };
 
 const ensureUser = async ({
@@ -43,15 +47,24 @@ const ensureUser = async ({
   const branches = branchIds.map((id) => ({ id }));
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) {
-    return prisma.user.update({
-      where: { id: existing.id },
-      data: {
-        name,
-        role,
-        branches: { set: branches },
-      },
-      select: { id: true, email: true, role: true },
-    });
+    if (process.env.SEED_OVERWRITE_USERS === "true") {
+      return prisma.user.update({
+        where: { id: existing.id },
+        data: {
+          name,
+          role,
+          branches: { set: branches },
+        },
+        select: { id: true, email: true, role: true },
+      });
+    }
+
+    return {
+      id: existing.id,
+      email: existing.email,
+      role: existing.role,
+      preserved: true,
+    };
   }
 
   return prisma.user.create({

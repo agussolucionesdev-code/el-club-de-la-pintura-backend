@@ -66,6 +66,18 @@ const parseBranchId = (id: unknown) => {
   return Number.isInteger(branchId) && branchId > 0 ? branchId : null;
 };
 
+const normalizeBranchName = (name: unknown) =>
+  String(name || "").trim().replace(/\s+/g, " ");
+
+const findBranchNameConflict = (name: string, exceptBranchId?: number) =>
+  prisma.branch.findFirst({
+    where: {
+      name: { equals: name, mode: "insensitive" },
+      ...(exceptBranchId ? { id: { not: exceptBranchId } } : {}),
+    },
+    select: { id: true, name: true },
+  });
+
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 
@@ -119,12 +131,20 @@ export const getBranches = async (req: AuthRequest, res: Response) => {
 export const createBranch = async (req: Request, res: Response) => {
   try {
     const { name, location } = req.body;
-    const trimmedName = String(name || "").trim();
+    const trimmedName = normalizeBranchName(name);
 
     if (trimmedName.length < 2) {
       return res
         .status(400)
         .json({ error: "El nombre de la sucursal es requerido." });
+    }
+
+    const existingBranch = await findBranchNameConflict(trimmedName);
+    if (existingBranch) {
+      return res.status(409).json({
+        error: "Ya existe una sucursal con ese nombre.",
+        data: { existingBranch },
+      });
     }
 
     const newBranch = await prisma.branch.create({
@@ -150,7 +170,7 @@ export const updateBranch = async (req: Request, res: Response) => {
   try {
     const branchId = parseBranchId(req.params.id);
     const { name, location } = req.body;
-    const trimmedName = String(name || "").trim();
+    const trimmedName = normalizeBranchName(name);
 
     if (!branchId) {
       return res.status(400).json({ error: "Sucursal invalida." });
@@ -160,6 +180,22 @@ export const updateBranch = async (req: Request, res: Response) => {
       return res
         .status(400)
         .json({ error: "El nombre de la sucursal es requerido." });
+    }
+
+    const currentBranch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true },
+    });
+    if (!currentBranch) {
+      return res.status(404).json({ error: "Sucursal no encontrada." });
+    }
+
+    const existingBranch = await findBranchNameConflict(trimmedName, branchId);
+    if (existingBranch) {
+      return res.status(409).json({
+        error: "Ya existe otra sucursal con ese nombre.",
+        data: { existingBranch },
+      });
     }
 
     const updatedBranch = await prisma.branch.update({
@@ -190,6 +226,14 @@ export const deleteBranch = async (req: Request, res: Response) => {
 
     if (!branchId) {
       return res.status(400).json({ error: "Sucursal invalida." });
+    }
+
+    const currentBranch = await prisma.branch.findUnique({
+      where: { id: branchId },
+      select: { id: true },
+    });
+    if (!currentBranch) {
+      return res.status(404).json({ error: "Sucursal no encontrada." });
     }
 
     const blockers = await countBranchDeletionBlockers(branchId);
