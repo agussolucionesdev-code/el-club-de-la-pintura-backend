@@ -820,7 +820,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       if (!name || costPrice <= 0) continue;
 
       const searchSku = String(p.sku || "").trim();
-      let existingProduct = null;
+      let existingProduct: Awaited<ReturnType<typeof prisma.product.findFirst>> = null;
 
       // 1. Look up by SKU if it was not auto-generated
       if (searchSku && !searchSku.startsWith("SKU-AUTO")) {

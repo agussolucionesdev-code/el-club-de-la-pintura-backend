@@ -98,8 +98,8 @@ export const listAuditLogs = async (req: AuthRequest, res: Response) => {
           })
         : Promise.resolve([]),
     ]);
-    const actorsById = new Map(actors.map((actor) => [actor.id, actor]));
-    const branchesById = new Map(branches.map((branch) => [branch.id, branch]));
+    const actorsById = new Map(actors.map((actor) => [actor.id, actor] as [typeof actor.id, typeof actor]));
+    const branchesById = new Map(branches.map((branch) => [branch.id, branch] as [typeof branch.id, typeof branch]));
 
     res.status(200).json({
       data: logs.map((log) => ({

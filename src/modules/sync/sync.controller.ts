@@ -21,7 +21,7 @@
  */
 import { Response } from "express";
 import { logger } from '../../config/logger';
-import { Prisma } from "@prisma/client";
+import { Payment, Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
@@ -377,7 +377,7 @@ const replaySaleOperation = async (
       });
     }
 
-    const createdPayments = [];
+    const createdPayments: Payment[] = [];
     for (const payment of immediatePayments) {
       const createdPayment = await tx.payment.create({
         data: {

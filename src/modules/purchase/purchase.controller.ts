@@ -13,7 +13,7 @@
  * @module purchase.controller
  */
 import { Response } from "express";
-import { Prisma } from "@prisma/client";
+import { Prisma, Stock } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
@@ -469,7 +469,7 @@ export const receivePurchaseReceipt = async (
         }
       }
 
-      const updatedItems = [];
+      const updatedItems: Stock[] = [];
 
       const receipt = await tx.purchaseReceipt.create({
         data: {

@@ -17,6 +17,7 @@
  * @module sale.controller
  */
 import { Response } from "express";
+import { Payment } from "@prisma/client";
 import { logger } from '../../config/logger';
 import PDFDocument from "pdfkit";
 import * as ExcelJS from "exceljs";
@@ -297,7 +298,7 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      const refundPayments = [];
+      const refundPayments: Payment[] = [];
       if (originalPayments.length > 0) {
         if (!refundCashRegisterId) {
           throw new Error(
@@ -565,7 +566,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      const createdPayments = [];
+      const createdPayments: Payment[] = [];
       for (const payment of immediatePayments) {
         const createdPayment = await tx.payment.create({
           data: {
