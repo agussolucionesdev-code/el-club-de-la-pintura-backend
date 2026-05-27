@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon src/app.ts",
-    "build": "tsc",
+    "build": "npx prisma generate && tsc",
     "start": "node dist/app.js",
     "test": "jest --detectOpenHandles",
     "db:generate": "prisma generate",
