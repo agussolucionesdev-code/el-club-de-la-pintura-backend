@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // ============================================================================
-// ONBOARDING: Validación para dar de alta a un nuevo empleado
+// ONBOARDING: Validation schema for registering a new employee
 // ============================================================================
 export const onboardEmployeeSchema = z.object({
   body: z
@@ -46,7 +46,7 @@ export const onboardEmployeeSchema = z.object({
 });
 
 // ============================================================================
-// MODIFY: Validación para editar el rol o sucursal de un empleado existente
+// MODIFY: Validation schema for updating an existing employee's role or branch
 // ============================================================================
 export const modifyEmployeeSchema = z.object({
   body: z
@@ -63,7 +63,7 @@ export const modifyEmployeeSchema = z.object({
 });
 
 // ============================================================================
-// RESET PASSWORD: Validación exclusiva para blanquear claves olvidadas
+// RESET PASSWORD: Validation schema for resetting a forgotten password
 // ============================================================================
 export const resetPasswordSchema = z.object({
   body: z.object({

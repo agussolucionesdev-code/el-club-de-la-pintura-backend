@@ -5,7 +5,7 @@ export const createCustomerSchema = z.object({
     name: z
       .string()
       .min(2, "El nombre de la empresa o titular es obligatorio."),
-    document: z.string().optional(), // DNI o CUIT
+    document: z.string().optional(), // DNI or CUIT (Argentine tax IDs)
     type: z
       .enum(["CONSUMER", "CONTRACTOR", "COMPANY", "FAMILY"], {
         message: "El perfil comercial seleccionado no es válido.",

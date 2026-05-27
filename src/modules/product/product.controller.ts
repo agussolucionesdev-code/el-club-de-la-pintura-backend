@@ -1,20 +1,36 @@
-// Importación de interfaces HTTP y ORM
+﻿/**
+ * Product Controller — catalog management for the paint store.
+ *
+ * Handles full CRUD for products including:
+ * - Paginated search with filters (brand, category, text)
+ * - Name normalization to prevent duplicates (e.g. "20 Lts" → "20 L")
+ * - Financial engine: `costPrice` + `margin` + `iva` → `retailPrice` auto-calculation
+ * - Cloudinary image upload (stored under `el-club-pintura/productos`)
+ * - Bulk import from Excel with smart UPSERT (SKU-based dedup)
+ * - Soft delete (`isActive = false`) to preserve historical sale references
+ *
+ * Access: most read operations are public (no auth required for POS product grid);
+ * write operations require ADMIN or ENCARGADO role.
+ *
+ * @module product.controller
+ */
+// HTTP and ORM interface imports
+import { logger } from '../../config/logger';
 import { Request, Response } from "express";
 import prisma from "../../config/db";
 import { Prisma } from "@prisma/client";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
-// Importación de utilidades de procesamiento y almacenamiento
-import * as xlsx from "xlsx";
+// Processing and storage utility imports
 import cloudinary from "../../config/cloudinary";
 
-// 🧠 IA BACKEND: MOTOR DE NORMALIZACIÓN (Data Cleansing)
-// Estandariza volúmenes y textos para evitar duplicados en la base de datos
+// NORMALIZATION ENGINE (Data Cleansing)
+// Standardizes volumes and text to prevent duplicates in the database
 const normalizeProductName = (name: string): string => {
   let cleanName = name.trim().toUpperCase();
-  // Normaliza "x20", "20 Lts", "20L" -> "20 L"
+  // Normalize "x20", "20 Lts", "20L" -> "20 L"
   cleanName = cleanName.replace(/(\d+)\s*(LTS|LT|L)\b/gi, "$1 L");
   cleanName = cleanName.replace(/X\s*(\d+)/gi, "$1 L");
-  // Limpia espacios dobles
+  // Remove consecutive spaces
   cleanName = cleanName.replace(/\s{2,}/g, " ");
   return cleanName;
 };
@@ -116,11 +132,22 @@ const applyCatalogStockSnapshot = async (
 };
 
 // ============================================================================
-// LECTURA DE CATÁLOGO: Paginación, búsqueda y filtros
+// CATALOG READ: Pagination, search and filters
 // ============================================================================
-// ============================================================================
-// LECTURA DE CATÁLOGO: Paginación, búsqueda y filtros
-// ============================================================================
+
+/**
+ * GET /products
+ *
+ * Returns a paginated list of active products with their linked stock records
+ * (per branch). Supports text search (name, brand, SKU), category filter,
+ * and brand filter.
+ *
+ * @query page     - Page number (default: 1).
+ * @query limit    - Page size (default: 10).
+ * @query search   - Free-text filter applied across name, brand, and SKU.
+ * @query category - Exact category filter.
+ * @query brand    - Exact brand filter.
+ */
 export const getProducts = async (req: Request, res: Response) => {
   try {
     const { page = 1, limit = 10, search, category, brand } = req.query;
@@ -129,7 +156,7 @@ export const getProducts = async (req: Request, res: Response) => {
     const pageSize = Number(limit);
     const skip = (pageNumber - 1) * pageSize;
 
-    // 🛡️ INYECCIÓN DE SEGURIDAD Y TIPADO FUERTE
+    // Strong typing prevents injection vectors
     const whereClause: Prisma.ProductWhereInput = { isActive: true };
 
     if (category) whereClause.category = String(category);
@@ -156,7 +183,7 @@ export const getProducts = async (req: Request, res: Response) => {
           supplier: {
             select: { id: true, companyName: true },
           },
-          stocks: true, // 🧠 ¡ACÁ ESTÁ LA MAGIA! Le decimos al backend que envíe el stock en tiempo real
+          stocks: true, // Include real-time stock levels per branch
         },
       }),
     ]);
@@ -168,7 +195,7 @@ export const getProducts = async (req: Request, res: Response) => {
       data: products,
     });
   } catch (error) {
-    console.error("Error al buscar los productos:", error);
+    logger.error("Error al buscar los productos:", error);
     res
       .status(500)
       .json({ error: "Hubo un problema al obtener el catálogo de productos." });
@@ -176,8 +203,19 @@ export const getProducts = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// CREACIÓN INDIVIDUAL: Ingreso de nuevo producto
+// CREATE: New product registration
 // ============================================================================
+
+/**
+ * POST /products
+ *
+ * Creates a new product. Name is normalized (volume units standardized) before
+ * insertion to prevent catalog duplicates. `retailPrice` is computed from
+ * `costPrice`, `margin`, and `iva` if not provided explicitly.
+ * Initial stock records are created for each branch if `initialStock` is provided.
+ *
+ * Access: ADMIN, ENCARGADO.
+ */
 export const createProduct = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -262,7 +300,7 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
       data: {
         sku,
         barcode: barcode !== undefined ? barcode || null : undefined,
-        name: normalizeProductName(name), // 🧠 Normalizamos al crear
+        name: normalizeProductName(name), // normalize on create
         brand,
         category,
         description,
@@ -331,7 +369,7 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
     res.status(201).json(newProduct);
   } catch (error) {
     if (!isOperationalProductError(error)) {
-      console.error("Error al crear el producto:", error);
+      logger.error("Error al crear el producto:", error);
     }
     const errorMsg =
       error instanceof Error
@@ -342,8 +380,19 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// ACTUALIZACIÓN: Modificación de producto existente
+// UPDATE: Modify an existing product
 // ============================================================================
+
+/**
+ * PUT /products/:id
+ *
+ * Updates an existing product's catalog data (pricing, description, brand, etc.).
+ * Applies the same name normalization as `createProduct`. If cost or margin
+ * change, `retailPrice` is recalculated automatically.
+ *
+ * @param id - Product ID.
+ * Access: ADMIN, ENCARGADO.
+ */
 export const updateProduct = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -445,7 +494,7 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
         data: {
         sku,
         barcode: barcode !== undefined ? barcode || null : undefined,
-        name: name ? normalizeProductName(name) : activeProduct.name, // 🧠 Normalizamos al actualizar
+        name: name ? normalizeProductName(name) : activeProduct.name, // normalize on update
         brand,
         category,
         description,
@@ -523,7 +572,7 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
     res.status(200).json(updatedProduct);
   } catch (error) {
     if (!isOperationalProductError(error)) {
-      console.error("Error al actualizar el producto:", error);
+      logger.error("Error al actualizar el producto:", error);
     }
     const errorMsg =
       error instanceof Error ? error.message : "No se pudo actualizar el producto.";
@@ -531,6 +580,16 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * DELETE /products/:id
+ *
+ * Soft-deletes a product by setting `isActive = false`. The product is hidden
+ * from the POS catalog and stock views but remains in the database to preserve
+ * historical sale and movement records.
+ *
+ * @param id - Product ID.
+ * Access: ADMIN only.
+ */
 export const deleteProduct = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -567,8 +626,21 @@ export const deleteProduct = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// Archivado masivo controlado de productos activos.
+// Controlled bulk archive of all active products.
 // ============================================================================
+
+/**
+ * DELETE /products/all
+ *
+ * Soft-deletes ALL currently active products. Requires a confirmation phrase
+ * (`"CONFIRMAR_BORRADO"`) and the current active product count to prevent
+ * accidental bulk archiving. Intended for catalog resets during onboarding.
+ *
+ * Access: ADMIN only. Requires explicit body confirmation.
+ *
+ * @body confirmationPhrase   - Must equal `"CONFIRMAR_BORRADO"`.
+ * @body expectedActiveCount  - Must match the current DB count of active products.
+ */
 export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -639,13 +711,22 @@ export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
       deletedCount: result.count,
     });
   } catch (error) {
-    console.error("Error crítico al vaciar el catálogo:", error);
+    logger.error("Error crítico al vaciar el catálogo:", error);
     res.status(500).json({
       error: "Fallo estructural al intentar vaciar la base de datos.",
     });
   }
 };
 
+/**
+ * POST /products/:id/image
+ *
+ * Uploads a product image to Cloudinary (`el-club-pintura/productos` folder)
+ * and updates the product's `imageUrl` field. Expects a multipart/form-data
+ * request with a `file` field. The previous image is NOT deleted from Cloudinary.
+ *
+ * @param id - Product ID.
+ */
 export const uploadProductImage = async (req: Request, res: Response) => {
   try {
     if (!req.file)
@@ -672,8 +753,24 @@ export const uploadProductImage = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// 🚀 IMPORTACIÓN MASIVA INTELIGENTE: Motor UPSERT Avanzado y Normalización
+// BULK IMPORT: Advanced UPSERT engine with normalization
 // ============================================================================
+
+/**
+ * POST /products/import
+ *
+ * Bulk-imports products from an Excel price list (pre-parsed by the frontend
+ * `ExcelImportManager`). Applies UPSERT by SKU: existing products are updated,
+ * new ones are created. Applies the same name normalization as `createProduct`.
+ *
+ * `globalMargin` and `globalIva` set default values when individual rows omit them.
+ * Stock records are NOT created during import — manage stock separately.
+ *
+ * @body products      - Array of parsed product rows from the Excel file.
+ * @body globalMargin  - Default margin % to apply when a row has none (default: 30).
+ * @body globalIva     - Default IVA % to apply when a row has none (default: 21).
+ * @body supplierName  - Optional supplier name to link products to.
+ */
 export const importProductsFromExcel = async (req: Request, res: Response) => {
   try {
     const { products, globalMargin, globalIva, supplierName } = req.body;
@@ -717,7 +814,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
 
     // Procesamiento secuencial seguro
     for (const p of products) {
-      // 🧠 Pasamos el nombre por el motor de limpieza antes de buscar en BD
+      // Run name through the normalization engine before querying the DB
       const name = normalizeProductName(String(p.name || ""));
       const costPrice = Number(p.costPrice) || 0;
       if (!name || costPrice <= 0) continue;
@@ -725,14 +822,14 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       const searchSku = String(p.sku || "").trim();
       let existingProduct = null;
 
-      // 1. Busca por SKU si no es autogenerado
+      // 1. Look up by SKU if it was not auto-generated
       if (searchSku && !searchSku.startsWith("SKU-AUTO")) {
         existingProduct = await prisma.product.findFirst({
           where: { sku: searchSku, isActive: true },
         });
       }
 
-      // 2. Si no lo encuentra por SKU, busca por Nombre Normalizado Y Marca
+      // 2. Fall back to normalized name + brand lookup
       if (!existingProduct) {
         existingProduct = await prisma.product.findFirst({
           where: { name: name, brand: safeBrandName, isActive: true },
@@ -786,7 +883,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
         await prisma.product.create({
           data: {
             sku: safeSku,
-            name: name, // 🧠 Guardamos el nombre limpio y sin duplicados
+            name: name, // already normalized — no duplicates
             category: "Importación Masiva",
             brand: safeBrandName,
             supplierId: supplierId,
@@ -810,7 +907,7 @@ export const importProductsFromExcel = async (req: Request, res: Response) => {
       details: { created: createdCount, updated: updatedCount },
     });
   } catch (error) {
-    console.error(
+    logger.error(
       "Error crítico en el motor ETL de importación masiva:",
       error,
     );

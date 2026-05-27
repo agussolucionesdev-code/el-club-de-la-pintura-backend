@@ -1,4 +1,26 @@
+﻿/**
+ * Sync Controller — offline-first data synchronization layer.
+ *
+ * Architecture overview:
+ *  1. **Push** (`POST /sync/push`): the device sends queued operations (currently
+ *     SALE_CREATE, EXPENSE_CREATE) that were stored in IndexedDB while offline.
+ *     Each operation is processed idempotently via its `idempotencyKey`. Accepted
+ *     operations are applied and deleted; rejected ones are returned to the client.
+ *
+ *  2. **Pull** (`GET /sync/pull`): the device fetches a full data snapshot for its
+ *     active branch (products, customers, stock levels) so it can serve the POS
+ *     while offline. A `checkpoint` token can be used for incremental future pulls.
+ *
+ *  3. **Status** (`GET /sync/status`): returns the list of sync operations for the
+ *     device/branch, used by the sync-status UI badge and `/sync` page.
+ *
+ * Idempotency: duplicate pushes with the same `idempotencyKey` are silently skipped
+ * (the operation is already ACCEPTED in the DB).
+ *
+ * @module sync.controller
+ */
 import { Response } from "express";
+import { logger } from '../../config/logger';
 import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
@@ -183,7 +205,7 @@ const recordSyncAudit = async (
       },
     })
     .catch((error: unknown) => {
-      console.warn("No se pudo registrar auditoria de sync:", error);
+      logger.warn("No se pudo registrar auditoria de sync:", error);
     });
 };
 
@@ -523,14 +545,110 @@ const replayStockUpdateOperation = async (
       },
     });
 
+    // Normalize to the canonical movement type (same logic as the online updateStock handler)
+    const movementType = type === "ADD" ? "IN" : type === "SUBTRACT" ? "OUT" : "ADJUST";
+
     await tx.movement.create({
       data: {
-        type,
+        type: movementType,
         quantity,
         reason: String(payload.reason || "Ajuste offline sincronizado"),
         productId,
         branchId,
         userId: authUser.id,
+      },
+    });
+  });
+};
+
+const replayAccountPaymentOperation = async (
+  operation: IncomingSyncOperation,
+  authUser: { id: number; role: string; branchIds: number[] },
+) => {
+  const payload = getPayload(operation);
+  const saleId = Number(payload.saleId);
+  const cashRegisterId = Number(payload.cashRegisterId);
+  const amount = Number(payload.amount);
+  const paymentMethod = String(payload.paymentMethod || "").trim().toUpperCase();
+
+  const allowedMethods = new Set(["CASH", "DEBIT", "CREDIT", "TRANSFER", "MIXED"]);
+
+  if (!Number.isInteger(saleId) || saleId <= 0) {
+    throw new Error("La operacion offline de cobro no tiene ticket valido.");
+  }
+  if (!Number.isInteger(cashRegisterId) || cashRegisterId <= 0) {
+    throw new Error("La operacion offline de cobro no tiene caja valida.");
+  }
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error("El monto del cobro offline no es valido.");
+  }
+  if (!allowedMethods.has(paymentMethod)) {
+    throw new Error("El medio de pago del cobro offline no es valido.");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    const activeRegister = await tx.cashRegister.findUnique({
+      where: { id: cashRegisterId },
+    });
+
+    if (!activeRegister || activeRegister.status !== "OPEN") {
+      throw new Error("Cobro offline rechazado: la caja ya no está abierta.");
+    }
+
+    ensureBranchAccess(activeRegister.branchId, authUser);
+
+    const targetSale = await tx.sale.findUnique({ where: { id: saleId } });
+
+    if (!targetSale) throw new Error("Ticket de cuenta corriente no encontrado.");
+    if (targetSale.status === "PAID" || targetSale.balance <= 0) {
+      throw new Error("Esta cuenta corriente ya se encuentra saldada.");
+    }
+    if (targetSale.branchId !== activeRegister.branchId) {
+      throw new Error("La caja y la cuenta corriente pertenecen a sucursales distintas.");
+    }
+    if (amount > targetSale.balance) {
+      throw new Error(
+        `Cobro offline rechazado: el monto ($${amount}) supera el saldo ($${targetSale.balance}).`,
+      );
+    }
+
+    const newBalance = roundSyncMoney(targetSale.balance - amount);
+    const newStatus = newBalance === 0 ? "PAID" : "PARTIAL";
+
+    await tx.sale.update({
+      where: { id: targetSale.id },
+      data: { balance: newBalance, status: newStatus },
+    });
+
+    const newPayment = await tx.payment.create({
+      data: {
+        amount,
+        paymentMethod,
+        saleId: targetSale.id,
+        userId: authUser.id,
+        branchId: targetSale.branchId,
+        cashRegisterId: activeRegister.id,
+      },
+    });
+
+    await createInternalReceipt(tx, {
+      receiptType: "PAYMENT",
+      branchId: targetSale.branchId,
+      cashRegisterId: activeRegister.id,
+      saleId: targetSale.id,
+      paymentId: newPayment.id,
+      sourceId: newPayment.id,
+      createdBy: authUser.id,
+      payload: {
+        paymentId: newPayment.id,
+        saleId: targetSale.id,
+        amount,
+        paymentMethod,
+        previousBalance: targetSale.balance,
+        newBalance,
+        status: newStatus,
+        offlineOperationId: operation.id,
+        idempotencyKey: operation.idempotencyKey,
       },
     });
   });
@@ -632,9 +750,27 @@ const replayOperation = async (
     return;
   }
 
+  if (method === "POST" && endpoint === "/payments/account") {
+    await replayAccountPaymentOperation(operation, authUser);
+    return;
+  }
+
   throw new Error(`Operacion offline no soportada todavia: ${method} ${endpoint}`);
 };
 
+/**
+ * GET /sync/pull
+ *
+ * Returns a full offline data snapshot for the requesting device and branch.
+ * The snapshot includes: products (with stock), customers, and an optional
+ * open cash register. Persists the pull event as a `SyncOperation` record.
+ *
+ * Clients should call this on: initial load, reconnect, and branch switch.
+ *
+ * @query branchId  - Target branch ID.
+ * @query deviceId  - Unique device identifier (generated client-side).
+ * @query checkpoint - Optional: ISO timestamp for incremental pulls (future use).
+ */
 export const pullSyncSnapshot = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -717,6 +853,17 @@ export const pullSyncSnapshot = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /sync/status
+ *
+ * Returns the list of recent sync operations for the requesting device and branch.
+ * Used by the frontend `/sync` page and the header status badge to show pending,
+ * processing, accepted, and rejected operations.
+ *
+ * @query branchId - Branch filter (0 = all branches visible to the user).
+ * @query deviceId - Device identifier to scope results to the current device.
+ * @query limit    - Max records to return (default: 20, max: 100).
+ */
 export const getSyncStatus = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -793,6 +940,26 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * POST /sync/push
+ *
+ * Receives a batch of offline operations queued by the device and applies them
+ * to the live database. Each operation is processed idempotently:
+ * - If `idempotencyKey` already exists with status ACCEPTED → silently skip.
+ * - If processing succeeds → mark ACCEPTED, return in `acceptedOperationIds`.
+ * - If processing fails → mark REJECTED, return in `rejectedOperations` with an error.
+ *
+ * Currently supported operation types:
+ * - `SALE_CREATE` — creates a sale with stock deduction
+ * - `EXPENSE_CREATE` — registers an expense against an open shift
+ *
+ * The device is responsible for deleting accepted operations and displaying
+ * rejected ones to the operator for manual resolution.
+ *
+ * @body branchId    - Branch the operations belong to.
+ * @body deviceId    - Identifier of the sending device.
+ * @body operations  - Array of `IncomingSyncOperation` objects.
+ */
 export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -823,6 +990,16 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       if (!operationId) {
         rejectedOperations.push({
           error: "La operacion offline no tiene idempotencyKey.",
+        });
+        continue;
+      }
+
+      // Reject malformed idempotency keys to prevent injection into queries.
+      // Valid format: 8–120 alphanumeric chars, hyphens, or underscores.
+      if (!/^[\w\-]{8,120}$/.test(operationId)) {
+        rejectedOperations.push({
+          id: operationId,
+          error: "El idempotencyKey tiene un formato no valido.",
         });
         continue;
       }
@@ -930,7 +1107,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
             },
           })
           .catch((syncPersistenceError: unknown) => {
-            console.warn(
+            logger.warn(
               "No se pudo persistir el rechazo de sync:",
               syncPersistenceError,
             );
@@ -969,7 +1146,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       syncCheckpoint,
     });
   } catch (error) {
-    console.error("Error en push de sincronizacion:", error);
+    logger.error("Error en push de sincronizacion:", error);
     res.status(500).json({ error: "Fallo al recibir operaciones offline." });
   }
 };

@@ -11,18 +11,15 @@ import {
   getActiveShift,
   openShift,
   closeShift,
+  getShiftHistory,
+  generateCorteZPdf,
 } from "./cash-register.controller";
 
 const router = Router();
 
 router.use(authenticateToken);
 
-router.get(
-  "/:branchId/active",
-  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
-  authorizeBranchAccess(),
-  getActiveShift,
-);
+// Static routes first — must come before :param routes to avoid ambiguous matching
 router.post(
   "/open",
   authorizeRoles("ADMIN", "ENCARGADO"),
@@ -30,11 +27,30 @@ router.post(
   authorizeBranchAccess(),
   openShift,
 );
+router.get(
+  "/corte-z/pdf",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  generateCorteZPdf,
+);
+
+// Dynamic parameter routes
+router.get(
+  "/:branchId/active",
+  authorizeRoles("ADMIN", "ENCARGADO", "EMPLOYEE"),
+  authorizeBranchAccess(),
+  getActiveShift,
+);
 router.post(
   "/:id/close",
   authorizeRoles("ADMIN", "ENCARGADO"),
   validate(closeShiftSchema),
   closeShift,
+);
+router.get(
+  "/:branchId/history",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  authorizeBranchAccess({ allowAllBranches: true }),
+  getShiftHistory,
 );
 
 export default router;

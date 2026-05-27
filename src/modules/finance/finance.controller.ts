@@ -1,8 +1,25 @@
+﻿/**
+ * Finance Controller — legacy daily revenue and product ranking endpoints.
+ *
+ * @deprecated These endpoints predate the unified dashboard. Prefer the
+ * `dashboard.controller` endpoints (`getDashboardSummary`, `getProductsAnalytics`)
+ * which support branch scoping, date ranges, and role-based access control.
+ *
+ * @module finance.controller
+ */
 import { Request, Response } from "express";
+import { logger } from '../../config/logger';
 import prisma from "../../config/db";
 
-// Retrieve daily financial metrics
-// Calculate gross revenue (billed), actual cash flow (liquidity), total costs, and net profit
+/**
+ * GET /finance/daily-revenue
+ *
+ * Returns today's financial snapshot: gross revenue (accrual), actual cash
+ * collected (liquidity), total cost-of-goods, and net profit. Date range is
+ * always the current calendar day (00:00–23:59 server local time).
+ *
+ * @deprecated Use `GET /dashboard/summary?from=YYYY-MM-DD&to=YYYY-MM-DD` instead.
+ */
 export const getDailyRevenue = async (req: Request, res: Response) => {
   try {
     // Define time range: From 00:00:00 to 23:59:59 of the current day
@@ -12,7 +29,7 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
     const endOfDay = new Date();
     endOfDay.setHours(23, 59, 59, 999);
 
-    // 1. Fetch all sales and their associated items (Accrual Accounting / Facturación)
+    // 1. Fetch all sales and their associated items (accrual accounting / invoiced amounts)
     const dailySales = await prisma.sale.findMany({
       where: {
         createdAt: {
@@ -25,8 +42,8 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
       },
     });
 
-    // 2. Fetch actual physical cash flow (Liquidity / Caja Real)
-    // Agrupa todos los pagos (señas, ventas de contado y cobranzas de deudas viejas) realizados hoy
+    // 2. Fetch actual physical cash flow (Liquidity)
+    // Groups all payments made today: deposits, cash sales, and collections on old debts
     const dailyPayments = await prisma.payment.aggregate({
       _sum: {
         amount: true,
@@ -40,7 +57,7 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
     });
 
     // Initialize financial accumulators
-    let grossBilled = 0; // Total facturado (incluso si no se pagó)
+    let grossBilled = 0; // Total invoiced (including unpaid balances)
     let totalCost = 0;
 
     // Iterate through sales and items to aggregate financial data
@@ -75,7 +92,7 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error calculating daily revenue:", error);
+    logger.error("Error calculating daily revenue:", error);
     res.status(500).json({
       error: "Structural failure while processing financial metrics.",
     });
@@ -84,6 +101,16 @@ export const getDailyRevenue = async (req: Request, res: Response) => {
 
 // Retrieve top selling products
 // Group billing rows (SaleItem) to identify star items
+/**
+ * GET /finance/top-products
+ *
+ * Returns the top-N products by units sold for the current month.
+ *
+ * @deprecated Use `GET /dashboard/products-analytics` instead, which supports
+ * branch scoping, arbitrary date ranges, and revenue/margin breakdown.
+ *
+ * @query limit - Number of products to return (default: 5).
+ */
 export const getTopSellingProducts = async (req: Request, res: Response) => {
   try {
     const { limit = 5 } = req.query;
@@ -122,7 +149,7 @@ export const getTopSellingProducts = async (req: Request, res: Response) => {
       topProducts: productsWithDetails,
     });
   } catch (error) {
-    console.error("Error calculating top products:", error);
+    logger.error("Error calculating top products:", error);
     res.status(500).json({
       error: "Failure while generating inventory rotation metrics.",
     });

@@ -1,18 +1,20 @@
-// Carga automática de variables de entorno (Prioridad absoluta de ejecución)
+﻿// Automatic loading of environment variables (top priority at startup)
+import { logger } from './config/logger';
 import "dotenv/config";
 
-// Importación de módulos principales y utilidades
+// Core modules and utilities
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
 import morgan from "morgan";
+import rateLimit from "express-rate-limit";
 
-// Importación de Escudos de Seguridad (Middlewares globales)
+// Global security middlewares
 import {
   globalErrorHandler,
   notFoundHandler,
 } from "./middlewares/error.middleware";
 
-// Importación de Enrutadores Modulares (Arquitectura Feature-First)
+// Modular routers (feature-first architecture)
 import branchRoutes from "./modules/branch/branch.routes";
 import productRoutes from "./modules/product/product.routes";
 import userRoutes from "./modules/user/user.routes";
@@ -30,30 +32,40 @@ import purchaseRoutes from "./modules/purchase/purchase.routes";
 import internalReceiptRoutes from "./modules/internal-receipt/internal-receipt.routes";
 import auditLogRoutes from "./modules/audit-log/audit-log.routes";
 
-// Inicialización de la aplicación Express
+// Express app initialization
 const app: Application = express();
 const PORT = process.env.PORT || 4000;
 
 // ============================================================================
-// 1. MIDDLEWARES DE PROCESAMIENTO Y AUDITORÍA
+// 1. REQUEST PROCESSING AND SECURITY MIDDLEWARES
 // ============================================================================
-app.use(cors()); // Habilitar peticiones cruzadas (Frontend <-> Backend)
-app.use(express.json()); // Parsear cuerpos de solicitud en formato JSON
-app.use(express.urlencoded({ extended: true })); // 🛡️ MEJORA: Parsear datos de formularios (URL-encoded)
-app.use(morgan("dev")); // Caja Negra: Registrar cada petición HTTP en consola
+
+// Restrict cross-origin requests to the configured frontend origin only.
+// Wildcard CORS is disabled in all environments to prevent unauthorized API access.
+app.use(
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:5174",
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  }),
+);
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+app.use(morgan("dev"));
 
 // ============================================================================
-// 2. ENDPOINTS DE DIAGNÓSTICO
+// 2. DIAGNOSTIC ENDPOINTS
 // ============================================================================
-app.get("/api/health", (req: Request, res: Response) => {
+app.get("/api/health", (_req: Request, res: Response) => {
   res.status(200).json({
     status: "success",
-    message: `El servidor de El Club Pinturerías está funcionando correctamente en modo: ${process.env.NODE_ENV || "development"}`,
+    message: `Backend running in ${process.env.NODE_ENV || "development"} mode`,
   });
 });
 
 // ============================================================================
-// 3. RUTAS DE NEGOCIO (API REST)
+// 3. BUSINESS ROUTES (REST API)
 // ============================================================================
 app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);
@@ -63,7 +75,7 @@ app.use("/api/sales", saleRoutes);
 app.use("/api/finance", financeRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/payments", paymentRoutes);
-app.use("/api/suppliers", supplierRoutes); // 👈 ACÁ ESTÁ EL PLURAL MAGICO
+app.use("/api/suppliers", supplierRoutes);
 app.use("/api/cash-registers", cashRegisterRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/dashboard", dashboardRoutes);
@@ -73,23 +85,19 @@ app.use("/api/internal-receipts", internalReceiptRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
 
 // ============================================================================
-// 4. ESCUDOS DE SEGURIDAD (INTERCEPTORES DE ERRORES)
+// 4. ERROR HANDLERS — must be registered after all routes
 // ============================================================================
-// 🛡️ IMPORTANTE: Estos siempre deben ir al final de todas las rutas
 app.use(notFoundHandler);
 app.use(globalErrorHandler);
 
 // ============================================================================
-// 5. INICIALIZACIÓN DEL SERVIDOR
+// 5. SERVER STARTUP
 // ============================================================================
 if (process.env.NODE_ENV !== "test") {
-  // Forzamos el puerto a ser estrictamente un número para evitar errores de TS
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   app.listen(portNumber, "0.0.0.0", () => {
-    console.log(
-      `🚀 Motor backend encendido, blindado y operando en http://127.0.0.1:${portNumber}`,
-    );
+    logger.info(`Server running on http://127.0.0.1:${portNumber}`);
   });
 }
 

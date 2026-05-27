@@ -1,4 +1,14 @@
+﻿/**
+ * Audit Log Controller — immutable event trail for compliance and debugging.
+ *
+ * AuditLog entries are written by various controllers (customer, supplier, branch,
+ * product, sale, user) to record who did what and when. Entries are never modified
+ * or deleted — they are the system's source of truth for change history.
+ *
+ * @module audit-log.controller
+ */
 import { Prisma } from "@prisma/client";
+import { logger } from '../../config/logger';
 import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
@@ -9,6 +19,22 @@ const parsePositiveInt = (value: unknown) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 };
 
+/**
+ * GET /audit-logs
+ *
+ * Returns the most recent audit log entries filtered by branch, actor, action
+ * keyword, or entity type. Each entry is enriched with the actor's name/role
+ * and the branch name via a secondary lookup (not a JOIN, to keep the response
+ * stable even if related records are deleted).
+ *
+ * Access: ADMIN only.
+ *
+ * @query branchId    - Optional branch filter.
+ * @query actorUserId - Optional: filter by the user who performed the action.
+ * @query action      - Optional case-insensitive substring filter on action name.
+ * @query entityType  - Optional exact case-insensitive filter on entity type.
+ * @query limit       - Max entries to return (default: 50, max: 200).
+ */
 export const listAuditLogs = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -87,7 +113,7 @@ export const listAuditLogs = async (req: AuthRequest, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error al listar auditoria:", error);
+    logger.error("Error al listar auditoria:", error);
     res.status(500).json({ error: "No se pudo obtener la auditoria." });
   }
 };

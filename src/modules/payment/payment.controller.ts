@@ -1,3 +1,18 @@
+/**
+ * Payment Controller — accounts-receivable payment registration and receipts.
+ *
+ * Handles partial and full payments against open sales (PENDING / PARTIAL status).
+ * Each payment:
+ * - Deducts from the sale's outstanding balance
+ * - Updates sale status (PARTIAL → PAID when fully collected)
+ * - Creates a `Payment` record linked to the current cash register shift
+ * - Creates an internal receipt for audit purposes
+ *
+ * Allowed payment methods for account payments: CASH, DEBIT, CREDIT, TRANSFER, MIXED.
+ * CUENTA_CORRIENTE is intentionally excluded (can't pay a fiado with another fiado).
+ *
+ * @module payment.controller
+ */
 import { Response } from "express";
 import PDFDocument from "pdfkit";
 import prisma from "../../config/db";
@@ -63,6 +78,18 @@ const formatReceiptDate = (date: Date) =>
     timeZone: "America/Argentina/Buenos_Aires",
   });
 
+/**
+ * POST /payments/account
+ *
+ * Registers a payment against an open receivable (sale with PENDING or PARTIAL status).
+ * Validates that the cash register shift is open and that the payment amount does not
+ * exceed the remaining balance. Updates the sale status atomically.
+ *
+ * @body saleId         - The open sale to pay against.
+ * @body cashRegisterId - The active shift receiving the payment.
+ * @body amount         - Payment amount (must be > 0 and ≤ remaining balance).
+ * @body paymentMethod  - One of: CASH, DEBIT, CREDIT, TRANSFER, MIXED.
+ */
 export const registerAccountPayment = async (
   req: AuthRequest,
   res: Response,
@@ -191,6 +218,12 @@ export const registerAccountPayment = async (
   }
 };
 
+/**
+ * POST /payments/debt-collection
+ *
+ * Alias for `registerAccountPayment`. Provided as a semantic alternative
+ * route for debt collection flows. Delegates to the same implementation.
+ */
 export const registerDebtCollection = async (
   req: AuthRequest,
   res: Response,
@@ -202,6 +235,15 @@ export const registerDebtCollection = async (
   }
 };
 
+/**
+ * GET /payments/:paymentId/receipt-pdf
+ *
+ * Streams a PDF receipt for a single payment. Includes: branch, customer,
+ * payment method, amount, sale reference, and operator. Used by the
+ * accounts-receivable module to provide the debtor with a payment confirmation.
+ *
+ * @param paymentId - Payment record ID.
+ */
 export const generatePrintableReceipt = async (
   req: AuthRequest,
   res: Response,

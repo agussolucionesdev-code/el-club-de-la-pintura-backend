@@ -1,3 +1,15 @@
+/**
+ * Expense Controller — operational expense (egreso de caja) management.
+ *
+ * Expenses are always linked to an OPEN cash register shift. Before recording
+ * an expense, the controller validates that there is sufficient cash in the
+ * drawer (initialBalance + cash payments - prior expenses ≥ new expense amount).
+ * An internal receipt is created for each registered expense.
+ *
+ * Expense types: FIJO (fixed overhead), VARIABLE (ad-hoc operational).
+ *
+ * @module expense.controller
+ */
 import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import prisma from "../../config/db";
@@ -26,6 +38,16 @@ const calculateAvailableCash = (shift: {
   return shift.initialBalance + totalCashPayments - totalExpenses;
 };
 
+/**
+ * GET /expenses
+ *
+ * Returns expenses for the authenticated user's visible branches.
+ * ADMIN sees all; non-ADMIN sees only their own branches.
+ * Optional filter by cash register shift ID.
+ *
+ * @query cashRegisterId - Optional: filter by a specific shift.
+ * @query branchId       - Optional: filter by branch.
+ */
 export const getExpenses = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -53,6 +75,20 @@ export const getExpenses = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * POST /expenses
+ *
+ * Registers a new expense against the active cash register shift for a branch.
+ * Validates that the drawer has sufficient cash before recording.
+ * Creates an internal receipt for audit purposes.
+ *
+ * @body cashRegisterId - Active shift to charge the expense against.
+ * @body branchId       - Branch where the expense occurs.
+ * @body amount         - Expense amount in ARS (must be > 0 and ≤ available cash).
+ * @body reason         - Description of the expense.
+ * @body category       - Expense category (e.g., "ALQUILER", "LIMPIEZA").
+ * @body type           - `"FIJO"` or `"VARIABLE"`.
+ */
 export const registerExpense = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);

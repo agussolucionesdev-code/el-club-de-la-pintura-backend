@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 // ==========================================
-// VALIDACIÓN: Movimientos de Inventario
+// VALIDATION: Inventory movement schema
 // ==========================================
 export const updateStockSchema = z.object({
   body: z.object({
@@ -11,7 +11,7 @@ export const updateStockSchema = z.object({
       .positive("El ID del producto es obligatorio y debe ser válido."),
     branchId: z.number().int().positive("El ID de la sucursal es obligatorio."),
 
-    // 🛡️ CORRECCIÓN: Agregamos el ID del usuario que envía el frontend
+    // userId is passed from the frontend for movement audit trail
     userId: z
       .number()
       .int()
@@ -31,7 +31,7 @@ export const updateStockSchema = z.object({
 });
 
 // ==========================================
-// VALIDACIÓN: Configuración de Alertas
+// VALIDATION: Stock alert threshold schema
 // ==========================================
 export const updateStockThresholdsSchema = z.object({
   body: z.object({

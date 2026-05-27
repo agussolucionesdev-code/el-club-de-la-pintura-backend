@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError, ZodSchema } from "zod";
 
-// INTERCEPTOR: Validación de datos de entrada
+// INTERCEPTOR: Request body / query / params validation via Zod schema
 export const validate =
   (schema: ZodSchema) => (req: Request, res: Response, next: NextFunction) => {
     try {

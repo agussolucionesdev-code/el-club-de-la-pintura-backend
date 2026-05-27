@@ -1,4 +1,5 @@
-import { Request, Response, NextFunction } from "express";
+﻿import { Request, Response, NextFunction } from "express";
+import { logger } from '../config/logger';
 import jwt, { JwtPayload } from "jsonwebtoken";
 
 export interface AuthenticatedUser {
@@ -82,7 +83,7 @@ export const authenticateToken = (
 
     next();
   } catch (error) {
-    console.error("Fallo critico en validacion de identidad:", error);
+    logger.error("Fallo critico en validacion de identidad:", error);
     res.status(403).json({
       error: "Sesion invalida o expirada. Por favor, reingrese al sistema.",
     });

@@ -1,31 +1,32 @@
-import { Request, Response, NextFunction } from "express";
+﻿import { Request, Response, NextFunction } from "express";
+import { logger } from '../config/logger';
 
-// Interceptor Global de Errores (El Escudo)
+// Global error interceptor — last-resort Express error handler
 export const globalErrorHandler = (
   err: any,
   req: Request,
   res: Response,
   next: NextFunction,
 ) => {
-  console.error("🚨 [CRASH PREVENIDO POR JIMMY]:", err.message || err);
+  logger.error("[UNHANDLED ERROR]:", err.message || err);
 
-  // Si el error es de validación (Zod) o un error nuestro controlado
+  // Use the error's own status code if set, otherwise default to 500
   const statusCode = err.statusCode || 500;
 
-  // Mensaje amigable para que el Frontend lo muestre en una alerta bonita
+  // Human-readable message forwarded to the frontend for display
   const message = err.message || "Fallo estructural interno en el servidor.";
 
   res.status(statusCode).json({
     status: "error",
     statusCode,
     message,
-    // (Opcional: En producción podríamos ocultar la ruta exacta por seguridad)
+    // Note: consider omitting `path` in production to avoid leaking route structure
     path: req.originalUrl,
     timestamp: new Date().toISOString(),
   });
 };
 
-// Interceptor para rutas que no existen (Error 404)
+// 404 handler — catches requests to undefined routes
 export const notFoundHandler = (
   req: Request,
   res: Response,

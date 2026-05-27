@@ -9,7 +9,7 @@ export const createProductSchema = z.object({
     category: z.string().min(1, "La categoría es obligatoria."),
     description: z.string().optional().nullable(),
 
-    // 🛡️ NÚCLEO FINANCIERO REFACTORIZADO
+    // Refactored financial core fields
     costPrice: z.number().nonnegative().optional().nullable(),
     profitMargin: z.number().nonnegative().optional().default(30.0),
     ivaPercentage: z.number().nonnegative().max(100).optional().default(21.0),

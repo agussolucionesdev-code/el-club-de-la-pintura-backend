@@ -8,7 +8,7 @@ export const registerExpenseSchema = z.object({
     type: z.enum(["FIXED", "VARIABLE"]),
     branchId: z.number().int().positive(),
 
-    // 🛡️ SI ESTO NO ESTÁ, ZOD BORRA EL ID Y EXPLOTA TODO
+    // cashRegisterId is required — Zod strips unknown keys by default
     cashRegisterId: z
       .number()
       .int()

@@ -1,3 +1,17 @@
+/**
+ * Purchase Controller — supplier purchase order and goods receipt management.
+ *
+ * Workflow:
+ *  1. Create a purchase order (`createPurchaseOrder`) to record what was ordered
+ *     from a supplier, at what unit cost, for which branch.
+ *  2. When goods arrive, record a goods receipt (`receivePurchaseReceipt`).
+ *     This automatically increments the branch's stock for each received item.
+ *
+ * A purchase receipt can reference an existing purchase order or stand alone
+ * (direct receive without a prior order).
+ *
+ * @module purchase.controller
+ */
 import { Response } from "express";
 import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
@@ -226,6 +240,14 @@ const attachInternalReceiptRefs = async <T extends { id: string; branchId: numbe
   });
 };
 
+/**
+ * GET /purchases/orders
+ *
+ * Returns all purchase orders visible to the authenticated user, ordered by
+ * creation date descending. Includes items with product details and the supplier.
+ *
+ * @query branchId - Branch filter (0 = all branches, ADMIN only).
+ */
 export const getPurchaseOrders = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -261,6 +283,14 @@ export const getPurchaseOrders = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /purchases/receipts
+ *
+ * Returns all goods receipts (received stock) for the given branch, ordered by
+ * reception date descending. Includes items and the linked purchase order (if any).
+ *
+ * @query branchId - Branch filter (0 = all branches, ADMIN only).
+ */
 export const getPurchaseReceipts = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -296,6 +326,17 @@ export const getPurchaseReceipts = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * POST /purchases/orders
+ *
+ * Creates a purchase order for the given branch and supplier. Records
+ * the expected items and unit costs. Does NOT modify stock — use
+ * `receivePurchaseReceipt` when the goods actually arrive.
+ *
+ * @body branchId   - Branch placing the order.
+ * @body supplierId - Optional supplier ID.
+ * @body items      - Array of `{ productId, quantity, unitCost }`.
+ */
 export const createPurchaseOrder = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -373,6 +414,20 @@ export const createPurchaseOrder = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * POST /purchases/receipts
+ *
+ * Records a goods receipt and increments stock for each received item in the
+ * target branch. Can be linked to an existing purchase order via `purchaseOrderId`
+ * or created as a standalone receipt. Updates product `costPrice` if the received
+ * unit cost differs from the current catalog price.
+ * Creates an internal receipt for audit purposes.
+ *
+ * @body branchId         - Branch receiving the goods.
+ * @body supplierId       - Optional supplier ID.
+ * @body purchaseOrderId  - Optional: link to an existing purchase order.
+ * @body items            - Array of `{ productId, quantity, unitCost }`.
+ */
 export const receivePurchaseReceipt = async (
   req: AuthRequest,
   res: Response,
@@ -452,7 +507,7 @@ export const receivePurchaseReceipt = async (
 
         await tx.movement.create({
           data: {
-            type: "PURCHASE_IN",
+            type: "PURCHASE",
             quantity: item.quantity,
             reason: req.body.reason || "Recepcion de compra interna",
             productId: item.productId,

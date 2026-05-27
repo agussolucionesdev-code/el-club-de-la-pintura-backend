@@ -1,5 +1,25 @@
+﻿/**
+ * Sale Controller — point-of-sale transaction lifecycle.
+ *
+ * Core responsibilities:
+ * - Create sales (cash, card, bank transfer, accounts-receivable / "fiado")
+ * - Cancel sales with stock restitution
+ * - Retrieve sales list and individual sale details
+ * - Generate PDF receipt for a completed sale
+ * - Expose pending receivables (open accounts) and export them to Excel
+ *
+ * Business rules:
+ * - Sales require an OPEN cash-register shift for the target branch.
+ * - Accounts-receivable sales (`paymentMethod: CUENTA_CORRIENTE`) require a customer.
+ * - Stock is decremented atomically per branch inside a Prisma transaction.
+ * - An internal receipt is created for every confirmed sale.
+ *
+ * @module sale.controller
+ */
 import { Response } from "express";
+import { logger } from '../../config/logger';
 import PDFDocument from "pdfkit";
+import * as ExcelJS from "exceljs";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
@@ -156,6 +176,19 @@ const ensureBranchAccess = (
   }
 };
 
+/**
+ * PATCH /sales/:id/cancel
+ *
+ * Cancels a sale and restores product stock for the originating branch.
+ * Only PAID or PENDING sales can be cancelled. PARTIAL sales are rejected.
+ * A cancellation reason is required and stored in the sale record.
+ * An internal receipt is created to audit the reversal.
+ *
+ * Access: ADMIN (any branch), ENCARGADO/EMPLOYEE (own branches only).
+ *
+ * @param id - Sale ID to cancel.
+ * @body reason - Mandatory cancellation reason string.
+ */
 export const cancelSale = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -366,6 +399,28 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * POST /sales
+ *
+ * Creates a new sale. Supports single and split-payment methods:
+ * CASH, DEBIT, CREDIT, TRANSFER, CUENTA_CORRIENTE (accounts-receivable).
+ *
+ * Transaction guarantees:
+ * - Stock deduction per product/branch
+ * - Payment records persisted
+ * - Sale status set to PAID (fully paid), PENDING (full fiado), or PARTIAL (split)
+ * - Internal receipt created
+ * - Sale linked to the active cash register shift
+ *
+ * @body branchId       - Branch where the sale is made.
+ * @body cashRegisterId - ID of the open shift (required).
+ * @body customerId     - Required for `CUENTA_CORRIENTE` sales.
+ * @body paymentMethod  - Top-level payment method (used when `payments` is absent).
+ * @body payments       - Array of `{ method, amount }` for split payments.
+ * @body totalAmount    - Total sale amount in ARS.
+ * @body items          - Array of `{ productId, quantity, unitPrice, unitCost }`.
+ * @body pickedUpBy     - Optional: name of the person picking up the order.
+ */
 export const createSale = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -451,18 +506,34 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       });
 
       for (const item of items) {
-        const currentStock = await tx.stock.findUnique({
-          where: {
-            productId_branchId: {
-              productId: Number(item.productId),
-              branchId: parsedBranchId,
+        const [currentStock, productRecord] = await Promise.all([
+          tx.stock.findUnique({
+            where: {
+              productId_branchId: {
+                productId: Number(item.productId),
+                branchId: parsedBranchId,
+              },
             },
-          },
-        });
+          }),
+          tx.product.findUnique({
+            where: { id: Number(item.productId) },
+            select: { name: true, sku: true },
+          }),
+        ]);
 
-        if (!currentStock || currentStock.quantity < Number(item.quantity)) {
+        const productLabel = productRecord
+          ? `${productRecord.name} (${productRecord.sku})`
+          : `producto ID ${item.productId}`;
+
+        if (!currentStock) {
           throw new Error(
-            `Inconsistencia de inventario: stock insuficiente para el producto ID ${item.productId}.`,
+            `Stock no encontrado para ${productLabel} en esta sucursal.`,
+          );
+        }
+
+        if (currentStock.quantity < Number(item.quantity)) {
+          throw new Error(
+            `Stock insuficiente para "${productLabel}": hay ${currentStock.quantity} ud. disponibles pero se pidieron ${item.quantity}.`,
           );
         }
 
@@ -557,6 +628,16 @@ export const createSale = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /sales/pending/:branchId
+ *
+ * Returns all open receivables (sales with status PENDING or PARTIAL) for the
+ * given branch. Pass `branchId=0` for a cross-branch view (ADMIN gets all;
+ * non-ADMIN gets only their own branches).
+ * Includes customer info, payment history, and aging data.
+ *
+ * @param branchId - Branch ID or 0 for consolidated view.
+ */
 export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -597,6 +678,166 @@ export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /sales/pending/export-excel
+ *
+ * Streams an Excel file with all open receivables (PENDING + PARTIAL) filtered
+ * by branch. Used by the accounts-receivable module for offline reporting.
+ *
+ * @query branchId - Branch filter (0 = all branches, ADMIN only).
+ */
+export const exportPendingAccountsExcel = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const authUser = getAuthUser(req);
+    const branchId = Number(req.query.branchId ?? 0);
+    const pendingStatuses = ["PENDING", "PARTIAL"];
+
+    if (!authUser) {
+      return res.status(401).json({ error: "No autorizado." });
+    }
+
+    const whereClause =
+      branchId === 0
+        ? authUser.role === "ADMIN"
+          ? { status: { in: pendingStatuses } }
+          : {
+              branchId: { in: authUser.branchIds },
+              status: { in: pendingStatuses },
+            }
+        : { branchId, status: { in: pendingStatuses } };
+
+    const pendingSales = await prisma.sale.findMany({
+      where: whereClause,
+      include: {
+        customer: { select: { name: true, type: true, phone: true } },
+        user: { select: { name: true } },
+        branch: { select: { name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "El Club de la Pintura ERP";
+    workbook.created = new Date();
+
+    const sheet = workbook.addWorksheet("Cuentas Corrientes");
+
+    sheet.columns = [
+      { header: "Fecha", key: "date", width: 14 },
+      { header: "Nº Venta", key: "id", width: 10 },
+      { header: "Cliente", key: "customer", width: 28 },
+      { header: "Retira", key: "pickedUpBy", width: 22 },
+      { header: "Sucursal", key: "branch", width: 18 },
+      { header: "Total ($)", key: "total", width: 14 },
+      { header: "Saldo ($)", key: "balance", width: 14 },
+      { header: "Estado", key: "status", width: 12 },
+      { header: "Días deuda", key: "ageDays", width: 12 },
+      { header: "Vendedor", key: "seller", width: 22 },
+    ];
+
+    // Styled header row
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
+    headerRow.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1E293B" },
+    };
+    headerRow.alignment = { vertical: "middle", horizontal: "center" };
+    headerRow.height = 22;
+
+    const today = new Date();
+
+    const STATUS_LABELS: Record<string, string> = {
+      PENDING: "Pendiente",
+      PARTIAL: "Pago parcial",
+    };
+
+    pendingSales.forEach((sale) => {
+      const ageDays = Math.floor(
+        (today.getTime() - new Date(sale.createdAt).getTime()) /
+          (1000 * 60 * 60 * 24),
+      );
+      // sale.balance = outstanding amount (updated by the backend on each partial payment)
+      const balance = Number(sale.balance);
+
+      const row = sheet.addRow({
+        date: new Date(sale.createdAt).toLocaleDateString("es-AR"),
+        id: sale.id,
+        customer: sale.customer?.name ?? "Consumidor Final",
+        pickedUpBy: sale.pickedUpBy ?? "-",
+        branch: sale.branch?.name ?? "-",
+        total: Number(sale.totalAmount),
+        balance,
+        status: STATUS_LABELS[sale.status] ?? sale.status,
+        ageDays,
+        seller: sale.user?.name ?? "-",
+      });
+
+      // Color-code rows by aging bucket
+      const fgColor =
+        ageDays > 60
+          ? "FFFEE2E2" // light red
+          : ageDays > 30
+            ? "FFFEF9C3" // light yellow
+            : "FFF0FDF4"; // light green
+
+      row.fill = {
+        type: "pattern",
+        pattern: "solid",
+        fgColor: { argb: fgColor },
+      };
+
+      // Currency format
+      const moneyFmt = '"$"#,##0.00';
+      row.getCell("total").numFmt = moneyFmt;
+      row.getCell("balance").numFmt = moneyFmt;
+    });
+
+    // Summary totals at the bottom of the sheet
+    const lastRow = sheet.rowCount + 2;
+    sheet.getCell(`F${lastRow}`).value = pendingSales.reduce(
+      (acc, s) => acc + Number(s.totalAmount),
+      0,
+    );
+    sheet.getCell(`G${lastRow}`).value = pendingSales.reduce(
+      (acc, s) => acc + Number(s.balance),
+      0,
+    );
+    sheet.getCell(`F${lastRow}`).numFmt = '"$"#,##0.00';
+    sheet.getCell(`G${lastRow}`).numFmt = '"$"#,##0.00';
+    sheet.getCell(`F${lastRow}`).font = { bold: true };
+    sheet.getCell(`G${lastRow}`).font = { bold: true, color: { argb: "FFDC2626" } };
+    sheet.getCell(`E${lastRow}`).value = "TOTAL";
+    sheet.getCell(`E${lastRow}`).font = { bold: true };
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=CuentasCorrientes_${today.toISOString().slice(0, 10)}.xlsx`,
+    );
+
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error: unknown) {
+    logger.error("Error exportando cuentas corrientes:", error);
+    res.status(500).json({ error: "No se pudo generar el Excel." });
+  }
+};
+
+/**
+ * GET /sales
+ *
+ * Returns the 100 most recent sales visible to the authenticated user.
+ * ADMIN sees all branches; ENCARGADO/EMPLOYEE see only their own branches.
+ * Includes branch, customer, user, items, and payments.
+ */
 export const getSales = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -628,6 +869,15 @@ export const getSales = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /sales/:id
+ *
+ * Returns the full detail of a single sale by ID, including items (with product
+ * info), customer, operator, branch, and all linked payments.
+ * Non-ADMIN users can only access sales from their own branches.
+ *
+ * @param id - Sale ID.
+ */
 export const getSaleById = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -672,6 +922,16 @@ export const getSaleById = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * GET /sales/:id/receipt-pdf
+ *
+ * Streams a PDF receipt for the sale identified by `:id`. The document includes
+ * branch header, customer info, itemized list, totals, and payment breakdown.
+ * Suitable for screen display or printing on a standard printer.
+ * (For 80mm thermal receipt format, see the planned ticket-print feature.)
+ *
+ * @param id - Sale ID.
+ */
 export const generateSaleReceiptPdf = async (
   req: AuthRequest,
   res: Response,

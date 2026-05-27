@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -22,7 +23,18 @@ import {
 
 const router = Router();
 
-router.post("/login", authenticateUser);
+// Brute-force protection: max 10 login attempts per IP per 15 minutes.
+const loginRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Demasiados intentos de inicio de sesión. Intente nuevamente en 15 minutos.",
+  },
+});
+
+router.post("/login", loginRateLimiter, authenticateUser);
 
 router.get("/me", authenticateToken, getCurrentUserProfile);
 

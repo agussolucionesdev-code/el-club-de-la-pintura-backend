@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Declaración del Esquema de Ítems de Venta
+// Sale item sub-schema declaration
 const saleItemSchema = z.object({
   productId: z.number().int().positive("Identificador de producto inválido."),
   quantity: z.number().positive("La cantidad debe ser mayor a cero."),
@@ -10,14 +10,14 @@ const saleItemSchema = z.object({
   subtotal: z.number().nonnegative(),
 });
 
-// 🛡️ CORRECCIÓN CLAVE: Agregamos CREDIT_ACCOUNT a la lista de métodos permitidos
+// All accepted payment method identifiers (CREDIT_ACCOUNT enables the store-credit / fiado flow)
 const PAYMENT_METHODS = [
   "CASH",
   "DEBIT",
   "CREDIT",
   "TRANSFER",
   "MIXED",
-  "CREDIT_ACCOUNT", // <-- ¡Acá está la magia!
+  "CREDIT_ACCOUNT",
 ] as const;
 
 const SALE_STATUS = ["PAID", "PENDING", "PARTIAL"] as const;
@@ -42,7 +42,7 @@ export const createSaleSchema = z.object({
 
     status: z.enum(SALE_STATUS).default("PAID"),
 
-    // 🛡️ CORRECCIÓN CLAVE: Agregamos pickedUpBy para que Zod no lo rebote
+    // pickedUpBy is required for store-credit sales to record who picked up the goods
     pickedUpBy: z.string().optional().nullable(),
 
     metadata: z.record(z.string(), z.any()).optional().nullable(),

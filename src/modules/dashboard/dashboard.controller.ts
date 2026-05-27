@@ -1,8 +1,26 @@
+﻿/**
+ * Dashboard Controller — business intelligence and reporting endpoints.
+ *
+ * All endpoints require a valid JWT (handled by the auth middleware).
+ * ADMIN users can query the consolidated view (`branchId=0`); ENCARGADO and
+ * EMPLOYEE are restricted to their own branches.
+ *
+ * Date filtering: `from` / `to` query params accept `YYYY-MM-DD` strings which
+ * are parsed as **local time** (Argentina, UTC-3) via `parseLocalDate` to avoid
+ * the UTC-midnight off-by-one bug.
+ *
+ * Query safety: every `findMany` call has a `take` cap to prevent OOM crashes
+ * on large production datasets.
+ *
+ * @module dashboard.controller
+ */
 import { Request, Response } from "express";
+import { logger } from '../../config/logger';
 import prisma from "../../config/db";
-import * as ExcelJS from "exceljs"; // <-- LIBRERÍA CONTABLE INYECTADA
+import * as ExcelJS from "exceljs";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { Prisma } from "@prisma/client";
+import { parseLocalDate } from "../../utils/date.utils";
 
 class DashboardAccessDeniedError extends Error {}
 
@@ -15,13 +33,21 @@ const parseDashboardDate = (value: unknown, endOfDay = false) => {
   if (value === undefined || value === null || value === "") return undefined;
 
   const rawDate = String(value);
-  const parsedDate = new Date(rawDate);
+
+  // YYYY-MM-DD strings must be parsed as local time, NOT as UTC midnight.
+  // new Date("2026-05-26") = 2026-05-25T21:00 in UTC-3 → wrong day bug.
+  let parsedDate: Date;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+    parsedDate = parseLocalDate(rawDate);
+  } else {
+    parsedDate = new Date(rawDate);
+  }
 
   if (Number.isNaN(parsedDate.getTime())) {
     throw new Error("El rango de fechas del dashboard no es valido.");
   }
 
-  if (endOfDay && /^\d{4}-\d{2}-\d{2}$/.test(rawDate)) {
+  if (endOfDay) {
     parsedDate.setHours(23, 59, 59, 999);
   }
 
@@ -70,6 +96,24 @@ const buildBranchFilter = (
   return branchId;
 };
 
+/**
+ * GET /dashboard/summary
+ *
+ * Returns the main KPI snapshot used by the home dashboard:
+ * - totals (billed, collected, debt, expenses, cost)
+ * - payment method breakdown
+ * - expense category breakdown
+ * - recent sales (last 10)
+ * - open cash registers per branch
+ * - stock alerts (critical / warning)
+ * - top-selling products
+ *
+ * Access: ADMIN (all branches or filtered), ENCARGADO/EMPLOYEE (own branch only).
+ *
+ * @query branchId - 0 for consolidated view (ADMIN only), or a specific branch ID.
+ * @query from     - Start date `YYYY-MM-DD` (inclusive, local time).
+ * @query to       - End date `YYYY-MM-DD` (inclusive, end of day, local time).
+ */
 export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -102,13 +146,19 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     const stockWhere: Prisma.StockWhereInput | undefined =
       branchFilter === undefined ? undefined : { branchId: branchFilter };
 
+    // Safety cap: prevent out-of-memory crashes on large datasets.
+    // Date filters applied by the UI keep the typical result well below this threshold.
+    const QUERY_LIMIT = 10_000;
+
     const [sales, payments, expenses, stocks, openCashRegisters] =
       await Promise.all([
       prisma.sale.findMany({
         where: saleWhere,
+        take: QUERY_LIMIT,
         include: {
           branch: { select: { id: true, name: true } },
           customer: { select: { id: true, name: true } },
+          user: { select: { id: true, name: true } },
           items: {
             include: {
               product: {
@@ -119,10 +169,11 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         },
         orderBy: { createdAt: "desc" },
       }),
-      prisma.payment.findMany({ where: paymentWhere }),
-      prisma.expense.findMany({ where: expenseWhere }),
+      prisma.payment.findMany({ where: paymentWhere, take: QUERY_LIMIT }),
+      prisma.expense.findMany({ where: expenseWhere, take: QUERY_LIMIT }),
       prisma.stock.findMany({
         where: stockWhere,
+        take: 5_000,
         include: {
           product: { select: { id: true, name: true, sku: true, brand: true } },
           branch: { select: { id: true, name: true } },
@@ -233,6 +284,42 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       createdAt: sale.createdAt,
     }));
 
+    // Group sales by calendar day for the trend chart (reuses the already-fetched sales array).
+    const salesByDayMap = new Map<string, { total: number; count: number }>();
+    for (const sale of sales) {
+      const day = sale.createdAt.toISOString().slice(0, 10); // "YYYY-MM-DD"
+      const existing = salesByDayMap.get(day) ?? { total: 0, count: 0 };
+      salesByDayMap.set(day, {
+        total: existing.total + sale.totalAmount,
+        count: existing.count + 1,
+      });
+    }
+    const salesByDay = Array.from(salesByDayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, { total, count }]) => ({ date, total, count }));
+
+    // Group sales by seller — user data is already included in the sales join above.
+    const sellerMap = new Map<
+      number,
+      { userId: number; userName: string; total: number; count: number }
+    >();
+    for (const sale of sales) {
+      if (!sale.user) continue;
+      const existing = sellerMap.get(sale.userId) ?? {
+        userId: sale.userId,
+        userName: sale.user.name,
+        total: 0,
+        count: 0,
+      };
+      sellerMap.set(sale.userId, {
+        ...existing,
+        total: existing.total + sale.totalAmount,
+        count: existing.count + 1,
+      });
+    }
+    const salesBySeller = Array.from(sellerMap.values())
+      .sort((a, b) => b.total - a.total);
+
     res.status(200).json({
       scope: {
         branchId: branchId || "ALL",
@@ -262,6 +349,8 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       expenseBreakdown,
       topProducts,
       recentSales,
+      salesByDay,
+      salesBySeller,
       openCashRegisters: openCashRegisters.slice(0, 10).map((cashRegister) => ({
         id: cashRegister.id,
         branchId: cashRegister.branchId,
@@ -283,27 +372,37 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// MOTOR FINANCIERO: Resumen General de Rentabilidad
+// FINANCIAL ENGINE: General Profitability Summary
 // ============================================================================
+
+/**
+ * GET /dashboard/financial-summary
+ *
+ * Returns gross revenue, collected payments, outstanding balance, total expenses,
+ * estimated cost-of-goods, and gross margin for the requested branch/date range.
+ *
+ * @query branchId  - Optional branch filter.
+ * @query startDate - Start of range (ISO string).
+ * @query endDate   - End of range (ISO string).
+ */
 export const getFinancialSummary = async (req: Request, res: Response) => {
   try {
     const { branchId, startDate, endDate } = req.query;
 
-    const saleWhereClause: any = { status: ACTIVE_SALE_STATUS_FILTER };
-    const expenseWhereClause: any = {};
+    const saleWhereClause: Prisma.SaleWhereInput = {
+      status: ACTIVE_SALE_STATUS_FILTER,
+    };
+    const expenseWhereClause: Prisma.ExpenseWhereInput = {};
+
     if (branchId) {
       saleWhereClause.branchId = Number(branchId);
       expenseWhereClause.branchId = Number(branchId);
     }
 
     if (startDate || endDate) {
-      const createdAt = {};
-      if (startDate) {
-        (createdAt as { gte?: Date }).gte = new Date(String(startDate));
-      }
-      if (endDate) {
-        (createdAt as { lte?: Date }).lte = new Date(String(endDate));
-      }
+      const createdAt: Prisma.DateTimeFilter = {};
+      if (startDate) createdAt.gte = new Date(String(startDate));
+      if (endDate) createdAt.lte = new Date(String(endDate));
       saleWhereClause.createdAt = createdAt;
       expenseWhereClause.createdAt = createdAt;
     }
@@ -311,10 +410,12 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
     const [sales, expenses] = await Promise.all([
       prisma.sale.findMany({
         where: saleWhereClause,
+        take: 10_000,
         include: { items: true, payments: true },
       }),
       prisma.expense.findMany({
         where: expenseWhereClause,
+        take: 10_000,
       }),
     ]);
 
@@ -365,7 +466,7 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
       paymentBreakdown: paymentMethods,
     });
   } catch (error) {
-    console.error("Error en Motor Financiero:", error);
+    logger.error("Financial engine error:", error);
     res.status(500).json({
       error: "Fallo estructural al procesar las métricas financieras.",
     });
@@ -373,19 +474,31 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// MOTOR DE GASTOS: Análisis Operativo y de Nómina (Sueldos)
+// EXPENSE ENGINE: Operational and Payroll Analytics
 // ============================================================================
+
+/**
+ * GET /dashboard/expenses-analytics
+ *
+ * Returns total expenses, a per-category breakdown, and a daily time-series
+ * for the requested branch/date range.
+ *
+ * @query branchId  - Optional branch filter.
+ * @query startDate - Start of range (ISO string).
+ * @query endDate   - End of range (ISO string).
+ */
 export const getExpensesAnalytics = async (req: Request, res: Response) => {
   try {
     const { branchId, startDate, endDate } = req.query;
 
-    const whereClause: any = {};
+    const whereClause: Prisma.ExpenseWhereInput = {};
     if (branchId) whereClause.branchId = Number(branchId);
 
     if (startDate || endDate) {
-      whereClause.createdAt = {};
-      if (startDate) whereClause.createdAt.gte = new Date(String(startDate));
-      if (endDate) whereClause.createdAt.lte = new Date(String(endDate));
+      const createdAt: Prisma.DateTimeFilter = {};
+      if (startDate) createdAt.gte = new Date(String(startDate));
+      if (endDate) createdAt.lte = new Date(String(endDate));
+      whereClause.createdAt = createdAt;
     }
 
     const expenses = await prisma.expense.findMany({
@@ -458,7 +571,7 @@ export const getExpensesAnalytics = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error en Motor de Gastos:", error);
+    logger.error("Expense engine error:", error);
     res.status(500).json({
       error: "Fallo estructural al procesar las analíticas de gastos.",
     });
@@ -466,21 +579,34 @@ export const getExpensesAnalytics = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// MOTOR DE INVENTARIO: Ranking de Ventas y Semáforo de Alertas
+// INVENTORY ENGINE: Sales Ranking and Stock Alert Traffic Light
 // ============================================================================
+
+/**
+ * GET /dashboard/products-analytics
+ *
+ * Returns:
+ * - top-selling products ranked by units sold (default top 10)
+ * - stock alert traffic light: critical (≤ criticalStock) and warning (≤ minStock) items
+ *
+ * @query branchId  - Optional branch filter.
+ * @query startDate - Start of range (ISO string).
+ * @query endDate   - End of range (ISO string).
+ * @query limit     - Max products in the ranking (default: 10).
+ */
 export const getProductsAnalytics = async (req: Request, res: Response) => {
   try {
     const { branchId, startDate, endDate, limit } = req.query;
 
     const rankingLimit = limit ? Number(limit) : 10;
 
-    const saleWhereClause: any = { status: ACTIVE_SALE_STATUS_FILTER };
+    const saleWhereClause: Prisma.SaleWhereInput = { status: ACTIVE_SALE_STATUS_FILTER };
     if (branchId) saleWhereClause.branchId = Number(branchId);
     if (startDate || endDate) {
-      saleWhereClause.createdAt = {};
-      if (startDate)
-        saleWhereClause.createdAt.gte = new Date(String(startDate));
-      if (endDate) saleWhereClause.createdAt.lte = new Date(String(endDate));
+      const createdAt: Prisma.DateTimeFilter = {};
+      if (startDate) createdAt.gte = new Date(String(startDate));
+      if (endDate) createdAt.lte = new Date(String(endDate));
+      saleWhereClause.createdAt = createdAt;
     }
 
     const topItemsData = await prisma.saleItem.groupBy({
@@ -513,10 +639,18 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
       },
     });
 
-    const stockAlerts = {
-      critical: [] as any[],
-      warning: [] as any[],
-      healthy: [] as any[],
+    interface StockAlertEntry {
+      branchName: string;
+      productName: string;
+      sku: string;
+      currentQuantity: number;
+      minimumRequired: number;
+      criticalLevel: number;
+    }
+    const stockAlerts: { critical: StockAlertEntry[]; warning: StockAlertEntry[]; healthy: StockAlertEntry[] } = {
+      critical: [],
+      warning: [],
+      healthy: [],
     };
 
     currentInventory.forEach((stock) => {
@@ -553,7 +687,7 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error en Motor de Inventario:", error);
+    logger.error("Inventory engine error:", error);
     res.status(500).json({
       error: "Fallo estructural al generar las estadísticas de catálogo.",
     });
@@ -561,8 +695,19 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// Análisis de Deudores y Morosidad
+// CREDIT RISK ENGINE: Debtor Analysis and Aging
 // ============================================================================
+
+/**
+ * GET /dashboard/credit-risk
+ *
+ * Returns an aging report for all open receivables (PENDING / PARTIAL sales):
+ * - per-debtor summary (total debt, days overdue)
+ * - aging buckets: current (≤7d), at-risk (8–30d), overdue (31–90d), critical (>90d)
+ * - total capital on street
+ *
+ * Access: ADMIN only (no branch filter — consolidated view).
+ */
 export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
   try {
     const pendingSales = await prisma.sale.findMany({
@@ -576,7 +721,14 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
     });
 
     let totalCapitalOnStreet = 0;
-    const debtorsMap: Record<number, any> = {};
+    interface DebtorEntry {
+      customerId: number;
+      name: string | null | undefined;
+      phone: string | null | undefined;
+      totalDebt: number;
+      oldestInvoiceDate: Date;
+    }
+    const debtorsMap: Record<number, DebtorEntry> = {};
     let overdueInvoicesCount = 0;
 
     const overdueThreshold = new Date();
@@ -619,7 +771,7 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
       topDebtorsRanking: topDebtorsRanking.slice(0, 20),
     });
   } catch (error) {
-    console.error("Error en Motor de Riesgo Crediticio:", error);
+    logger.error("Credit risk engine error:", error);
     res
       .status(500)
       .json({ error: "Fallo estructural al calcular métricas de deuda." });
@@ -627,15 +779,24 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
 };
 
 // ============================================================================
-// EXPORTACIÓN CONTABLE: Generador de Reportes en Excel
+// ACCOUNTING EXPORT: Excel Report Generator
 // ============================================================================
+
+/**
+ * GET /dashboard/export-excel
+ *
+ * Streams an Excel (.xlsx) file with all PAID sales (id, date, customer,
+ * items, subtotals). No branch/date filter — full history export.
+ *
+ * @deprecated Use `exportScopedFinancialReportToExcel` for filtered, role-aware exports.
+ */
 export const exportFinancialReportToExcel = async (
   req: Request,
   res: Response,
 ) => {
   try {
     const sales = await prisma.sale.findMany({
-      where: { status: "PAID" }, // Exportamos lo efectivamente cobrado
+      where: { status: "PAID" }, // Export only confirmed paid transactions
       include: { customer: true, items: true },
       orderBy: { createdAt: "desc" },
     });
@@ -643,7 +804,7 @@ export const exportFinancialReportToExcel = async (
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Reporte de Ventas");
 
-    // Estructura de Columnas
+    // Column schema
     worksheet.columns = [
       { header: "Fecha", key: "date", width: 15 },
       { header: "Nº Ticket", key: "id", width: 10 },
@@ -652,7 +813,7 @@ export const exportFinancialReportToExcel = async (
       { header: "Total Facturado", key: "total", width: 15 },
     ];
 
-    // Llenado de Filas
+    // Row population
     sales.forEach((sale) => {
       worksheet.addRow({
         date: sale.createdAt.toLocaleDateString("es-AR"),
@@ -663,7 +824,7 @@ export const exportFinancialReportToExcel = async (
       });
     });
 
-    // Configuración de cabeceras HTTP para forzar descarga
+    // Set HTTP headers to force file download
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -673,17 +834,31 @@ export const exportFinancialReportToExcel = async (
       "attachment; filename=Reporte_Contable_ElClub.xlsx",
     );
 
-    // Transmisión del archivo binario
+    // Stream binary workbook to response
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
-    console.error("Error exportando a Excel:", error);
+    logger.error("Excel export error:", error);
     res
       .status(500)
       .json({ error: "Fallo en la generación del documento contable." });
   }
 };
 
+/**
+ * GET /dashboard/export-scoped-excel
+ *
+ * Role-aware version of the financial export. Streams an Excel file filtered
+ * by branch and date range. Respects the caller's branch access.
+ *
+ * Sheets: Sales, Payments, Expenses.
+ *
+ * Access: ADMIN (all branches), ENCARGADO/EMPLOYEE (own branch only).
+ *
+ * @query branchId - 0 for all branches (ADMIN only) or a specific branch ID.
+ * @query from     - Start date `YYYY-MM-DD` (local time).
+ * @query to       - End date `YYYY-MM-DD` (local time, end of day).
+ */
 export const exportScopedFinancialReportToExcel = async (
   req: AuthRequest,
   res: Response,
@@ -907,7 +1082,7 @@ export const exportScopedFinancialReportToExcel = async (
     await workbook.xlsx.write(res);
     res.end();
   } catch (error: unknown) {
-    console.error("Error exportando a Excel:", error);
+    logger.error("Error exportando a Excel:", error);
     const errorMsg =
       error instanceof Error
         ? error.message

@@ -9,6 +9,7 @@ import {
   getSaleById,
   createSale,
   getPendingAccounts,
+  exportPendingAccountsExcel,
   generateSaleReceiptPdf,
   cancelSale,
 } from "./sale.controller";
@@ -21,6 +22,11 @@ router.get(
   "/pending/:branchId",
   authorizeBranchAccess({ allowAllBranches: true }),
   getPendingAccounts,
+);
+router.get(
+  "/pending-export/excel",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  exportPendingAccountsExcel,
 );
 router.get("/", getSales);
 router.get("/:id/receipt/pdf", generateSaleReceiptPdf);

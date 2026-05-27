@@ -1,4 +1,17 @@
+﻿/**
+ * Branch Controller — sucursal (location) management.
+ *
+ * Manages the multi-branch structure of the ERP. Each branch has its own:
+ * stock, cash register shifts, expenses, and assigned employees.
+ *
+ * Deletion is blocked when a branch has related data (users, stock, movements,
+ * cash registers, sales, expenses). The `deleteAllBranches` endpoint requires
+ * an explicit confirmation phrase and is reserved for onboarding resets.
+ *
+ * @module branch.controller
+ */
 import { Request, Response } from "express";
+import { logger } from '../../config/logger';
 import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
@@ -101,6 +114,12 @@ const auditBranchAction = async (
   });
 };
 
+/**
+ * GET /branches
+ *
+ * Returns all branches visible to the authenticated user. ADMIN sees all;
+ * ENCARGADO/EMPLOYEE see only their assigned branches.
+ */
 export const getBranches = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -121,13 +140,20 @@ export const getBranches = async (req: AuthRequest, res: Response) => {
 
     res.status(200).json(branches);
   } catch (error) {
-    console.error("Error al buscar las sucursales:", error);
+    logger.error("Error al buscar las sucursales:", error);
     res
       .status(500)
       .json({ error: "Hubo un problema al obtener las sucursales." });
   }
 };
 
+/**
+ * POST /branches
+ *
+ * Creates a new branch. Names are trimmed and uppercased for consistency.
+ * Returns 409 if a branch with the same name already exists.
+ * Access: ADMIN only.
+ */
 export const createBranch = async (req: Request, res: Response) => {
   try {
     const { name, location } = req.body;
@@ -161,11 +187,15 @@ export const createBranch = async (req: Request, res: Response) => {
 
     res.status(201).json(newBranch);
   } catch (error) {
-    console.error("Error al crear la sucursal:", error);
+    logger.error("Error al crear la sucursal:", error);
     res.status(500).json({ error: "Hubo un problema al crear la sucursal." });
   }
 };
 
+/**
+ * PUT /branches/:id — Updates branch name and/or location. Access: ADMIN only.
+ * @param id - Branch ID.
+ */
 export const updateBranch = async (req: Request, res: Response) => {
   try {
     const branchId = parseBranchId(req.params.id);
@@ -213,13 +243,22 @@ export const updateBranch = async (req: Request, res: Response) => {
 
     res.status(200).json(updatedBranch);
   } catch (error) {
-    console.error("Error al actualizar la sucursal:", error);
+    logger.error("Error al actualizar la sucursal:", error);
     res
       .status(500)
       .json({ error: "No se pudo actualizar la sucursal. Verifique el ID." });
   }
 };
 
+/**
+ * DELETE /branches/:id
+ *
+ * Hard-deletes a branch. Returns 409 with a blocker summary if the branch has
+ * linked data (users, stock records, movements, cash registers, sales, or expenses).
+ * Access: ADMIN only.
+ *
+ * @param id - Branch ID.
+ */
 export const deleteBranch = async (req: Request, res: Response) => {
   try {
     const branchId = parseBranchId(req.params.id);
@@ -254,13 +293,21 @@ export const deleteBranch = async (req: Request, res: Response) => {
 
     res.status(200).json({ message: "Sucursal eliminada correctamente." });
   } catch (error) {
-    console.error("Error al eliminar la sucursal:", error);
+    logger.error("Error al eliminar la sucursal:", error);
     res
       .status(500)
       .json({ error: "No se pudo eliminar la sucursal. Verifique el ID." });
   }
 };
 
+/**
+ * DELETE /branches/all
+ *
+ * Hard-deletes ALL branches. Requires confirmation phrase `"CONFIRMAR_BORRADO"`.
+ * Intended for onboarding resets only. Access: ADMIN only.
+ *
+ * @body confirmationPhrase - Must equal `"CONFIRMAR_BORRADO"`.
+ */
 export const deleteAllBranches = async (req: Request, res: Response) => {
   try {
     const { confirmationPhrase, expectedBranchCount } = req.body || {};
@@ -322,7 +369,7 @@ export const deleteAllBranches = async (req: Request, res: Response) => {
       deletedCount: result.count,
     });
   } catch (error) {
-    console.error("Error al eliminar todas las sucursales:", error);
+    logger.error("Error al eliminar todas las sucursales:", error);
     res.status(500).json({
       error: "No se pudieron eliminar masivamente las sucursales.",
     });

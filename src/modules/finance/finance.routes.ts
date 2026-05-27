@@ -5,7 +5,7 @@ import { getDailyRevenue, getTopSellingProducts } from "./finance.controller";
 
 const router = Router();
 
-// Bóveda financiera con nombres de middleware actualizados
+// Finance vault — all routes require ADMIN role
 router.use(authenticateToken, authorizeRoles("ADMIN"));
 
 router.get("/daily-revenue", getDailyRevenue);

@@ -9,7 +9,9 @@ import {
 } from "../../schemas/stock.schema";
 import {
   getReorderSuggestions,
+  getStockAlertCount,
   getStockByBranch,
+  getStockMovements,
   getStockTransfers,
   transferStockBetweenBranches,
   updateStock,
@@ -36,6 +38,16 @@ router.get(
   "/reorder-suggestions",
   authorizeRoles("ADMIN", "ENCARGADO"),
   getReorderSuggestions,
+);
+router.get(
+  "/alerts/count",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getStockAlertCount,
+);
+router.get(
+  "/movements",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getStockMovements,
 );
 
 router.get(

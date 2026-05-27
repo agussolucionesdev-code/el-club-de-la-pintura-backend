@@ -1,4 +1,14 @@
+﻿/**
+ * Supplier Controller — vendor (proveedor) management.
+ *
+ * Handles full CRUD for suppliers. Each supplier can be linked to multiple
+ * products. The `phone` field is flagged for future WhatsApp integration.
+ * Every write operation writes an audit log entry.
+ *
+ * @module supplier.controller
+ */
 import { Prisma } from "@prisma/client";
+import { logger } from '../../config/logger';
 import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
@@ -41,6 +51,7 @@ const parseSupplierId = (value: unknown) => {
   return Number.isInteger(supplierId) && supplierId > 0 ? supplierId : null;
 };
 
+/** GET /suppliers — Returns all suppliers with their linked products. */
 export const getSuppliers = async (req: AuthRequest, res: Response) => {
   try {
     const limit = parseLimit(req.query.limit);
@@ -58,13 +69,14 @@ export const getSuppliers = async (req: AuthRequest, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error retrieving suppliers:", error);
+    logger.error("Error retrieving suppliers:", error);
     res
       .status(500)
       .json({ error: "Fallo al obtener el directorio de proveedores." });
   }
 };
 
+/** POST /suppliers — Creates a new supplier. Writes a `SUPPLIER_CREATE` audit entry. */
 export const createSupplier = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -103,13 +115,14 @@ export const createSupplier = async (req: AuthRequest, res: Response) => {
       supplier: newSupplier,
     });
   } catch (error) {
-    console.error("Error creating supplier:", error);
+    logger.error("Error creating supplier:", error);
     res
       .status(500)
       .json({ error: "Fallo estructural al registrar el proveedor." });
   }
 };
 
+/** PUT /suppliers/:id — Updates supplier data. Writes a `SUPPLIER_UPDATE` audit entry. */
 export const updateSupplier = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -176,13 +189,21 @@ export const updateSupplier = async (req: AuthRequest, res: Response) => {
       supplier: updatedSupplier,
     });
   } catch (error) {
-    console.error("Error updating supplier:", error);
+    logger.error("Error updating supplier:", error);
     res
       .status(500)
       .json({ error: "No se pudo actualizar la ficha del proveedor." });
   }
 };
 
+/**
+ * DELETE /suppliers/:id
+ *
+ * Hard-deletes a supplier. Returns 409 if any products are still linked to it.
+ * Writes a `SUPPLIER_DELETE` audit entry. Access: ADMIN only.
+ *
+ * @param id - Supplier ID.
+ */
 export const deleteSupplier = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -230,7 +251,7 @@ export const deleteSupplier = async (req: AuthRequest, res: Response) => {
       message: "Proveedor dado de baja del sistema operativo correctamente.",
     });
   } catch (error) {
-    console.error("Error deactivating supplier:", error);
+    logger.error("Error deactivating supplier:", error);
     res
       .status(500)
       .json({ error: "No se pudo procesar la baja del proveedor." });

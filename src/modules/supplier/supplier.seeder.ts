@@ -1,7 +1,8 @@
-import { Request, Response } from "express";
-import prisma from "../../config/db"; // 🛡️ VOLVEMOS A TU CONEXIÓN OFICIAL Y ÚNICA
+﻿import { Request, Response } from "express";
+import { logger } from '../../config/logger';
+import prisma from "../../config/db";
 
-// 🛡️ LISTA MAESTRA DEFINITIVA DE 62 PROVEEDORES
+// Master seed list of 62 paint industry suppliers
 const suppliersSeed = [
   {
     companyName: "Alba",
@@ -390,7 +391,7 @@ const suppliersSeed = [
 ];
 
 export const seedSuppliers = async (req: Request, res: Response) => {
-  console.log("🌱 Iniciando siembra de Proveedores vía Endpoint...");
+  logger.info("🌱 Iniciando siembra de Proveedores vía Endpoint...");
 
   let creados = 0;
   let existentes = 0;
@@ -402,7 +403,7 @@ export const seedSuppliers = async (req: Request, res: Response) => {
       });
 
       if (!exists) {
-        // Generamos un CUIT dinámico que arranca en 10
+        // Generate a dynamic CUIT starting at index 10 to avoid collisions
         const uniqueNum = i + 10;
         const fakeCuit = `30-000000${uniqueNum < 100 ? uniqueNum : uniqueNum}-9`;
 
@@ -417,7 +418,7 @@ export const seedSuppliers = async (req: Request, res: Response) => {
           },
         });
         creados++;
-        console.log(`✅ Creado: ${supplier.companyName}`);
+        logger.info(`✅ Creado: ${supplier.companyName}`);
       } else {
         existentes++;
       }
@@ -434,7 +435,7 @@ export const seedSuppliers = async (req: Request, res: Response) => {
       },
     });
   } catch (error: unknown) {
-    console.error("❌ Error durante la siembra:", error);
+    logger.error("❌ Error durante la siembra:", error);
     const msg = error instanceof Error ? error.message : "Error desconocido.";
 
     res.status(500).json({

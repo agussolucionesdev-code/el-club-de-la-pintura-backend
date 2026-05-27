@@ -1,4 +1,23 @@
+﻿/**
+ * User Controller — authentication and workforce management.
+ *
+ * Handles:
+ * - JWT-based login (POST /users/login)
+ * - Current user profile (GET /users/me)
+ * - Employee directory (ADMIN view)
+ * - Role catalog and descriptions
+ * - Employee onboarding (create user with role and branch assignments)
+ * - Profile and branch updates
+ * - Password reset (ADMIN-initiated, no email flow)
+ * - Soft and hard deletion
+ *
+ * Roles: ADMIN, ENCARGADO, EMPLOYEE. Each role has a `VALID_ROLES` type guard.
+ * Passwords are hashed with bcrypt (12 rounds) before storage.
+ *
+ * @module user.controller
+ */
 import { Response, Request } from "express";
+import { logger } from '../../config/logger';
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
@@ -72,6 +91,17 @@ const auditUserAdminAction = async (
   });
 };
 
+/**
+ * POST /users/login
+ *
+ * Authenticates a user by email and password. Returns a signed JWT (validity
+ * set by `JWT_EXPIRES_IN` env var) and the user profile (id, name, email, role,
+ * assigned branches). The JWT payload is used by `getAuthUser` in all
+ * authenticated routes.
+ *
+ * Rate limiting should be applied at the router level (see `express-rate-limit`
+ * in `app.ts`) to prevent brute-force attacks.
+ */
 export const authenticateUser = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -122,13 +152,20 @@ export const authenticateUser = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.error("Error en autenticacion:", error);
+    logger.error("Error en autenticacion:", error);
     res
       .status(500)
       .json({ error: "Fallo estructural al procesar el inicio de sesion." });
   }
 };
 
+/**
+ * GET /users/me
+ *
+ * Returns the full profile of the currently authenticated user, including
+ * their assigned branches. Used by the frontend to rehydrate session state
+ * after a page refresh.
+ */
 export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -156,11 +193,17 @@ export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => 
 
     res.status(200).json({ data: user });
   } catch (error) {
-    console.error("Error al recuperar el perfil actual:", error);
+    logger.error("Error al recuperar el perfil actual:", error);
     res.status(500).json({ error: "Fallo al recuperar la sesion actual." });
   }
 };
 
+/**
+ * GET /users
+ *
+ * Returns the complete employee directory with their roles and branch assignments.
+ * Access: ADMIN only.
+ */
 export const retrieveWorkforceDirectory = async (
   req: AuthRequest,
   res: Response,
@@ -180,11 +223,17 @@ export const retrieveWorkforceDirectory = async (
 
     res.status(200).json(workforce);
   } catch (error) {
-    console.error("Error al recuperar el directorio:", error);
+    logger.error("Error al recuperar el directorio:", error);
     res.status(500).json({ error: "Fallo al obtener la nomina de empleados." });
   }
 };
 
+/**
+ * GET /users/roles
+ *
+ * Returns the list of available roles with their names and descriptions.
+ * Used to populate the role selector in the user management UI.
+ */
 export const retrieveRoleCatalog = async (_req: AuthRequest, res: Response) => {
   try {
     const groupedUsers = await prisma.user.groupBy({
@@ -212,11 +261,18 @@ export const retrieveRoleCatalog = async (_req: AuthRequest, res: Response) => {
       })),
     });
   } catch (error) {
-    console.error("Error al recuperar catalogo de roles:", error);
+    logger.error("Error al recuperar catalogo de roles:", error);
     res.status(500).json({ error: "Fallo al obtener los roles del sistema." });
   }
 };
 
+/**
+ * POST /users/onboard
+ *
+ * Creates a new employee account with a role and branch assignments.
+ * Password is hashed with bcrypt (12 rounds). Returns 409 if the email
+ * is already in use. Access: ADMIN only.
+ */
 export const onboardEmployee = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -275,13 +331,22 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
       .status(201)
       .json({ message: "Empleado dado de alta con exito.", employee: newUser });
   } catch (error) {
-    console.error("Error al registrar empleado:", error);
+    logger.error("Error al registrar empleado:", error);
     res
       .status(500)
       .json({ error: "Fallo estructural en el modulo de contrataciones." });
   }
 };
 
+/**
+ * PUT /users/:id
+ *
+ * Updates an employee's name, role, and/or branch assignments.
+ * ADMIN cannot downgrade their own role via this endpoint.
+ * Access: ADMIN only.
+ *
+ * @param id - User ID.
+ */
 export const modifyEmployeeProfile = async (
   req: AuthRequest,
   res: Response,
@@ -365,13 +430,22 @@ export const modifyEmployeeProfile = async (
       employee: updatedEmployee,
     });
   } catch (error) {
-    console.error("Error al modificar empleado:", error);
+    logger.error("Error al modificar empleado:", error);
     res
       .status(500)
       .json({ error: "Fallo al actualizar el perfil del empleado." });
   }
 };
 
+/**
+ * PATCH /users/:id/reset-password
+ *
+ * ADMIN-initiated password reset. No email flow — the new password is set
+ * directly. Hashed with bcrypt (12 rounds). Access: ADMIN only.
+ *
+ * @param id - User ID.
+ * @body newPassword - New plain-text password (min 8 chars recommended).
+ */
 export const resetEmployeePassword = async (
   req: AuthRequest,
   res: Response,
@@ -396,13 +470,21 @@ export const resetEmployeePassword = async (
       message: "La contrasena del empleado ha sido reseteada por gerencia.",
     });
   } catch (error) {
-    console.error("Error al blanquear clave:", error);
+    logger.error("Error al blanquear clave:", error);
     res.status(500).json({
       error: "Fallo de seguridad al intentar resetear la contrasena.",
     });
   }
 };
 
+/**
+ * DELETE /users/:id
+ *
+ * Hard-deletes an employee account. Blocked if the user has associated sales,
+ * cash register shifts, or audit log entries. Access: ADMIN only.
+ *
+ * @param id - User ID.
+ */
 export const terminateEmployee = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -439,7 +521,7 @@ export const terminateEmployee = async (req: AuthRequest, res: Response) => {
 
     res.status(200).json({ message: "Empleado desvinculado y accesos revocados." });
   } catch (error) {
-    console.error("Error al desvincular empleado:", error);
+    logger.error("Error al desvincular empleado:", error);
     res.status(400).json({
       error:
         "No se puede eliminar un empleado con historial de ventas o cajas (restriccion fiscal).",
@@ -447,6 +529,15 @@ export const terminateEmployee = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * DELETE /users/by-role/:role
+ *
+ * Bulk-deletes all users of a given role. Intended for onboarding resets.
+ * Requires confirmation phrase in the body. Access: ADMIN only.
+ *
+ * @param role - Role to purge (`ENCARGADO` or `EMPLOYEE`).
+ * @body confirmationPhrase - Must equal `"CONFIRMAR_BORRADO"`.
+ */
 export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
   try {
     const role = normalizeRole(req.params.role);
@@ -484,7 +575,7 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
       deletedCount: result.count,
     });
   } catch (error) {
-    console.error("Error al limpiar usuarios por rol:", error);
+    logger.error("Error al limpiar usuarios por rol:", error);
     res.status(409).json({
       error:
         "No se pueden eliminar usuarios con historial operativo. Revise ventas, cajas, pagos, gastos o movimientos asociados.",
@@ -492,6 +583,14 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
   }
 };
 
+/**
+ * DELETE /users/all-operational
+ *
+ * Bulk-deletes ALL users with ENCARGADO or EMPLOYEE roles. Preserves ADMIN accounts.
+ * Requires confirmation phrase. Intended for onboarding resets. Access: ADMIN only.
+ *
+ * @body confirmationPhrase - Must equal `"CONFIRMAR_BORRADO"`.
+ */
 export const deleteAllOperationalRoleUsers = async (
   req: AuthRequest,
   res: Response,
@@ -522,7 +621,7 @@ export const deleteAllOperationalRoleUsers = async (
       deletedCount: result.count,
     });
   } catch (error) {
-    console.error("Error al limpiar roles operativos:", error);
+    logger.error("Error al limpiar roles operativos:", error);
     res.status(409).json({
       error:
         "No se pueden eliminar masivamente usuarios con historial operativo. Elimine solo perfiles sin trazabilidad o conserve el historial.",

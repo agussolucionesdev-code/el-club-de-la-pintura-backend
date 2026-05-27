@@ -16,13 +16,13 @@ import {
 const router = Router();
 
 // ============================================================================
-// RUTAS DEL DIRECTORIO COMERCIAL (Protegidas por JWT)
+// CUSTOMER DIRECTORY ROUTES (JWT-protected)
 // ============================================================================
 
-// 1. Obtener la cartera de clientes activa
+// 1. List active customers
 router.get("/", authenticateToken, getCustomers);
 
-// 2. Dar de alta un nuevo perfil (Pasa por la aduana Zod)
+// 2. Create a new customer profile (validated by Zod)
 router.post(
   "/",
   authenticateToken,
@@ -30,7 +30,7 @@ router.post(
   createCustomer,
 );
 
-// 3. Modificar un perfil existente
+// 3. Update an existing customer profile
 router.put(
   "/:id",
   authenticateToken,
@@ -39,7 +39,7 @@ router.put(
   updateCustomer,
 );
 
-// 4. Archivar un cliente (Soft Delete)
+// 4. Archive a customer (soft delete)
 router.delete(
   "/:id",
   authenticateToken,

@@ -1,3 +1,12 @@
+/**
+ * Customer Controller — client (cuenta corriente) management.
+ *
+ * Handles full CRUD for customers. Customer types: CONSUMIDOR, CONTRATISTA,
+ * EMPRESA, FAMILIAR. Customers are soft-deleted (`isActive = false`) to preserve
+ * historical sale references. Every create/update/delete writes an audit log entry.
+ *
+ * @module customer.controller
+ */
 import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import prisma from "../../config/db";
@@ -26,14 +35,36 @@ const auditCustomerAction = async (
 };
 
 // ============================================================================
-// LECTURA: Obtener el Directorio Comercial (Solo clientes activos)
+// READ: Fetch the active customer directory
 // ============================================================================
-export const getCustomers = async (_req: AuthRequest, res: Response) => {
+/**
+ * GET /customers
+ *
+ * Returns all active customers with their total outstanding balance.
+ * Supports optional text search by name or document number.
+ *
+ * @query search - Optional filter applied to name and document fields.
+ */
+export const getCustomers = async (req: AuthRequest, res: Response) => {
   try {
+    const search = req.query.search ? String(req.query.search).trim() : "";
+    const limit = req.query.limit ? Math.min(200, Math.max(1, Number(req.query.limit))) : undefined;
+
+    const searchFilter = search
+      ? {
+          OR: [
+            { name: { contains: search, mode: "insensitive" as const } },
+            { document: { contains: search, mode: "insensitive" as const } },
+            { email: { contains: search, mode: "insensitive" as const } },
+          ],
+        }
+      : {};
+
     const customers = await prisma.customer.findMany({
-      where: { isActive: true },
+      where: { isActive: true, ...searchFilter },
       orderBy: { name: "asc" },
-      // Traemos un resumen de sus saldos pendientes para mostrar en el Directorio
+      ...(limit ? { take: limit } : {}),
+      // Include outstanding balance summary for directory display
       include: {
         sales: {
           where: { status: { in: ["PENDING", "PARTIAL"] } },
@@ -42,13 +73,13 @@ export const getCustomers = async (_req: AuthRequest, res: Response) => {
       },
     });
 
-    // Mapeo inteligente para saber si el cliente tiene deuda viva
+    // Compute outstanding debt and strip the raw sales array from the response
     const directory = customers.map((c) => {
       const activeDebt = c.sales.reduce((sum, sale) => sum + sale.balance, 0);
       return {
         ...c,
-        sales: undefined, // Limpiamos la respuesta cruda
-        activeDebt, // Inyectamos la deuda calculada
+        sales: undefined,
+        activeDebt,
       };
     });
 
@@ -64,14 +95,20 @@ export const getCustomers = async (_req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// ALTA: Registrar un nuevo Cliente/Contratista
+// CREATE: Register a new customer or contractor
 // ============================================================================
+/**
+ * POST /customers
+ *
+ * Creates a new customer. DNI/CUIT document is stored for identification.
+ * Writes a `CUSTOMER_CREATE` audit log entry.
+ */
 export const createCustomer = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const { name, document, type, phone, email, address } = req.body;
 
-    // 🛡️ BLINDAJE: Evitar CUITs o DNIs duplicados
+    // Reject duplicate document numbers (CUIT / DNI)
     if (document && document.trim() !== "") {
       const existingCustomer = await prisma.customer.findUnique({
         where: { document: document.trim() },
@@ -120,8 +157,16 @@ export const createCustomer = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// MODIFICACIÓN: Actualizar datos de contacto o perfil
+// UPDATE: Contact and profile data modification
 // ============================================================================
+/**
+ * PUT /customers/:id
+ *
+ * Updates a customer's contact and identification data.
+ * Writes a `CUSTOMER_UPDATE` audit log entry with a before/after snapshot.
+ *
+ * @param id - Customer ID.
+ */
 export const updateCustomer = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -135,7 +180,7 @@ export const updateCustomer = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Cliente no encontrado." });
     }
 
-    // Si intenta cambiar el documento, verificamos que no pise a otro
+    // Reject if the new document number already belongs to another customer
     if (data.document) {
       const existing = await prisma.customer.findFirst({
         where: {
@@ -179,8 +224,17 @@ export const updateCustomer = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================================
-// BAJA LÓGICA (Soft Delete): Archivar cliente sin romper el historial contable
+// SOFT DELETE: Archive customer without breaking accounting history
 // ============================================================================
+/**
+ * DELETE /customers/:id
+ *
+ * Soft-deletes a customer (`isActive = false`). Customers with open balances
+ * (pending sales) cannot be archived. Writes a `CUSTOMER_DELETE` audit entry.
+ *
+ * @param id - Customer ID.
+ * Access: ADMIN only.
+ */
 export const deleteCustomer = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -193,7 +247,7 @@ export const deleteCustomer = async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: "Cliente no encontrado." });
     }
 
-    // Verificamos si tiene deuda pendiente antes de borrarlo
+    // Block archival if the customer has open balances
     const pendingSales = await prisma.sale.findFirst({
       where: { customerId, status: { in: ["PENDING", "PARTIAL"] } },
     });

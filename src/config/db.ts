@@ -2,22 +2,18 @@ import { PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
 
-// Configuración de la cadena de conexión
-// Obtención segura de la URL de la base de datos desde las variables de entorno
+// Read database connection string from environment
 const connectionString = process.env.DATABASE_URL;
 
-// Creación del gestor de conexiones (Pool)
-// Utilización de la librería nativa de PostgreSQL para la administración de las conexiones a la base de datos
+// Native pg connection pool for Prisma v7's driver-adapter architecture
 const pool = new Pool({ connectionString });
 
-// Inicialización del adaptador
-// Integración del Pool de PostgreSQL nativo con el ecosistema de Prisma
-// Aplicación de Type Casting (as any) para la resolución de discrepancias de tipado entre librerías de terceros
+// Prisma driver adapter — bridges the native pg Pool with Prisma's query engine
+// `as any` cast resolves minor type-definition mismatches between the two libraries
 const adapter = new PrismaPg(pool as any);
 
-// Instanciación del cliente de base de datos
-// Inyección del adaptador de PostgreSQL para el cumplimiento de la arquitectura obligatoria de Prisma v7
+// Prisma client singleton — injected with the pg adapter as required by Prisma v7
 const prisma = new PrismaClient({ adapter });
 
-// Exportación de la instancia única para su reutilización en toda la aplicación (Patrón Singleton)
+// Single export for reuse across the entire application (Singleton pattern)
 export default prisma;

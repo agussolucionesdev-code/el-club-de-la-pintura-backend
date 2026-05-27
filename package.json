@@ -12,6 +12,9 @@
     "db:status": "prisma migrate status",
     "db:seed": "ts-node prisma/seed.ts"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -33,7 +36,7 @@
     "pg": "^8.20.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
-    "xlsx": "^0.18.5",
+    "winston": "^3.19.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
