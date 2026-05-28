@@ -417,3 +417,45 @@ model InternalReceipt {
   @@index([saleId])
   @@index([paymentId])
 }
+
+// ==========================================
+// PAYROLL MODULE — Employee salary management
+// ==========================================
+
+model Employee {
+  id           Int             @id @default(autoincrement())
+  userId       Int             @unique
+  position     String          // e.g. "Vendedor", "Encargado"
+  salaryType   String          @default("FIXED") // FIXED | HOURLY | COMMISSION
+  baseSalary   Decimal         @db.Decimal(12, 2)
+  branchId     Int
+  isActive     Boolean         @default(true)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  payrollRecords PayrollRecord[]
+
+  @@index([branchId])
+  @@index([userId])
+}
+
+model PayrollRecord {
+  id           Int       @id @default(autoincrement())
+  employeeId   Int
+  employee     Employee  @relation(fields: [employeeId], references: [id])
+  period       String    // "YYYY-MM"
+  baseSalary   Decimal   @db.Decimal(12, 2)
+  advances     Decimal   @default(0) @db.Decimal(12, 2)
+  bonuses      Decimal   @default(0) @db.Decimal(12, 2)
+  deductions   Decimal   @default(0) @db.Decimal(12, 2)
+  netPay       Decimal   @db.Decimal(12, 2)
+  status       String    @default("PENDING") // PENDING | PAID
+  paidAt       DateTime?
+  observations String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([employeeId, period])
+  @@index([period])
+  @@index([status])
+}

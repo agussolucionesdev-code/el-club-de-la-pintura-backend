@@ -31,6 +31,7 @@ import syncRoutes from "./modules/sync/sync.routes";
 import purchaseRoutes from "./modules/purchase/purchase.routes";
 import internalReceiptRoutes from "./modules/internal-receipt/internal-receipt.routes";
 import auditLogRoutes from "./modules/audit-log/audit-log.routes";
+import payrollRoutes from "./modules/payroll/payroll.routes";
 
 // Express app initialization
 const app: Application = express();
@@ -83,6 +84,7 @@ app.use("/api/sync", syncRoutes);
 app.use("/api/purchases", purchaseRoutes);
 app.use("/api/internal-receipts", internalReceiptRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
+app.use("/api/payroll", payrollRoutes);
 
 // ============================================================================
 // 4. ERROR HANDLERS — must be registered after all routes
