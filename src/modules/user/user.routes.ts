@@ -16,6 +16,7 @@ import {
   resetEmployeePassword,
   terminateEmployee,
   getCurrentUserProfile,
+  updateMyProfile,
   retrieveRoleCatalog,
   deleteUsersByRole,
   deleteAllOperationalRoleUsers,
@@ -37,6 +38,7 @@ const loginRateLimiter = rateLimit({
 router.post("/login", loginRateLimiter, authenticateUser);
 
 router.get("/me", authenticateToken, getCurrentUserProfile);
+router.patch("/me", authenticateToken, updateMyProfile);
 
 router.use(authenticateToken, authorizeRoles("ADMIN"));
 

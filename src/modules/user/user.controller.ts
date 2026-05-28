@@ -199,6 +199,71 @@ export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => 
 };
 
 /**
+ * PATCH /users/me
+ *
+ * Allows the currently authenticated user to update their own display name
+ * and/or change their password. Role and branch assignments cannot be changed
+ * through this endpoint — those require ADMIN access via PUT /users/:id.
+ *
+ * If `newPassword` is provided, `currentPassword` must also be provided and
+ * must match the stored bcrypt hash, otherwise the request is rejected with 401.
+ */
+export const updateMyProfile = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+
+    const { name, currentPassword, newPassword } = req.body as {
+      name?: string;
+      currentPassword?: string;
+      newPassword?: string;
+    };
+
+    const user = await prisma.user.findUnique({ where: { id: authUser.id } });
+    if (!user) {
+      return res.status(404).json({ error: "Usuario no encontrado." });
+    }
+
+    const updateData: { name?: string; password?: string } = {};
+
+    if (name && name.trim().length >= 2) {
+      updateData.name = name.trim();
+    }
+
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: "Debés ingresar tu contraseña actual para cambiarla." });
+      }
+      const isCurrentValid = await bcrypt.compare(currentPassword, user.password);
+      if (!isCurrentValid) {
+        return res.status(401).json({ error: "La contraseña actual no es correcta." });
+      }
+      if (newPassword.length < 8) {
+        return res.status(400).json({ error: "La nueva contraseña debe tener al menos 8 caracteres." });
+      }
+      updateData.password = await bcrypt.hash(newPassword, 10);
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({ error: "No se enviaron cambios para guardar." });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: authUser.id },
+      data: updateData,
+      select: { id: true, name: true, email: true, role: true },
+    });
+
+    res.status(200).json({ message: "Perfil actualizado con éxito.", user: updated });
+  } catch (error) {
+    logger.error("Error al actualizar perfil propio:", error);
+    res.status(500).json({ error: "Error al actualizar el perfil." });
+  }
+};
+
+/**
  * GET /users
  *
  * Returns the complete employee directory with their roles and branch assignments.
