@@ -669,6 +669,16 @@ export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
       include: {
         customer: { select: { id: true, name: true, type: true, phone: true } },
         user: { select: { name: true } },
+        payments: {
+          select: {
+            id: true,
+            amount: true,
+            paymentMethod: true,
+            createdAt: true,
+            user: { select: { name: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        },
       },
       orderBy: { createdAt: "asc" },
     });
