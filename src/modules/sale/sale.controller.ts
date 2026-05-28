@@ -859,12 +859,28 @@ export const getSales = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    const cashRegisterId = req.query.cashRegisterId
+      ? Number(req.query.cashRegisterId)
+      : undefined;
+    const branchIdFilter = req.query.branchId
+      ? Number(req.query.branchId)
+      : undefined;
+    const limitParam = req.query.limit ? Number(req.query.limit) : 100;
+    const take = Number.isFinite(limitParam) && limitParam > 0 ? Math.min(limitParam, 500) : 100;
+
+    const branchWhere =
+      authUser.role === "ADMIN"
+        ? branchIdFilter
+          ? { branchId: branchIdFilter }
+          : undefined
+        : { branchId: { in: authUser.branchIds, ...(branchIdFilter ? { equals: branchIdFilter } : {}) } };
+
     const sales = await prisma.sale.findMany({
-      where:
-        authUser.role === "ADMIN"
-          ? undefined
-          : { branchId: { in: authUser.branchIds } },
-      take: 100,
+      where: {
+        ...branchWhere,
+        ...(cashRegisterId ? { cashRegisterId } : {}),
+      },
+      take,
       orderBy: { createdAt: "desc" },
       include: {
         customer: { select: { name: true, document: true } },
