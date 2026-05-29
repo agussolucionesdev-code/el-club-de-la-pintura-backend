@@ -112,24 +112,18 @@ async function ensureAdminUser(): Promise<void> {
   const password = process.env.ADMIN_PASSWORD || process.env.SEED_DEFAULT_PASSWORD || "ClubPintura2026!";
   const name     = process.env.ADMIN_NAME     || "Administrador";
 
-  // When ADMIN_PASSWORD is explicitly set, treat it as the source of truth and
-  // always sync it — this also acts as a password recovery mechanism.
-  const passwordIsExplicit = !!process.env.ADMIN_PASSWORD;
-
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
 
     if (existing) {
-      if (passwordIsExplicit) {
-        const passwordHash = await bcrypt.hash(password, 10);
-        await prisma.user.update({
-          where: { email },
-          data: { password: passwordHash, name },
-        });
-        logger.info(`Admin user password synced from env: ${email}`);
-      } else {
-        logger.info(`Admin user already exists: ${email}`);
-      }
+      // Always keep the admin password in sync with the configured value.
+      // This guarantees the account is always recoverable after a fresh deploy.
+      const passwordHash = await bcrypt.hash(password, 10);
+      await prisma.user.update({
+        where: { email },
+        data: { password: passwordHash, name },
+      });
+      logger.info(`Admin user synced: ${email}`);
       return;
     }
 
