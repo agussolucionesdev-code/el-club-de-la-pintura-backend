@@ -147,11 +147,80 @@ async function ensureAdminUser(): Promise<void> {
   }
 }
 
+/**
+ * Ensures payroll tables exist using raw SQL (CREATE TABLE IF NOT EXISTS).
+ * This bypasses Prisma migrate entirely — safe to run on every boot.
+ * Required because the original baseline migration predates payroll models.
+ */
+async function ensurePayrollTables(): Promise<void> {
+  const { default: prisma } = await import("./config/db");
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Employee" (
+        "id"         SERIAL        NOT NULL,
+        "userId"     INTEGER       NOT NULL,
+        "position"   TEXT          NOT NULL,
+        "salaryType" TEXT          NOT NULL DEFAULT 'FIXED',
+        "baseSalary" DECIMAL(12,2) NOT NULL,
+        "branchId"   INTEGER       NOT NULL,
+        "isActive"   BOOLEAN       NOT NULL DEFAULT true,
+        "createdAt"  TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt"  TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "Employee_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "Employee_userId_key" ON "Employee"("userId");
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE INDEX IF NOT EXISTS "Employee_branchId_idx" ON "Employee"("branchId");
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "PayrollRecord" (
+        "id"           SERIAL        NOT NULL,
+        "employeeId"   INTEGER       NOT NULL,
+        "period"       TEXT          NOT NULL,
+        "baseSalary"   DECIMAL(12,2) NOT NULL,
+        "advances"     DECIMAL(12,2) NOT NULL DEFAULT 0,
+        "bonuses"      DECIMAL(12,2) NOT NULL DEFAULT 0,
+        "deductions"   DECIMAL(12,2) NOT NULL DEFAULT 0,
+        "netPay"       DECIMAL(12,2) NOT NULL,
+        "status"       TEXT          NOT NULL DEFAULT 'PENDING',
+        "paidAt"       TIMESTAMP(3),
+        "observations" TEXT,
+        "createdAt"    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt"    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "PayrollRecord_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(`
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'PayrollRecord_employeeId_fkey'
+        ) THEN
+          ALTER TABLE "PayrollRecord"
+            ADD CONSTRAINT "PayrollRecord_employeeId_fkey"
+            FOREIGN KEY ("employeeId") REFERENCES "Employee"("id")
+            ON DELETE RESTRICT ON UPDATE CASCADE;
+        END IF;
+      END $$;
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "PayrollRecord_employeeId_period_key"
+        ON "PayrollRecord"("employeeId", "period");
+    `);
+    logger.info("Payroll tables ready");
+  } catch (err) {
+    logger.error("Failed to ensure payroll tables on startup:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
+    await ensurePayrollTables();
     await ensureAdminUser();
   });
 }
