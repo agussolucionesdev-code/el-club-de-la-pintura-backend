@@ -356,6 +356,60 @@ export const createRecord = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * PATCH /payroll/employees/:id
+ * Updates an employee's position, salary type, base salary, branch, or active status.
+ * Passing isActive: false deactivates the employee (soft delete).
+ * ADMIN only.
+ */
+export const updateEmployee = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "No autorizado." });
+
+    const employeeId = Number(req.params.id);
+    if (isNaN(employeeId)) {
+      return res.status(400).json({ error: "ID de empleado inválido." });
+    }
+
+    const existing = await prisma.employee.findUnique({ where: { id: employeeId } });
+    if (!existing) {
+      return res.status(404).json({ error: "Empleado no encontrado." });
+    }
+
+    const { position, salaryType, baseSalary, branchId, isActive } = req.body;
+
+    const updated = await prisma.employee.update({
+      where: { id: employeeId },
+      data: {
+        ...(position !== undefined && { position: String(position) }),
+        ...(salaryType !== undefined && { salaryType: String(salaryType) }),
+        ...(baseSalary !== undefined && { baseSalary: Number(baseSalary) }),
+        ...(branchId !== undefined && { branchId: Number(branchId) }),
+        ...(isActive !== undefined && { isActive: Boolean(isActive) }),
+      },
+    });
+
+    const [user, branch] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: updated.userId },
+        select: { id: true, name: true, email: true, role: true },
+      }),
+      prisma.branch.findUnique({
+        where: { id: updated.branchId },
+        select: { id: true, name: true },
+      }),
+    ]);
+
+    return res.status(200).json({
+      message: "Empleado actualizado correctamente.",
+      data: formatEmployee(updated, user, branch),
+    });
+  } catch {
+    return res.status(500).json({ error: "Error al actualizar el empleado." });
+  }
+};
+
+/**
  * PATCH /payroll/records/:id/pay
  * Marks a payroll record as PAID and sets paidAt to now.
  */

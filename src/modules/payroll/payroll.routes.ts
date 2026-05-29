@@ -13,6 +13,7 @@ import { authorizeRoles } from "../../middlewares/role.middleware";
 import {
   getEmployees,
   createEmployee,
+  updateEmployee,
   getRecords,
   createRecord,
   markAsPaid,
@@ -26,6 +27,7 @@ router.use(authenticateToken);
 // Employee management — ADMIN only for mutations, ADMIN/ENCARGADO for reads
 router.get("/employees", authorizeRoles("ADMIN", "ENCARGADO"), getEmployees);
 router.post("/employees", authorizeRoles("ADMIN"), createEmployee);
+router.patch("/employees/:id", authorizeRoles("ADMIN"), updateEmployee);
 
 // Payroll record management
 router.get("/records", authorizeRoles("ADMIN", "ENCARGADO"), getRecords);
