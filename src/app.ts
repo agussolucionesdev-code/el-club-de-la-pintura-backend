@@ -97,11 +97,62 @@ app.use(globalErrorHandler);
 // ============================================================================
 // 5. SERVER STARTUP
 // ============================================================================
+
+/**
+ * Ensures a default admin user exists in the database on every startup.
+ * Uses the ADMIN_EMAIL / ADMIN_PASSWORD env vars (falls back to dev defaults).
+ * This is an idempotent upsert — safe to run on every boot.
+ * Prevents the "no admin user in production" problem after fresh deploys.
+ */
+async function ensureAdminUser(): Promise<void> {
+  const { default: prisma } = await import("./config/db");
+  const bcrypt = await import("bcrypt");
+
+  const email    = process.env.ADMIN_EMAIL    || "admin@clubpintura.local";
+  const password = process.env.ADMIN_PASSWORD || process.env.SEED_DEFAULT_PASSWORD || "ClubPintura2026!";
+  const name     = process.env.ADMIN_NAME     || "Administrador";
+
+  try {
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      logger.info(`Admin user already exists: ${email}`);
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+
+    // Ensure at least one branch exists
+    let branch = await prisma.branch.findFirst({ orderBy: { id: "asc" } });
+    if (!branch) {
+      branch = await prisma.branch.create({
+        data: { name: "Casa Central", location: "Principal" },
+      });
+      logger.info("Created default branch: Casa Central");
+    }
+
+    await prisma.user.create({
+      data: {
+        email,
+        name,
+        role: "ADMIN",
+        password: passwordHash,
+        branches: { connect: [{ id: branch.id }] },
+      },
+    });
+
+    logger.info(`Admin user created: ${email}`);
+  } catch (err) {
+    // Non-fatal — log and continue. The app should still start.
+    logger.error("Failed to ensure admin user on startup:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
-  app.listen(portNumber, "0.0.0.0", () => {
+  app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
+    await ensureAdminUser();
   });
 }
 
