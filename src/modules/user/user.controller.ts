@@ -114,7 +114,7 @@ export const authenticateUser = async (req: Request, res: Response) => {
 
     const user = await prisma.user.findUnique({
       where: { email },
-      include: { branches: true },
+      include: { branches: { where: { isActive: true } } },
     });
 
     if (!user) {
@@ -183,7 +183,7 @@ export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => 
         name: true,
         email: true,
         role: true,
-        branches: { select: { id: true, name: true, location: true } },
+        branches: { where: { isActive: true }, select: { id: true, name: true, location: true } },
       },
     });
 
@@ -280,7 +280,7 @@ export const retrieveWorkforceDirectory = async (
         name: true,
         email: true,
         role: true,
-        branches: { select: { id: true, name: true } },
+        branches: { where: { isActive: true }, select: { id: true, name: true } },
         createdAt: true,
       },
       orderBy: { role: "asc" },
@@ -383,7 +383,7 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
             ? { connect: branchIds.map((id: number) => ({ id })) }
             : undefined,
       },
-      select: { id: true, name: true, email: true, role: true, branches: true },
+      select: { id: true, name: true, email: true, role: true, branches: { where: { isActive: true } } },
     });
 
     await auditUserAdminAction(authUser?.id, "user.created", String(newUser.id), {
@@ -480,7 +480,7 @@ export const modifyEmployeeProfile = async (
           set: (branchIds || []).map((branchId: number) => ({ id: branchId })),
         },
       },
-      select: { id: true, name: true, email: true, role: true, branches: true },
+      select: { id: true, name: true, email: true, role: true, branches: { where: { isActive: true } } },
     });
 
     await auditUserAdminAction(authUser?.id, "user.updated", String(updatedEmployee.id), {
