@@ -45,7 +45,9 @@ const PORT = process.env.PORT || 4000;
 // Wildcard CORS is disabled in all environments to prevent unauthorized API access.
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5174",
+    origin: process.env.FRONTEND_URL
+      ? process.env.FRONTEND_URL.split(",").map((o) => o.trim())
+      : ["http://localhost:5173", "http://localhost:5174"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   }),

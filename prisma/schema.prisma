@@ -16,18 +16,19 @@ datasource db {
 // Manage physical branches and locations
 model Branch {
   id            Int            @id @default(autoincrement())
-  name          String     
-  location      String?    
-  
+  name          String
+  location      String?
+  isActive      Boolean        @default(true)
+
   users         User[]         // M:N: Employees assigned to this branch
-  stocks        Stock[]    
-  movements     Movement[] 
-  sales         Sale[]     
+  stocks        Stock[]
+  movements     Movement[]
+  sales         Sale[]
   payments      Payment[]  // Track physical money entering this branch
-  
+
   // Track shifts in this branch
-  cashRegisters CashRegister[] 
-  
+  cashRegisters CashRegister[]
+
   // NEW: Track daily operational expenses for this branch
   expenses      Expense[]
 

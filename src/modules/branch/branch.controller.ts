@@ -133,8 +133,8 @@ export const getBranches = async (req: AuthRequest, res: Response) => {
     const branches = await prisma.branch.findMany({
       where:
         authUser.role === "ADMIN"
-          ? undefined
-          : { id: { in: authUser.branchIds } },
+          ? { isActive: true }
+          : { id: { in: authUser.branchIds }, isActive: true },
       orderBy: { name: "asc" },
     });
 
