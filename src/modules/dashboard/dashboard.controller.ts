@@ -162,7 +162,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
           items: {
             include: {
               product: {
-                select: { id: true, name: true, sku: true, brand: true },
+                select: { id: true, name: true, sku: true, brand: true, category: true },
               },
             },
           },
@@ -244,11 +244,15 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         name: string;
         sku: string;
         brand: string;
+        category: string;
         units: number;
         revenue: number;
         estimatedCost: number;
       }
     >();
+
+    // Category profitability breakdown: revenue and margin per product category
+    const categoryMap = new Map<string, { revenue: number; cost: number }>();
 
     sales.forEach((sale) => {
       sale.items.forEach((item) => {
@@ -258,6 +262,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
           name: product.name,
           sku: product.sku,
           brand: product.brand,
+          category: product.category || "Sin categoría",
           units: 0,
           revenue: 0,
           estimatedCost: 0,
@@ -267,8 +272,25 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         current.revenue += item.subtotal;
         current.estimatedCost += Number(item.unitCost || 0) * item.quantity;
         topProductsMap.set(item.productId, current);
+
+        // Accumulate category stats
+        const cat = product.category || "Sin categoría";
+        const catCurrent = categoryMap.get(cat) || { revenue: 0, cost: 0 };
+        catCurrent.revenue += item.subtotal;
+        catCurrent.cost += Number(item.unitCost || 0) * item.quantity;
+        categoryMap.set(cat, catCurrent);
       });
     });
+
+    const categoryBreakdown = Array.from(categoryMap.entries())
+      .map(([category, { revenue, cost }]) => ({
+        category,
+        revenue,
+        estimatedCost: cost,
+        margin: revenue > 0 ? Math.round(((revenue - cost) / revenue) * 100) : 0,
+      }))
+      .sort((a, b) => b.revenue - a.revenue)
+      .slice(0, 8);
 
     const topProducts = Array.from(topProductsMap.values())
       .sort((a, b) => b.revenue - a.revenue || b.units - a.units)
@@ -348,6 +370,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       paymentBreakdown,
       expenseBreakdown,
       topProducts,
+      categoryBreakdown,
       recentSales,
       salesByDay,
       salesBySeller,
@@ -901,7 +924,7 @@ export const exportScopedFinancialReportToExcel = async (
           items: {
             include: {
               product: {
-                select: { id: true, name: true, sku: true, brand: true },
+                select: { id: true, name: true, sku: true, brand: true, category: true },
               },
             },
           },
