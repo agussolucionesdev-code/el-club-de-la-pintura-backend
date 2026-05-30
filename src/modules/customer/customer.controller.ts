@@ -9,6 +9,7 @@
  */
 import { Prisma } from "@prisma/client";
 import { Response } from "express";
+import PDFDocument from "pdfkit";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
@@ -275,6 +276,156 @@ export const deleteCustomer = async (req: AuthRequest, res: Response) => {
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error ? error.message : "Error al archivar el cliente.";
+    res.status(400).json({ error: errorMsg });
+  }
+};
+
+// ============================================================================
+// CUSTOMER ACCOUNT STATEMENT — PDF
+// ============================================================================
+/**
+ * GET /customers/:id/statement
+ *
+ * Generates a PDF account statement for the given customer showing all
+ * pending and partial sales with their balances and payment history.
+ * Accessible by ADMIN and ENCARGADO roles only.
+ */
+export const getCustomerStatement = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const customerId = Number(req.params.id);
+    if (!Number.isInteger(customerId) || customerId <= 0) {
+      return res.status(400).json({ error: "ID de cliente inválido." });
+    }
+
+    const customer = await prisma.customer.findFirst({
+      where: { id: customerId },
+    });
+
+    if (!customer) {
+      return res.status(404).json({ error: "Cliente no encontrado." });
+    }
+
+    const pendingSales = await prisma.sale.findMany({
+      where: {
+        customerId,
+        status: { in: ["PENDING", "PARTIAL"] },
+      },
+      include: {
+        items: { include: { product: { select: { name: true, sku: true } } } },
+        payments: { orderBy: { createdAt: "asc" } },
+        branch: { select: { name: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const totalDebt = pendingSales.reduce((sum, s) => sum + s.balance, 0);
+
+    const formatMoney = (n: number) =>
+      `$${n.toLocaleString("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+    const formatDate = (d: Date) =>
+      new Date(d).toLocaleDateString("es-AR", {
+        day: "2-digit", month: "2-digit", year: "numeric",
+      });
+
+    const pageHeight = Math.max(700, 350 + pendingSales.length * 80);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="estado-cuenta-${customer.name.replace(/\s+/g, "-")}.pdf"`,
+    );
+
+    const doc = new PDFDocument({ size: "A4", margin: 40 });
+    doc.pipe(res);
+
+    // Header
+    doc.fontSize(18).font("Helvetica-Bold").text("El Club de la Pintura", { align: "center" });
+    doc.fontSize(10).font("Helvetica").text("Estado de Cuenta del Cliente", { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(8).text(`Emitido: ${formatDate(new Date())}`, { align: "right" });
+    doc.moveDown(0.8);
+
+    // Customer info
+    doc.fontSize(12).font("Helvetica-Bold").text(customer.name);
+    doc.fontSize(9).font("Helvetica");
+    if (customer.document) doc.text(`Documento: ${customer.document}`);
+    if (customer.phone) doc.text(`Teléfono: ${customer.phone}`);
+    if (customer.type) doc.text(`Tipo: ${customer.type}`);
+    if (customer.creditLimit > 0) {
+      doc.text(`Límite de crédito: ${formatMoney(customer.creditLimit)}`);
+      doc.text(`Crédito disponible: ${formatMoney(Math.max(0, customer.creditLimit - totalDebt))}`);
+    }
+    doc.moveDown(0.8);
+
+    // Summary
+    doc
+      .fontSize(11)
+      .font("Helvetica-Bold")
+      .fillColor("#c2410c")
+      .text(`SALDO TOTAL ADEUDADO: ${formatMoney(totalDebt)}`)
+      .fillColor("black");
+    doc.moveDown(0.5);
+
+    // Sales detail
+    if (pendingSales.length === 0) {
+      doc.fontSize(10).font("Helvetica").text("Este cliente no tiene saldos pendientes.");
+    } else {
+      pendingSales.forEach((sale, idx) => {
+        const paidAmount = sale.totalAmount - sale.balance;
+        const daysPast = Math.floor(
+          (Date.now() - new Date(sale.createdAt).getTime()) / 86_400_000,
+        );
+
+        doc.fontSize(9).font("Helvetica-Bold").text(
+          `Ticket #${sale.id} — ${formatDate(sale.createdAt)} — ${sale.branch.name}`,
+        );
+        doc.font("Helvetica").text(
+          `Total: ${formatMoney(sale.totalAmount)}  |  Cobrado: ${formatMoney(paidAmount)}  |  Saldo: ${formatMoney(sale.balance)}  |  Antigüedad: ${daysPast} días`,
+        );
+
+        if (sale.pickedUpBy) {
+          doc.text(`Retiró: ${sale.pickedUpBy}`);
+        }
+
+        // Items summary (first 3)
+        const displayItems = sale.items.slice(0, 3);
+        displayItems.forEach((item) => {
+          doc.text(`  · ${item.product.name} × ${item.quantity} = ${formatMoney(item.subtotal)}`, {
+            indent: 10,
+          });
+        });
+        if (sale.items.length > 3) {
+          doc.text(`  · ...y ${sale.items.length - 3} ítem(s) más`, { indent: 10 });
+        }
+
+        if (idx < pendingSales.length - 1) {
+          doc.moveDown(0.4);
+          doc
+            .moveTo(40, doc.y)
+            .lineTo(555, doc.y)
+            .strokeColor("#e5e7eb")
+            .stroke();
+          doc.moveDown(0.4);
+        }
+      });
+    }
+
+    doc.moveDown(2);
+    doc.fontSize(9).font("Helvetica").fillColor("#6b7280");
+    doc.text("Este documento es informativo e interno. No reemplaza factura fiscal.", { align: "center" });
+    doc.text("─".repeat(80), { align: "center" });
+    doc.text("Firma del cliente: ____________________________", { align: "center" });
+
+    doc.end();
+
+    void pageHeight; // suppress unused-var warning
+  } catch (error: unknown) {
+    const errorMsg =
+      error instanceof Error ? error.message : "Error al generar el estado de cuenta.";
     res.status(400).json({ error: errorMsg });
   }
 };

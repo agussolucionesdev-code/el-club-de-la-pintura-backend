@@ -37,6 +37,16 @@ import payrollRoutes from "./modules/payroll/payroll.routes";
 const app: Application = express();
 const PORT = process.env.PORT || 4000;
 
+// Global rate limiter — 300 requests per minute per IP across all routes
+// (login has its own tighter limiter defined in user.routes.ts)
+const globalRateLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Demasiadas solicitudes. Esperá un momento e intentá de nuevo." },
+});
+
 // ============================================================================
 // 1. REQUEST PROCESSING AND SECURITY MIDDLEWARES
 // ============================================================================
@@ -56,6 +66,7 @@ app.use(
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+app.use("/api", globalRateLimiter);
 
 // ============================================================================
 // 2. DIAGNOSTIC ENDPOINTS
@@ -223,12 +234,32 @@ async function ensurePayrollTables(): Promise<void> {
   }
 }
 
+/**
+ * Ensures the Customer table has the credit-control columns introduced in the
+ * 2026-05-30 schema update. Uses ADD COLUMN IF NOT EXISTS so it is idempotent
+ * and safe on every startup, whether running on a fresh DB or an existing one.
+ */
+async function ensureCustomerCreditFields(): Promise<void> {
+  const { default: prisma } = await import("./config/db");
+  try {
+    await prisma.$executeRawUnsafe(`
+      ALTER TABLE "Customer"
+        ADD COLUMN IF NOT EXISTS "creditLimit"     INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS "defaultDiscount" INTEGER NOT NULL DEFAULT 0;
+    `);
+    logger.info("Customer credit fields ready");
+  } catch (err) {
+    logger.error("Failed to ensure Customer credit fields on startup:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
     await ensurePayrollTables();
+    await ensureCustomerCreditFields();
     await ensureAdminUser();
   });
 }

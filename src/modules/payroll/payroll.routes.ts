@@ -17,6 +17,7 @@ import {
   getRecords,
   createRecord,
   markAsPaid,
+  getPayrollReceiptPdf,
 } from "./payroll.controller";
 
 const router = Router();
@@ -33,5 +34,8 @@ router.patch("/employees/:id", authorizeRoles("ADMIN"), updateEmployee);
 router.get("/records", authorizeRoles("ADMIN", "ENCARGADO"), getRecords);
 router.post("/records", authorizeRoles("ADMIN", "ENCARGADO"), createRecord);
 router.patch("/records/:id/pay", authorizeRoles("ADMIN", "ENCARGADO"), markAsPaid);
+
+// Payroll receipt PDF — available for PAID records
+router.get("/records/:id/pdf", authorizeRoles("ADMIN", "ENCARGADO"), getPayrollReceiptPdf);
 
 export default router;

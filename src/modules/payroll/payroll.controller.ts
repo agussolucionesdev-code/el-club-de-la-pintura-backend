@@ -13,6 +13,7 @@
 
 import { Response } from "express";
 import { Decimal } from "@prisma/client-runtime-utils";
+import PDFDocument from "pdfkit";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
@@ -456,5 +457,139 @@ export const markAsPaid = async (req: AuthRequest, res: Response) => {
     });
   } catch {
     return res.status(500).json({ error: "Error al actualizar la liquidación." });
+  }
+};
+
+/**
+ * GET /payroll/records/:id/pdf
+ *
+ * Generates a PDF salary receipt for the given payroll record.
+ * Includes employee name, position, branch, period, salary breakdown, and
+ * a signature line for the employee to sign when receiving payment.
+ */
+export const getPayrollReceiptPdf = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "No autorizado." });
+
+    const recordId = Number(req.params.id);
+    if (isNaN(recordId)) {
+      return res.status(400).json({ error: "ID de liquidación inválido." });
+    }
+
+    const record = await prisma.payrollRecord.findUnique({
+      where: { id: recordId },
+      include: { employee: true },
+    });
+
+    if (!record) {
+      return res.status(404).json({ error: "Liquidación no encontrada." });
+    }
+
+    const [user, branch] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: record.employee.userId },
+        select: { name: true, email: true },
+      }),
+      prisma.branch.findUnique({
+        where: { id: record.employee.branchId },
+        select: { name: true },
+      }),
+    ]);
+
+    const formatMoney = (n: number) =>
+      `$${n.toLocaleString("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+
+    const [year, month] = record.period.split("-");
+    const monthNames = [
+      "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+      "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+    ];
+    const periodLabel = `${monthNames[parseInt(month, 10)]} ${year}`;
+
+    const baseSalary = toNumber(record.baseSalary);
+    const advances   = toNumber(record.advances);
+    const bonuses    = toNumber(record.bonuses);
+    const deductions = toNumber(record.deductions);
+    const netPay     = toNumber(record.netPay);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="recibo-haberes-${record.period}-${user?.name?.replace(/\s+/g, "-") ?? "empleado"}.pdf"`,
+    );
+
+    const doc = new PDFDocument({ size: "A4", margin: 50 });
+    doc.pipe(res);
+
+    // Header
+    doc.fontSize(18).font("Helvetica-Bold").text("El Club de la Pintura", { align: "center" });
+    doc.fontSize(11).font("Helvetica").text("RECIBO DE HABERES", { align: "center" });
+    doc.fontSize(9).text(`Período: ${periodLabel}`, { align: "center" });
+    doc.moveDown(0.5);
+    doc
+      .moveTo(50, doc.y).lineTo(545, doc.y).strokeColor("#d1d5db").stroke();
+    doc.moveDown(0.8);
+
+    // Employee info
+    doc.fontSize(12).font("Helvetica-Bold").text("Datos del empleado");
+    doc.moveDown(0.3);
+    doc.fontSize(10).font("Helvetica");
+    doc.text(`Nombre: ${user?.name ?? "—"}`);
+    doc.text(`Email: ${user?.email ?? "—"}`);
+    doc.text(`Cargo: ${record.employee.position}`);
+    doc.text(`Sucursal: ${branch?.name ?? "—"}`);
+    doc.text(`Tipo de contrato: ${record.employee.salaryType}`);
+    doc.moveDown(0.8);
+
+    // Salary breakdown table
+    doc.fontSize(12).font("Helvetica-Bold").text("Detalle de la liquidación");
+    doc.moveDown(0.3);
+    doc.fontSize(10).font("Helvetica");
+
+    const rows: [string, number, boolean][] = [
+      ["Sueldo base", baseSalary, false],
+      ...(bonuses > 0 ? [["Bonificaciones / adicionales", bonuses, false] as [string, number, boolean]] : []),
+      ...(advances > 0 ? [["Adelantos descontados", -advances, false] as [string, number, boolean]] : []),
+      ...(deductions > 0 ? [["Descuentos", -deductions, false] as [string, number, boolean]] : []),
+    ];
+
+    rows.forEach(([label, amount]) => {
+      const sign = amount < 0 ? "− " : "";
+      doc.text(label, { continued: true }).text(`${sign}${formatMoney(Math.abs(amount))}`, { align: "right" });
+    });
+
+    doc.moveDown(0.3);
+    doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor("#d1d5db").stroke();
+    doc.moveDown(0.3);
+
+    doc.fontSize(13).font("Helvetica-Bold");
+    doc.text("NETO A COBRAR", { continued: true }).text(formatMoney(netPay), { align: "right" });
+    doc.moveDown(0.3);
+
+    if (record.status === "PAID" && record.paidAt) {
+      doc.fontSize(9).font("Helvetica").fillColor("#059669");
+      doc.text(`Pagado el ${new Date(record.paidAt).toLocaleDateString("es-AR")}`);
+      doc.fillColor("black");
+    }
+
+    if (record.observations) {
+      doc.moveDown(0.5);
+      doc.fontSize(9).font("Helvetica").fillColor("#6b7280");
+      doc.text(`Observaciones: ${record.observations}`);
+      doc.fillColor("black");
+    }
+
+    // Signature area
+    doc.moveDown(3);
+    doc.moveTo(50, doc.y).lineTo(250, doc.y).strokeColor("#374151").stroke();
+    doc.text("Firma y aclaración del empleado", { align: "left" });
+    doc.moveDown(0.5);
+    doc.fontSize(8).fillColor("#6b7280");
+    doc.text("Este recibo es interno y no reemplaza recibo oficial. Conservar original.", { align: "center" });
+
+    doc.end();
+  } catch {
+    return res.status(500).json({ error: "Error al generar el recibo de haberes." });
   }
 };

@@ -65,18 +65,22 @@ model User {
 // ==========================================
 // Store client profiles, contractors, and companies
 model Customer {
-  id          Int       @id @default(autoincrement())
-  name        String
-  document    String?   @unique // DNI or CUIT
-  type        String    @default("CONSUMER") // e.g., CONSUMER, CONTRACTOR, COMPANY, FAMILY
-  phone       String?
-  email       String?
-  address     String?
+  id              Int       @id @default(autoincrement())
+  name            String
+  document        String?   @unique // DNI or CUIT
+  type            String    @default("CONSUMER") // e.g., CONSUMER, CONTRACTOR, COMPANY, FAMILY
+  phone           String?
+  email           String?
+  address         String?
+
+  // Credit control fields
+  creditLimit     Int       @default(0)  // Maximum allowed outstanding balance (0 = unlimited)
+  defaultDiscount Int       @default(0)  // Automatic discount percentage applied in POS (0–100)
 
   // ==========================================
   // INYECCIÓN DE SEGURIDAD FISCAL (Soft Delete)
   // ==========================================
-  isActive    Boolean   @default(true) 
+  isActive    Boolean   @default(true)
 
   sales       Sale[]    // Relate billing and debts to this specific customer
 

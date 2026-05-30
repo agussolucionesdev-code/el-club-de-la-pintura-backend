@@ -459,6 +459,28 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           "Operacion rechazada: Debe especificar el nombre y DNI de la persona autorizada al retiro.",
         );
       }
+
+      // Credit limit check: if the customer has a creditLimit > 0, verify that
+      // their current outstanding balance + this sale does not exceed the limit.
+      const customer = await prisma.customer.findUnique({
+        where: { id: Number(customerId) },
+        select: { creditLimit: true, name: true },
+      });
+
+      if (customer && customer.creditLimit > 0) {
+        const currentDebt = await prisma.sale.aggregate({
+          where: { customerId: Number(customerId), status: { in: ["PENDING", "PARTIAL"] } },
+          _sum: { balance: true },
+        });
+        const outstanding = currentDebt._sum.balance ?? 0;
+        if (outstanding + parsedTotalAmount > customer.creditLimit) {
+          const available = Math.max(0, customer.creditLimit - outstanding);
+          throw new Error(
+            `Límite de crédito superado para ${customer.name}. Disponible: $${available.toLocaleString("es-AR")}. ` +
+            `Deuda actual: $${outstanding.toLocaleString("es-AR")}. Límite: $${customer.creditLimit.toLocaleString("es-AR")}.`,
+          );
+        }
+      }
     }
 
     const immediatePayments = parseImmediatePayments({

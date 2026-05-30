@@ -4,6 +4,7 @@ import {
   createCustomer,
   updateCustomer,
   deleteCustomer,
+  getCustomerStatement,
 } from "./customer.controller";
 import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
@@ -45,6 +46,14 @@ router.delete(
   authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
   deleteCustomer,
+);
+
+// 5. Generate customer account statement PDF (ADMIN and ENCARGADO only)
+router.get(
+  "/:id/statement",
+  authenticateToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getCustomerStatement,
 );
 
 export default router;
