@@ -121,7 +121,7 @@ const ensureBranchAccess = (
   authUser: { role: string; branchIds: number[] },
 ) => {
   if (!Number.isInteger(branchId) || branchId <= 0) {
-    throw new Error("La sucursal de la operacion offline no es válida.");
+    throw new Error("La sucursal de la operación offline no es válida.");
   }
 
   if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
@@ -668,11 +668,11 @@ const replayCustomerCreateOperation = async (
   if (branchId) {
     ensureBranchAccess(branchId, authUser);
   } else if (authUser.role !== "ADMIN") {
-    throw new Error("La alta offline de cliente requiere una sucursal valida.");
+    throw new Error("La alta offline de cliente requiere una sucursal válida.");
   }
 
   if (name.length < 2) {
-    throw new Error("La alta offline de cliente no tiene nombre valido.");
+    throw new Error("La alta offline de cliente no tiene nombre válido.");
   }
 
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -999,7 +999,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       if (!/^[\w\-]{8,120}$/.test(operationId)) {
         rejectedOperations.push({
           id: operationId,
-          error: "El idempotencyKey tiene un formato no valido.",
+          error: "El idempotencyKey tiene un formato no válido.",
         });
         continue;
       }
@@ -1081,7 +1081,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
         const errorMessage =
           error instanceof Error
             ? error.message
-            : "No se pudo reproducir la operacion offline.";
+            : "No se pudo reproducir la operación offline.";
 
         await prisma.syncOperation
           .upsert({

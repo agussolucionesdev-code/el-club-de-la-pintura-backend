@@ -75,7 +75,7 @@ export const authenticateToken = (
 
     if (!authenticatedUser) {
       return res.status(403).json({
-        error: "El token recibido no contiene una identidad valida.",
+        error: "El token recibido no contiene una identidad válida.",
       });
     }
 

@@ -348,7 +348,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
 
     if (!Number.isFinite(countedBalance) || countedBalance < 0) {
       return res.status(400).json({
-        error: "El dinero fisico contado debe ser un monto valido y no negativo.",
+        error: "El dinero físico contado debe ser un monto válido y no negativo.",
       });
     }
 
@@ -496,7 +496,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
   } catch (error: unknown) {
     logger.error("Error al cerrar caja:", error);
     res.status(500).json({
-      error: "Fallo critico al intentar realizar el cierre contable.",
+      error: "Fallo crítico al intentar realizar el cierre contable.",
     });
   }
 };

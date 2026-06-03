@@ -41,7 +41,7 @@ const receiptTypeTitle: Record<string, string> = {
   EXPENSE: "Comprobante interno de egreso",
   CASH_CLOSE: "Arqueo interno de caja",
   PURCHASE_ORDER: "Orden interna de compra",
-  PURCHASE_RECEIPT: "Recepcion interna de compra",
+  PURCHASE_RECEIPT: "Recepción interna de compra",
   STOCK_TRANSFER: "Transferencia interna de stock",
 };
 
@@ -280,7 +280,7 @@ const buildReceiptRows = (
 
   if (receiptType === "PURCHASE_RECEIPT") {
     return [
-      ["Recepcion", getPayloadText(payload, "purchaseReceiptId")],
+      ["Recepción", getPayloadText(payload, "purchaseReceiptId")],
       ["Orden vinculada", getPayloadText(payload, "purchaseOrderId")],
       ["Proveedor", getPayloadText(payload, "supplierName", "Sin proveedor")],
       ["Motivo / remito", getPayloadText(payload, "reason")],

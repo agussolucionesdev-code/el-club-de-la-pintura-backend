@@ -394,7 +394,7 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
 
     res
       .status(201)
-      .json({ message: "Empleado dado de alta con exito.", employee: newUser });
+      .json({ message: "Empleado dado de alta con éxito.", employee: newUser });
   } catch (error) {
     logger.error("Error al registrar empleado:", error);
     res

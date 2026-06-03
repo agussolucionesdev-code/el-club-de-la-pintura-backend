@@ -129,19 +129,23 @@ export const getTopSellingProducts = async (req: Request, res: Response) => {
       take: Number(limit),
     });
 
-    // Map relational data to append product names and SKUs
-    const productsWithDetails = await Promise.all(
-      topItems.map(async (item) => {
-        const product = await prisma.product.findUnique({
-          where: { id: item.productId },
-          select: { name: true, sku: true, category: true },
-        });
-        return {
-          ...product,
-          totalSold: item._sum.quantity,
-        };
-      }),
-    );
+    // Batch-fetch all product details in a single query (avoids N+1)
+    const productIds = topItems.map((item) => item.productId);
+    const products = await prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, name: true, sku: true, category: true },
+    });
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    const productsWithDetails = topItems.map((item) => {
+      const product = productMap.get(item.productId);
+      return {
+        name: product?.name ?? null,
+        sku: product?.sku ?? null,
+        category: product?.category ?? null,
+        totalSold: item._sum.quantity,
+      };
+    });
 
     // Send successful response with top products array
     res.status(200).json({

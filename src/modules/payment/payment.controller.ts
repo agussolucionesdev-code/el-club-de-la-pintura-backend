@@ -211,7 +211,7 @@ export const registerAccountPayment = async (
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "Error critico al registrar el pago.";
+        : "Error crítico al registrar el pago.";
     const statusCode = error instanceof PaymentBranchAccessError ? 403 : 400;
 
     res.status(statusCode).json({ error: errorMsg });

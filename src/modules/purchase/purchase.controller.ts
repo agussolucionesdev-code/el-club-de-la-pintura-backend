@@ -116,7 +116,7 @@ const assertPurchaseReferences = async (
   });
 
   if (existingProducts.length !== productIds.length) {
-    throw new Error("Uno o mas productos de la compra no existen o no están activos.");
+    throw new Error("Uno o más productos de la compra no existen o no están activos.");
   }
 
   let supplier: PurchaseReferenceSnapshot["supplier"] = null;
@@ -127,7 +127,7 @@ const assertPurchaseReferences = async (
     });
 
     if (!supplier) {
-      throw new Error("El proveedor indicado no existe o esta inactivo.");
+      throw new Error("El proveedor indicado no existe o está inactivo.");
     }
   }
 
@@ -509,7 +509,7 @@ export const receivePurchaseReceipt = async (
           data: {
             type: "PURCHASE",
             quantity: item.quantity,
-            reason: req.body.reason || "Recepcion de compra interna",
+            reason: req.body.reason || "Recepción de compra interna",
             productId: item.productId,
             branchId,
             userId: authUser.id,
@@ -537,7 +537,7 @@ export const receivePurchaseReceipt = async (
           supplierId,
           purchaseOrderId,
           purchaseReceiptId: receipt.id,
-          reason: String(req.body.reason || "Recepcion de compra interna"),
+          reason: String(req.body.reason || "Recepción de compra interna"),
           status: "RECEIVED",
         }),
       });
@@ -570,14 +570,14 @@ export const receivePurchaseReceipt = async (
     });
 
     res.status(201).json({
-      message: "Recepcion de compra registrada y stock actualizado.",
+      message: "Recepción de compra registrada y stock actualizado.",
       data: result,
     });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "No se pudo registrar la recepcion de compra.";
+        : "No se pudo registrar la recepción de compra.";
     res.status(400).json({ error: errorMsg });
   }
 };

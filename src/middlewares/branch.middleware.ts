@@ -47,7 +47,7 @@ export const authorizeBranchAccess =
       if (options.allowMissingBranch) return next();
 
       return res.status(400).json({
-        error: "La sucursal objetivo es obligatoria para esta operacion.",
+        error: "La sucursal objetivo es obligatoria para esta operación.",
       });
     }
 

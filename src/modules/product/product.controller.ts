@@ -40,7 +40,7 @@ const parseOptionalStockInput = (stock: unknown) => {
 
   const parsedStock = Number(stock);
   if (!Number.isInteger(parsedStock) || parsedStock < 0) {
-    throw new Error("El stock informado debe ser un numero entero positivo.");
+    throw new Error("El stock informado debe ser un número entero positivo.");
   }
 
   return parsedStock;
@@ -52,7 +52,7 @@ const parseStockBranchId = (body: Record<string, unknown>) => {
 
   if (!Number.isInteger(branchId) || branchId <= 0) {
     throw new Error(
-      "Para modificar stock desde catalogo debes elegir una sucursal especifica.",
+      "Para modificar stock desde catálogo debés elegir una sucursal específica.",
     );
   }
 
@@ -334,7 +334,7 @@ export const createProduct = async (req: AuthRequest, res: Response) => {
           branchId: parsedStockBranchId,
           quantity: parsedStock,
           userId: authUser.id,
-          reason: "Alta de stock inicial desde catalogo",
+          reason: "Alta de stock inicial desde catálogo",
         });
       }
 
@@ -527,7 +527,7 @@ export const updateProduct = async (req: AuthRequest, res: Response) => {
           branchId: parsedStockBranchId,
           quantity: parsedStock,
           userId: authUser.id,
-          reason: "Ajuste de stock desde catalogo",
+          reason: "Ajuste de stock desde catálogo",
         });
       }
 
@@ -659,7 +659,7 @@ export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
     if (confirmationPhrase !== "VACIAR") {
       return res.status(400).json({
         error:
-          "Confirmacion requerida: envie la frase exacta VACIAR para archivar el catalogo activo.",
+          "Confirmación requerida: envíe la frase exacta VACIAR para archivar el catálogo activo.",
       });
     }
 
@@ -674,7 +674,7 @@ export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
     ) {
       return res.status(409).json({
         error:
-          "El catalogo cambio desde que se inicio la accion. Actualice la pantalla y vuelva a confirmar.",
+          "El catálogo cambió desde que se inició la acción. Actualizá la pantalla y volvé a confirmar.",
         data: {
           expectedActiveCount,
           currentActiveCount: totalActive,
@@ -701,7 +701,7 @@ export const deleteAllProducts = async (req: AuthRequest, res: Response) => {
         entityId: "ALL_ACTIVE",
         metadata: {
           deletedCount: result.count,
-          reason: "Archivado masivo desde catalogo/listas de precios",
+          reason: "Archivado masivo desde catálogo/listas de precios",
         },
       },
     });

@@ -143,7 +143,7 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
   } catch (error: unknown) {
     logger.error("Error en getStockByBranch:", error);
     res.status(500).json({
-      error: "Fallo critico al cruzar el catalogo con el inventario fisico.",
+      error: "Fallo crítico al cruzar el catálogo con el inventario físico.",
     });
   }
 };

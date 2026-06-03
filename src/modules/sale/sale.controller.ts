@@ -394,7 +394,7 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "Error critico al anular la venta.";
+        : "Error crítico al anular la venta.";
 
     res.status(responseStatusForSaleError(error)).json({ error: errorMsg });
   }
@@ -501,7 +501,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
 
       if (!activeRegister || activeRegister.status !== "OPEN") {
         throw new Error(
-          "Operacion bloqueada: No hay un turno de caja abierto para registrar esta operacion.",
+          "Operación bloqueada: No hay un turno de caja abierto para registrar esta operación.",
         );
       }
 
@@ -638,7 +638,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           ? "Venta a credito registrada."
           : salePaymentMethod === "MIXED"
             ? "Venta procesada con pagos multiples."
-          : "Venta procesada con exito.",
+          : "Venta procesada con éxito.",
       data: result.sale,
       receipt: result.receipt,
     });
@@ -646,7 +646,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
     const errorMsg =
       error instanceof Error
         ? error.message
-        : "Error critico al procesar la venta.";
+        : "Error crítico al procesar la venta.";
     res.status(400).json({ error: errorMsg });
   }
 };

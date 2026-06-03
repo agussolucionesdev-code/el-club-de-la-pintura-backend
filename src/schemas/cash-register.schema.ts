@@ -31,7 +31,7 @@ export const closeShiftSchema = z.object({
   body: z.object({
     actualBalance: z
       .number()
-      .nonnegative("El dinero fisico contado no puede ser negativo."),
+      .nonnegative("El dinero físico contado no puede ser negativo."),
     observations: z.string().optional().nullable(),
     localPendingOperations: z.number().int().nonnegative().optional(),
     localFailedOperations: z.number().int().nonnegative().optional(),
