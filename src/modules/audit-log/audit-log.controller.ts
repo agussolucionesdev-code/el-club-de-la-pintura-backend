@@ -51,7 +51,7 @@ export const listAuditLogs = async (req: AuthRequest, res: Response) => {
 
     if (branchId === null || actorUserId === null) {
       return res.status(400).json({
-        error: "Los filtros numericos de auditoria son invalidos.",
+        error: "Los filtros numéricos de auditoría son inválidos.",
       });
     }
 

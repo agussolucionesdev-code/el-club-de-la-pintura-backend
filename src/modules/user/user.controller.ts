@@ -57,7 +57,7 @@ const validateAdminSecret = (adminSecret: unknown) => {
   if (String(adminSecret || "") !== requiredSecret) {
     return {
       ok: false,
-      error: "La llave maestra para administradores no es valida.",
+      error: "La llave maestra para administradores no es válida.",
     };
   }
 
@@ -352,7 +352,7 @@ export const onboardEmployee = async (req: AuthRequest, res: Response) => {
 
     const normalizedRole = normalizeRole(role || "EMPLOYEE");
     if (!normalizedRole) {
-      return res.status(400).json({ error: "El rol indicado no es valido." });
+      return res.status(400).json({ error: "El rol indicado no es válido." });
     }
 
     if (normalizedRole === "ADMIN") {
@@ -424,7 +424,7 @@ export const modifyEmployeeProfile = async (
     const normalizedRole = normalizeRole(role);
 
     if (!normalizedRole) {
-      return res.status(400).json({ error: "El rol indicado no es valido." });
+      return res.status(400).json({ error: "El rol indicado no es válido." });
     }
 
     const targetUser = await prisma.user.findUnique({
@@ -609,7 +609,7 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
     const { confirmationPhrase } = req.body || {};
 
     if (!role) {
-      return res.status(400).json({ error: "El rol indicado no es valido." });
+      return res.status(400).json({ error: "El rol indicado no es válido." });
     }
 
     if (role === "ADMIN") {

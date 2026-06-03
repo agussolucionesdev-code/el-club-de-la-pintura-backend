@@ -80,7 +80,7 @@ const getPayload = (operation: IncomingSyncOperation) => {
     typeof operation.payload !== "object" ||
     Array.isArray(operation.payload)
   ) {
-    throw new Error("La operacion offline no tiene payload valido.");
+    throw new Error("La operación offline no tiene payload válido.");
   }
 
   return operation.payload as Record<string, unknown>;
@@ -121,11 +121,11 @@ const ensureBranchAccess = (
   authUser: { role: string; branchIds: number[] },
 ) => {
   if (!Number.isInteger(branchId) || branchId <= 0) {
-    throw new Error("La sucursal de la operacion offline no es valida.");
+    throw new Error("La sucursal de la operacion offline no es válida.");
   }
 
   if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(branchId)) {
-    throw new Error("La operacion apunta a una sucursal no autorizada.");
+    throw new Error("La operación apunta a una sucursal no autorizada.");
   }
 };
 
@@ -434,7 +434,7 @@ const replayExpenseOperation = async (
   ensureBranchAccess(branchId, authUser);
 
   if (!Number.isInteger(cashRegisterId) || cashRegisterId <= 0) {
-    throw new Error("La operacion offline no tiene una caja valida.");
+    throw new Error("La operación offline no tiene una caja válida.");
   }
 
   await prisma.$transaction(async (tx) => {
@@ -574,16 +574,16 @@ const replayAccountPaymentOperation = async (
   const allowedMethods = new Set(["CASH", "DEBIT", "CREDIT", "TRANSFER", "MIXED"]);
 
   if (!Number.isInteger(saleId) || saleId <= 0) {
-    throw new Error("La operacion offline de cobro no tiene ticket valido.");
+    throw new Error("La operación offline de cobro no tiene ticket válido.");
   }
   if (!Number.isInteger(cashRegisterId) || cashRegisterId <= 0) {
-    throw new Error("La operacion offline de cobro no tiene caja valida.");
+    throw new Error("La operación offline de cobro no tiene caja válida.");
   }
   if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("El monto del cobro offline no es valido.");
+    throw new Error("El monto del cobro offline no es válido.");
   }
   if (!allowedMethods.has(paymentMethod)) {
-    throw new Error("El medio de pago del cobro offline no es valido.");
+    throw new Error("El medio de pago del cobro offline no es válido.");
   }
 
   await prisma.$transaction(async (tx) => {
@@ -676,7 +676,7 @@ const replayCustomerCreateOperation = async (
   }
 
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    throw new Error("El email del cliente offline no es valido.");
+    throw new Error("El email del cliente offline no es válido.");
   }
 
   if (document) {
@@ -989,7 +989,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
 
       if (!operationId) {
         rejectedOperations.push({
-          error: "La operacion offline no tiene idempotencyKey.",
+          error: "La operación offline no tiene idempotencyKey.",
         });
         continue;
       }
@@ -1011,7 +1011,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
       ) {
         rejectedOperations.push({
           id: operationId,
-          error: "La operacion apunta a una sucursal no autorizada.",
+          error: "La operación apunta a una sucursal no autorizada.",
         });
         continue;
       }
@@ -1031,7 +1031,7 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
             id: operationId,
             error:
               existingOperation.error ||
-              "La operacion ya habia sido rechazada por el servidor.",
+              "La operación ya había sido rechazada por el servidor.",
           });
           continue;
         }

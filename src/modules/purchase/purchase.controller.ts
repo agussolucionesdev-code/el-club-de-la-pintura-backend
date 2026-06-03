@@ -40,7 +40,7 @@ const ensureBranchAccess = (
   authUser: { role: string; branchIds: number[] },
 ) => {
   if (!Number.isInteger(branchId) || branchId <= 0) {
-    throw new Error("La sucursal de la compra no es valida.");
+    throw new Error("La sucursal de la compra no es válida.");
   }
 
   if (authUser.role === "ADMIN") return;
@@ -77,18 +77,18 @@ const parsePurchaseItems = (items: unknown): PurchaseItem[] => {
       rawItem.unitCost === undefined ? undefined : Number(rawItem.unitCost);
 
     if (!Number.isInteger(productId) || productId <= 0) {
-      throw new Error("Los items de compra contienen productos invalidos.");
+      throw new Error("Los items de compra contienen productos inválidos.");
     }
 
     if (!Number.isInteger(quantity) || quantity <= 0) {
-      throw new Error("Los items de compra contienen datos invalidos.");
+      throw new Error("Los items de compra contienen datos inválidos.");
     }
 
     if (
       unitCost !== undefined &&
       (!Number.isFinite(unitCost) || unitCost < 0)
     ) {
-      throw new Error("El costo unitario de compra no es valido.");
+      throw new Error("El costo unitario de compra no es válido.");
     }
 
     return { productId, quantity, unitCost };
@@ -99,7 +99,7 @@ const parseSupplierId = (value: unknown) => {
   if (value === undefined || value === null || value === "") return null;
   const supplierId = Number(value);
   if (!Number.isInteger(supplierId) || supplierId <= 0) {
-    throw new Error("El proveedor indicado no es valido.");
+    throw new Error("El proveedor indicado no es válido.");
   }
   return supplierId;
 };
@@ -116,7 +116,7 @@ const assertPurchaseReferences = async (
   });
 
   if (existingProducts.length !== productIds.length) {
-    throw new Error("Uno o mas productos de la compra no existen o no estan activos.");
+    throw new Error("Uno o mas productos de la compra no existen o no están activos.");
   }
 
   let supplier: PurchaseReferenceSnapshot["supplier"] = null;

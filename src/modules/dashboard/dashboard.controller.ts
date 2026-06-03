@@ -44,7 +44,7 @@ const parseDashboardDate = (value: unknown, endOfDay = false) => {
   }
 
   if (Number.isNaN(parsedDate.getTime())) {
-    throw new Error("El rango de fechas del dashboard no es valido.");
+    throw new Error("El rango de fechas del dashboard no es válido.");
   }
 
   if (endOfDay) {
@@ -77,7 +77,7 @@ const buildBranchFilter = (
   const branchId = rawBranchId === undefined ? 0 : Number(rawBranchId);
 
   if (!Number.isInteger(branchId) || branchId < 0) {
-    throw new Error("La sucursal del dashboard no es valida.");
+    throw new Error("La sucursal del dashboard no es válida.");
   }
 
   if (branchId === 0) {

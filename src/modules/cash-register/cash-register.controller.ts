@@ -177,7 +177,7 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
 
     if (!Number.isInteger(branchId) || branchId <= 0) {
       return res.status(400).json({
-        error: "La sucursal indicada no es valida.",
+        error: "La sucursal indicada no es válida.",
       });
     }
 
@@ -253,7 +253,7 @@ export const openShift = async (req: AuthRequest, res: Response) => {
 
     if (!Number.isInteger(parsedBranchId) || parsedBranchId <= 0) {
       return res.status(400).json({
-        error: "La sucursal indicada no es valida.",
+        error: "La sucursal indicada no es válida.",
       });
     }
 

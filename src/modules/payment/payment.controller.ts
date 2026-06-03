@@ -58,7 +58,7 @@ const parseAccountPaymentMethod = (value: unknown) => {
 
   if (!allowedAccountPaymentMethods.has(normalizedMethod)) {
     throw new Error(
-      "El medio de pago seleccionado no es valido para cobrar una cuenta corriente.",
+      "El medio de pago seleccionado no es válido para cobrar una cuenta corriente.",
     );
   }
 
