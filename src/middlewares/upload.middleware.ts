@@ -1,7 +1,18 @@
 import multer from "multer";
+import os from "os";
+import path from "path";
 
 // In-memory storage: files are held in RAM during processing, never written to local disk
 const storage = multer.memoryStorage();
+
+// Disk storage for large file uploads (e.g. bulk CSV/Excel price updates).
+// Files are written to the OS temp directory so streaming parsers can read them
+// without buffering the entire file into RAM.
+const diskStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, os.tmpdir()),
+  filename: (_req, file, cb) =>
+    cb(null, `bulk-upload-${Date.now()}-${Math.random().toString(36).slice(2)}${path.extname(file.originalname)}`),
+});
 
 // File type validation filter
 // Strictly allowlisted MIME types to prevent code injection via uploaded files
@@ -42,4 +53,12 @@ export const upload = multer({
   storage,
   fileFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB per file — accommodates large product catalogs
+});
+
+// Disk-based multer for large file uploads (bulk CSV/Excel).
+// 50 MB limit; streaming parser reads from disk, avoiding OOM on small instances.
+export const uploadToDisk = multer({
+  storage: diskStorage,
+  fileFilter,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50 MB max for bulk files
 });

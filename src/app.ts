@@ -5,6 +5,7 @@ import "dotenv/config";
 // Core modules and utilities
 import express, { Application, Request, Response } from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 
@@ -13,6 +14,7 @@ import {
   globalErrorHandler,
   notFoundHandler,
 } from "./middlewares/error.middleware";
+import { serializeDecimals } from "./middlewares/serialize.middleware";
 
 // Modular routers (feature-first architecture)
 import branchRoutes from "./modules/branch/branch.routes";
@@ -32,6 +34,8 @@ import purchaseRoutes from "./modules/purchase/purchase.routes";
 import internalReceiptRoutes from "./modules/internal-receipt/internal-receipt.routes";
 import auditLogRoutes from "./modules/audit-log/audit-log.routes";
 import payrollRoutes from "./modules/payroll/payroll.routes";
+import returnRoutes from "./modules/return/return.routes";
+import afipRoutes from "./modules/afip/afip.routes";
 
 // Express app initialization
 const app: Application = express();
@@ -63,9 +67,11 @@ app.use(
   }),
 );
 
+app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan("dev"));
+app.use(serializeDecimals);
 app.use("/api", globalRateLimiter);
 
 // ============================================================================
@@ -98,6 +104,8 @@ app.use("/api/purchases", purchaseRoutes);
 app.use("/api/internal-receipts", internalReceiptRoutes);
 app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/payroll", payrollRoutes);
+app.use("/api/sales", returnRoutes);
+app.use("/api/afip", afipRoutes);
 
 // ============================================================================
 // 4. ERROR HANDLERS — must be registered after all routes

@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { upload } from "../../middlewares/upload.middleware";
+import { upload, uploadToDisk } from "../../middlewares/upload.middleware";
 import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
@@ -13,6 +13,7 @@ import {
   uploadProductImage,
   importProductsFromExcel,
 } from "./product.controller";
+import { startBulkPriceUpdate, getBulkPriceUpdateStatus } from "./bulk-price.controller";
 
 const router = Router();
 
@@ -44,6 +45,21 @@ router.post(
   authorizeRoles("ADMIN", "ENCARGADO"),
   validate(createProductSchema),
   createProduct,
+);
+
+router.post(
+  "/bulk-price-update",
+  authenticateToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  uploadToDisk.single("file"),
+  startBulkPriceUpdate,
+);
+
+router.get(
+  "/bulk-price-update/:jobId",
+  authenticateToken,
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  getBulkPriceUpdateStatus,
 );
 
 router.delete(
