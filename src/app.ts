@@ -76,17 +76,7 @@ app.use(serializeDecimals);
 app.use("/api", globalRateLimiter);
 
 // ============================================================================
-// 2. DIAGNOSTIC ENDPOINTS
-// ============================================================================
-app.get("/api/health", (_req: Request, res: Response) => {
-  res.status(200).json({
-    status: "success",
-    message: `Backend running in ${process.env.NODE_ENV || "development"} mode`,
-  });
-});
-
-// ============================================================================
-// 3. CSRF SETUP
+// 2. CSRF SETUP
 // ============================================================================
 // The XSRF-TOKEN cookie (readable by JS) is issued on every GET request so
 // Axios always has a fresh token before any state-changing request is made.
@@ -115,6 +105,17 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   if (process.env.NODE_ENV === "test") return next();
   if (CSRF_EXEMPT.has(req.path)) return next();
   csrfProtection(req, res, next);
+});
+
+// ============================================================================
+// 3. DIAGNOSTIC ENDPOINTS (registered after CSRF so GET /api/health also
+//    issues the XSRF-TOKEN cookie for uptime monitors / initial page loads)
+// ============================================================================
+app.get("/api/health", (_req: Request, res: Response) => {
+  res.status(200).json({
+    status: "success",
+    message: `Backend running in ${process.env.NODE_ENV || "development"} mode`,
+  });
 });
 
 // ============================================================================
