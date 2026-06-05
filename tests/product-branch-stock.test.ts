@@ -2,6 +2,7 @@ import request from "supertest";
 import bcrypt from "bcrypt";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
   const runId = Date.now();
@@ -38,7 +39,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
 
     const hashedPassword = await bcrypt.hash(managerCreds.password, 10);
     const hashedAdminPassword = await bcrypt.hash(adminCreds.password, 10);
-    await prisma.user.create({
+    const manager = await prisma.user.create({
       data: {
         name: `Robot Catalogo ${runId}`,
         email: managerCreds.email,
@@ -47,7 +48,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
         branches: { connect: [{ id: branchBId }] },
       },
     });
-    await prisma.user.create({
+    const adminUser = await prisma.user.create({
       data: {
         name: `Robot Catalogo Admin ${runId}`,
         email: adminCreds.email,
@@ -57,15 +58,8 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
       },
     });
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(managerCreds);
-    const adminLoginResponse = await request(app)
-      .post("/api/users/login")
-      .send(adminCreds);
-
-    managerToken = loginResponse.body.token;
-    adminToken = adminLoginResponse.body.token;
+    managerToken = generateTestToken({ userId: manager.id, role: "ENCARGADO", branchIds: [branchBId] });
+    adminToken = generateTestToken({ userId: adminUser.id, role: "ADMIN", branchIds: [branchAId, branchBId] });
   });
 
   afterAll(async () => {

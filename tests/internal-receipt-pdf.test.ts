@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 import { buildInternalReceiptNumber } from "../src/modules/internal-receipt/internal-receipt.service";
 
 const parseBinaryResponse = (
@@ -133,11 +134,7 @@ describe("Comprobantes internos imprimibles por sucursal", () => {
     });
     foreignReceiptId = foreignReceipt.id;
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(managerCreds);
-
-    managerToken = loginResponse.body.token;
+    managerToken = generateTestToken({ userId: managerId, role: "ENCARGADO", branchIds: [branchAId] });
   });
 
   afterAll(async () => {

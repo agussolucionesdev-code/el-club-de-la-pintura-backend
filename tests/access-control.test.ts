@@ -2,6 +2,7 @@ import request from "supertest";
 import bcrypt from "bcrypt";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 describe("Controles de acceso por rol y sucursal", () => {
   const employeeCreds = {
@@ -32,7 +33,7 @@ describe("Controles de acceso por rol y sucursal", () => {
 
     const hashedPassword = await bcrypt.hash(employeeCreds.password, 10);
 
-    await prisma.user.create({
+    const employee = await prisma.user.create({
       data: {
         name: "Robot Employee ACL",
         email: employeeCreds.email,
@@ -44,11 +45,7 @@ describe("Controles de acceso por rol y sucursal", () => {
       },
     });
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(employeeCreds);
-
-    employeeToken = loginResponse.body.token;
+    employeeToken = generateTestToken({ userId: employee.id, role: "EMPLOYEE", branchIds: [branchAId] });
   });
 
   afterAll(async () => {

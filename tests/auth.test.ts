@@ -2,6 +2,7 @@ import request from "supertest";
 import app from "../src/app";
 import prisma from "../src/config/db";
 import bcrypt from "bcrypt";
+import { generateTestToken } from "./helpers/auth";
 
 describe("Módulo de Seguridad y Autenticación (Auth API)", () => {
   // Credenciales del Admin de Prueba
@@ -11,6 +12,7 @@ describe("Módulo de Seguridad y Autenticación (Auth API)", () => {
   };
 
   let adminToken = "";
+  let adminUserId = 0;
 
   // ANTES DE EMPEZAR: Inyectamos un ADMIN directamente a la base de datos por la puerta trasera
   beforeAll(async () => {
@@ -19,7 +21,7 @@ describe("Módulo de Seguridad y Autenticación (Auth API)", () => {
 
     // Creamos al usuario esquivando la ruta /register
     const hashedPassword = await bcrypt.hash(adminCreds.password, 10);
-    await prisma.user.create({
+    const admin = await prisma.user.create({
       data: {
         name: "Robot Admin",
         email: adminCreds.email,
@@ -27,6 +29,10 @@ describe("Módulo de Seguridad y Autenticación (Auth API)", () => {
         role: "ADMIN",
       },
     });
+    adminUserId = admin.id;
+
+    // Pre-generate the token for tests that need an authenticated session
+    adminToken = generateTestToken({ userId: adminUserId, role: "ADMIN", branchIds: [] });
   });
 
   // DESPUÉS DE TERMINAR: Limpiamos la base de datos y cerramos la conexión
@@ -38,16 +44,15 @@ describe("Módulo de Seguridad y Autenticación (Auth API)", () => {
   // ---------------------------------------------------------
   // PRUEBA 1: Login Exitoso
   // ---------------------------------------------------------
-  it("Debería iniciar sesión y devolver un Token JWT válido (Status 200)", async () => {
+  it("Debería iniciar sesión y establecer cookie de sesión (Status 200)", async () => {
     const response = await request(app)
       .post("/api/users/login")
       .send(adminCreds);
 
     expect(response.status).toBe(200);
-    expect(response.body).toHaveProperty("token");
-
-    // Guardamos el token en la memoria del robot para usarlo en la Prueba 3
-    adminToken = response.body.token;
+    // Auth now uses HttpOnly cookies — no token in body
+    expect(response.headers["set-cookie"]).toBeDefined();
+    expect(response.body).toHaveProperty("user");
   });
 
   // ---------------------------------------------------------

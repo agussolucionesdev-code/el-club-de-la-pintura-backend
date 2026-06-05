@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 const parseBinaryResponse = (
   response: IncomingMessage,
@@ -102,11 +103,7 @@ describe("Inventario ERP: transferencias y reposicion sugerida", () => {
     });
     operatorId = operator.id;
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(operatorCreds);
-
-    operatorToken = loginResponse.body.token;
+    operatorToken = generateTestToken({ userId: operatorId, role: "ENCARGADO", branchIds: [branchAId, branchBId] });
   });
 
   afterAll(async () => {

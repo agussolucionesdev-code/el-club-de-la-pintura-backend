@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 const parseBinaryResponse = (
   response: IncomingMessage,
@@ -193,12 +194,8 @@ describe("Anulacion operativa de ventas", () => {
       data: { quantity: { decrement: 1 } },
     });
 
-    const [managerLogin, employeeLogin] = await Promise.all([
-      request(app).post("/api/users/login").send(managerCreds),
-      request(app).post("/api/users/login").send(employeeCreds),
-    ]);
-    managerToken = managerLogin.body.token;
-    employeeToken = employeeLogin.body.token;
+    managerToken = generateTestToken({ userId: managerId, role: "ENCARGADO", branchIds: [branchAId] });
+    employeeToken = generateTestToken({ userId: employeeId, role: "EMPLOYEE", branchIds: [branchAId] });
   });
 
   afterAll(async () => {

@@ -2,6 +2,7 @@ import request from "supertest";
 import bcrypt from "bcrypt";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 describe("Permisos de egresos de caja", () => {
   const runId = Date.now();
@@ -28,7 +29,7 @@ describe("Permisos de egresos de caja", () => {
     branchId = branch.id;
 
     const password = await bcrypt.hash(employeeCreds.password, 10);
-    const [, manager] = await Promise.all([
+    const [employee, manager] = await Promise.all([
       prisma.user.create({
         data: {
           name: `Robot Egreso Empleado ${runId}`,
@@ -61,14 +62,8 @@ describe("Permisos de egresos de caja", () => {
     });
     cashRegisterId = cashRegister.id;
 
-    const employeeLogin = await request(app)
-      .post("/api/users/login")
-      .send(employeeCreds);
-    const managerLogin = await request(app)
-      .post("/api/users/login")
-      .send(managerCreds);
-    employeeToken = employeeLogin.body.token;
-    managerToken = managerLogin.body.token;
+    employeeToken = generateTestToken({ userId: employee.id, role: "EMPLOYEE", branchIds: [branchId] });
+    managerToken = generateTestToken({ userId: managerId, role: "ENCARGADO", branchIds: [branchId] });
   });
 
   afterAll(async () => {

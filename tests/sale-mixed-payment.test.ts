@@ -2,6 +2,7 @@ import request from "supertest";
 import bcrypt from "bcrypt";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 describe("POS ERP: ventas con pagos multiples", () => {
   const runId = Date.now();
@@ -61,11 +62,7 @@ describe("POS ERP: ventas con pagos multiples", () => {
     });
     cashRegisterId = cashRegister.id;
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(operatorCreds);
-
-    operatorToken = loginResponse.body.token;
+    operatorToken = generateTestToken({ userId: operatorId, role: "ENCARGADO", branchIds: [branchId] });
   });
 
   afterAll(async () => {

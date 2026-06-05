@@ -18,6 +18,7 @@
  */
 import { Response, Request } from "express";
 import { logger } from '../../config/logger';
+import { attachCsrfToken } from "../../middlewares/csrf.middleware";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
@@ -151,6 +152,9 @@ export const authenticateUser = async (req: Request, res: Response) => {
       sameSite,
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     });
+
+    // Rotate XSRF-TOKEN on login so the client's Axios picks up a fresh one
+    attachCsrfToken(req, res);
 
     res.status(200).json({
       message: "Inicio de sesion exitoso.",
