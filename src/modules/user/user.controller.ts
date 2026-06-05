@@ -640,8 +640,57 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const result = await prisma.user.deleteMany({
+    // Delete in FK-safe order: dependent records first, then users
+    const usersToDelete = await prisma.user.findMany({
       where: { role },
+      select: { id: true },
+    });
+    const userIds = usersToDelete.map((u) => u.id);
+
+    // Find sale IDs for these users before the transaction (to cascade children)
+    const userSales = await prisma.sale.findMany({
+      where: { userId: { in: userIds } },
+      select: { id: true },
+    });
+    const saleIds = userSales.map((s) => s.id);
+
+    const result = await prisma.$transaction(async (tx) => {
+      // Cascade-delete all FK-dependent records before deleting users.
+      // Order matters: children before parents, grandchildren before children.
+      // This is a nuclear admin-only operation — data loss is intentional.
+
+      // Sale children
+      if (saleIds.length > 0) {
+        await tx.return.deleteMany({ where: { saleId: { in: saleIds } } });
+        await tx.saleItem.deleteMany({ where: { saleId: { in: saleIds } } });
+        await tx.internalReceipt.deleteMany({ where: { saleId: { in: saleIds } } });
+      }
+
+      // Payments (both sale-linked and account payments) referencing these users
+      await tx.payment.deleteMany({ where: { userId: { in: userIds } } });
+
+      // Sales
+      await tx.sale.deleteMany({ where: { userId: { in: userIds } } });
+
+      // Cash register children
+      const cashRegisters = await tx.cashRegister.findMany({
+        where: { userId: { in: userIds } },
+        select: { id: true },
+      });
+      const cashRegisterIds = cashRegisters.map((cr) => cr.id);
+      if (cashRegisterIds.length > 0) {
+        await tx.expense.deleteMany({ where: { cashRegisterId: { in: cashRegisterIds } } });
+        await tx.internalReceipt.deleteMany({ where: { cashRegisterId: { in: cashRegisterIds } } });
+        await tx.cashRegister.deleteMany({ where: { userId: { in: userIds } } });
+      }
+
+      // Other user-referenced tables
+      await tx.syncOperation.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.movement.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.expense.deleteMany({ where: { userId: { in: userIds } } });
+      await tx.auditLog.deleteMany({ where: { actorUserId: { in: userIds } } });
+
+      return tx.user.deleteMany({ where: { role } });
     });
 
     const authUser = getAuthUser(req);

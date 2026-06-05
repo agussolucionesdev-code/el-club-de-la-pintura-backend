@@ -191,7 +191,7 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
       .send({});
 
     expect(response.status).toBe(400);
-    expect(response.body.error).toContain("Confirmacion requerida");
+    expect(response.body.error).toMatch(/confirmaci[oó]n requerida/i);
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
