@@ -505,7 +505,7 @@ export const getPayrollReceiptPdf = async (req: AuthRequest, res: Response) => {
       "", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
       "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
     ];
-    const periodLabel = `${monthNames[parseInt(month, 10)]} ${year}`;
+    const periodLabel = `${monthNames[parseInt(month ?? "1", 10)]} ${year}`;
 
     const baseSalary = toNumber(record.baseSalary);
     const advances   = toNumber(record.advances);

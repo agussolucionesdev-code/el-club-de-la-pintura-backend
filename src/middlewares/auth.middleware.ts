@@ -1,5 +1,5 @@
 ﻿import { Request, Response, NextFunction } from "express";
-import { logger } from '../config/logger';
+import { logger } from "../config/logger";
 import jwt, { JwtPayload } from "jsonwebtoken";
 
 export interface AuthenticatedUser {
@@ -49,24 +49,25 @@ export const authenticateToken = (
   next: NextFunction,
 ) => {
   try {
-    const authHeader = req.headers.authorization;
-
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        error: "Acceso denegado. Se requiere un token de seguridad.",
-      });
-    }
-
-    const token = authHeader.split(" ")[1];
     const secret = process.env.JWT_SECRET;
-
     if (!secret) {
       throw new Error("JWT_SECRET no detectado en las variables de entorno.");
     }
 
+    // Priority 1: HttpOnly cookie (secure, XSS-resistant)
+    // Priority 2: Bearer token header (kept for backwards compat during transition)
+    let token: string | undefined = req.cookies?.club_token;
+
+    if (!token) {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith("Bearer ")) {
+        token = authHeader.split(" ")[1];
+      }
+    }
+
     if (!token) {
       return res.status(401).json({
-        error: "Estructura de token invalida.",
+        error: "Acceso denegado. Se requiere un token de seguridad.",
       });
     }
 
@@ -80,7 +81,6 @@ export const authenticateToken = (
     }
 
     req.user = authenticatedUser;
-
     next();
   } catch (error) {
     logger.error("Fallo critico en validacion de identidad:", error);

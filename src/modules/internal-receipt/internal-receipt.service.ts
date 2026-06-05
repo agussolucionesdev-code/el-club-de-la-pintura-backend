@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import type { PrismaTx } from "../../config/db";
 
 type InternalReceiptType =
   | "SALE"
@@ -56,7 +57,7 @@ export const buildInternalReceiptNumber = ({
 };
 
 export const createInternalReceipt = async (
-  tx: Prisma.TransactionClient,
+  tx: PrismaTx | Prisma.TransactionClient,
   input: CreateInternalReceiptInput,
 ) => {
   const receiptNumber = buildInternalReceiptNumber(input);

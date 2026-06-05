@@ -377,7 +377,7 @@ const replaySaleOperation = async (
       });
     }
 
-    const createdPayments: Payment[] = [];
+    const createdPayments: { id: number; amount: number; paymentMethod: string }[] = [];
     for (const payment of immediatePayments) {
       const createdPayment = await tx.payment.create({
         data: {

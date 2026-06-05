@@ -15,49 +15,49 @@ datasource db {
 
 // Manage physical branches and locations
 model Branch {
-  id            Int            @id @default(autoincrement())
-  name          String
-  location      String?
-  isActive      Boolean        @default(true)
+  id       Int     @id @default(autoincrement())
+  name     String
+  location String?
+  isActive Boolean @default(true)
 
-  users         User[]         // M:N: Employees assigned to this branch
-  stocks        Stock[]
-  movements     Movement[]
-  sales         Sale[]
-  payments      Payment[]  // Track physical money entering this branch
+  users     User[] // M:N: Employees assigned to this branch
+  stocks    Stock[]
+  movements Movement[]
+  sales     Sale[]
+  payments  Payment[] // Track physical money entering this branch
 
   // Track shifts in this branch
   cashRegisters CashRegister[]
 
   // NEW: Track daily operational expenses for this branch
-  expenses      Expense[]
+  expenses Expense[]
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Manage system users, credentials and roles
 model User {
-  id            Int            @id @default(autoincrement())
-  name          String
-  email         String         @unique
-  password      String     
-  role          String         @default("EMPLOYEE") 
-  
-  branches      Branch[]   // M:N: Branches this user can operate in
-  
-  movements     Movement[] 
-  sales         Sale[]     
-  payments      Payment[]  // Track which employee collected the money
-  
-  // Track shifts opened by this user
-  cashRegisters CashRegister[] 
-  
-  // NEW: Track which employee registered an expense
-  expenses      Expense[]
+  id       Int    @id @default(autoincrement())
+  name     String
+  email    String @unique
+  password String
+  role     String @default("EMPLOYEE")
 
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  branches Branch[] // M:N: Branches this user can operate in
+
+  movements Movement[]
+  sales     Sale[]
+  payments  Payment[] // Track which employee collected the money
+
+  // Track shifts opened by this user
+  cashRegisters CashRegister[]
+
+  // NEW: Track which employee registered an expense
+  expenses Expense[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
@@ -65,27 +65,27 @@ model User {
 // ==========================================
 // Store client profiles, contractors, and companies
 model Customer {
-  id              Int       @id @default(autoincrement())
-  name            String
-  document        String?   @unique // DNI or CUIT
-  type            String    @default("CONSUMER") // e.g., CONSUMER, CONTRACTOR, COMPANY, FAMILY
-  phone           String?
-  email           String?
-  address         String?
+  id       Int     @id @default(autoincrement())
+  name     String
+  document String? @unique // DNI or CUIT
+  type     String  @default("CONSUMER") // e.g., CONSUMER, CONTRACTOR, COMPANY, FAMILY
+  phone    String?
+  email    String?
+  address  String?
 
   // Credit control fields
-  creditLimit     Int       @default(0)  // Maximum allowed outstanding balance (0 = unlimited)
-  defaultDiscount Int       @default(0)  // Automatic discount percentage applied in POS (0–100)
+  creditLimit     Int @default(0) // Maximum allowed outstanding balance (0 = unlimited)
+  defaultDiscount Int @default(0) // Automatic discount percentage applied in POS (0–100)
 
   // ==========================================
   // INYECCIÓN DE SEGURIDAD FISCAL (Soft Delete)
   // ==========================================
-  isActive    Boolean   @default(true)
+  isActive Boolean @default(true)
 
-  sales       Sale[]    // Relate billing and debts to this specific customer
+  sales Sale[] // Relate billing and debts to this specific customer
 
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
@@ -93,156 +93,156 @@ model Customer {
 // ==========================================
 // Store supplier companies and contact representatives for WhatsApp orders
 model Supplier {
-  id            Int       @id @default(autoincrement())
-  companyName   String    // Name of the company (e.g., Alba, Sherwin Williams)
-  cuit          String?   @unique
-  contactName   String?   // Representative (e.g., "Juan Perez - Corredor")
-  phone         String    // CRITICAL: Used for WhatsApp integration
-  email         String?
-  address       String?
-  isActive      Boolean   @default(true) // Soft delete
+  id          Int     @id @default(autoincrement())
+  companyName String // Name of the company (e.g., Alba, Sherwin Williams)
+  cuit        String? @unique
+  contactName String? // Representative (e.g., "Juan Perez - Corredor")
+  phone       String // CRITICAL: Used for WhatsApp integration
+  email       String?
+  address     String?
+  isActive    Boolean @default(true) // Soft delete
 
-  products      Product[] // M:1: Products supplied by this company
+  products Product[] // M:1: Products supplied by this company
 
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Manage central product catalog and financial pricing
 model Product {
-  id             Int        @id @default(autoincrement())
-  sku            String     @unique 
-  barcode        String?    @unique 
-  
-  name           String     
-  brand          String     
-  category       String     
-  description    String?
-  
+  id      Int     @id @default(autoincrement())
+  sku     String  @unique
+  barcode String? @unique
+
+  name        String
+  brand       String
+  category    String
+  description String?
+
   // 🛡️ MOTOR FINANCIERO ERP
-  costPrice      Float?    // Costo del Proveedor (Sin IVA)
-  profitMargin   Float      @default(30.0) // Margen de Ganancia (%)
-  ivaPercentage  Float      @default(21.0) // Impuesto (%)
-  retailPrice    Float?    // Precio Final al Público
-  wholesalePrice Float?    // Precio Mayorista (Opcional)
+  costPrice      Decimal? @db.Decimal(14, 4) // Costo del Proveedor (Sin IVA)
+  profitMargin   Decimal  @default(30.0) @db.Decimal(7, 4) // Margen de Ganancia (%)
+  ivaPercentage  Decimal  @default(21.0) @db.Decimal(7, 4) // Impuesto (%)
+  retailPrice    Decimal? @db.Decimal(14, 4) // Precio Final al Público
+  wholesalePrice Decimal? @db.Decimal(14, 4) // Precio Mayorista (Opcional)
 
-  color          String?  
-  finish         String?  
-  volume         Float?   
-  volumeUnit     String?  
-  indoorOutdoor  Boolean    @default(true)
-  baseType       String?  
-  metadata       Json?
-  images         String[]   @default([]) 
-  
-  isActive       Boolean    @default(true) 
-  
-  supplierId     Int?
-  supplier       Supplier?  @relation(fields: [supplierId], references: [id])
+  color         String?
+  finish        String?
+  volume        Float?
+  volumeUnit    String?
+  indoorOutdoor Boolean  @default(true)
+  baseType      String?
+  metadata      Json?
+  images        String[] @default([])
 
-  stocks         Stock[]    
-  movements      Movement[] 
-  saleItems      SaleItem[] 
-  
-  createdAt      DateTime   @default(now())
-  updatedAt      DateTime   @updatedAt
+  isActive Boolean @default(true)
+
+  supplierId Int?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  stocks    Stock[]
+  movements Movement[]
+  saleItems SaleItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // Manage physical inventory levels per branch
 model Stock {
-  id            Int      @id @default(autoincrement())
-  quantity      Int      @default(0) 
-  minStock      Int      @default(5) 
-  
+  id       Int @id @default(autoincrement())
+  quantity Int @default(0)
+  minStock Int @default(5)
+
   // INYECCIÓN RECUPERADA: Semáforo Dinámico
-  criticalStock Int      @default(0) 
-  
-  productId     Int
-  product       Product  @relation(fields: [productId], references: [id])
-  
-  branchId      Int
-  branch        Branch   @relation(fields: [branchId], references: [id])
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  criticalStock Int @default(0)
+
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@unique([productId, branchId])
 }
 
 // Track every physical movement of goods (Audit Trail)
 model Movement {
-  id        Int      @id @default(autoincrement())
-  type      String   // IN, OUT, ADJUST
-  quantity  Int      
-  reason    String?  
-  
-  productId Int
-  product   Product  @relation(fields: [productId], references: [id])
-  
-  branchId  Int
-  branch    Branch   @relation(fields: [branchId], references: [id])
-  
-  userId    Int      
-  user      User     @relation(fields: [userId], references: [id])
+  id       Int     @id @default(autoincrement())
+  type     String // IN, OUT, ADJUST
+  quantity Int
+  reason   String?
 
-  createdAt DateTime @default(now()) 
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
 }
 
 // ==========================================
 // SHIFT & CASH REGISTER MODULE
 // ==========================================
 model CashRegister {
-  id              Int       @id @default(autoincrement())
-  openingTime     DateTime  @default(now())
-  closingTime     DateTime? // Null means the shift is currently OPEN
-  
-  initialBalance  Float     // Fondo de caja (Sencillo para dar vuelto)
-  expectedBalance Float?    // Calculado por el sistema al cerrar
-  actualBalance   Float?    // Contado por el empleado al cerrar
-  discrepancy     Float?    // Diferencia (Sobrante o Faltante)
-  
-  status          String    @default("OPEN") // OPEN, CLOSED
-  observations    String?   // Notas sobre faltantes o retiros
-  
-  userId          Int       // Empleado que abrió la caja
-  user            User      @relation(fields: [userId], references: [id])
-  
-  branchId        Int       // Sucursal donde se operó
-  branch          Branch    @relation(fields: [branchId], references: [id])
+  id          Int       @id @default(autoincrement())
+  openingTime DateTime  @default(now())
+  closingTime DateTime? // Null means the shift is currently OPEN
 
-  sales           Sale[]    // Ventas vinculadas a este turno
-  payments        Payment[] // Cobranzas vinculadas a este turno
-  
+  initialBalance  Decimal  @db.Decimal(14, 2) // Fondo de caja (Sencillo para dar vuelto)
+  expectedBalance Decimal? @db.Decimal(14, 2) // Calculado por el sistema al cerrar
+  actualBalance   Decimal? @db.Decimal(14, 2) // Contado por el empleado al cerrar
+  discrepancy     Decimal? @db.Decimal(14, 2) // Diferencia (Sobrante o Faltante)
+
+  status       String  @default("OPEN") // OPEN, CLOSED
+  observations String? // Notas sobre faltantes o retiros
+
+  userId Int // Empleado que abrió la caja
+  user   User @relation(fields: [userId], references: [id])
+
+  branchId Int // Sucursal donde se operó
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  sales    Sale[] // Ventas vinculadas a este turno
+  payments Payment[] // Cobranzas vinculadas a este turno
+
   // NEW: Gastos operativos que salieron del cajón durante este turno
-  expenses        Expense[] 
+  expenses Expense[]
 
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 // ==========================================
 // NEW: EXPENSE MODULE (Gastos Operativos diarios)
 // ==========================================
 model Expense {
-  id              Int           @id @default(autoincrement())
-  amount          Float         // Dinero físico retirado de la caja
-  reason          String        // Ej: "Compra lavandina", "Pago a fletero"
-  category        String        // Ej: "LIMPIEZA", "LOGISTICA", "OTROS"
-  
+  id       Int     @id @default(autoincrement())
+  amount   Decimal @db.Decimal(14, 2) // Dinero físico retirado de la caja
+  reason   String // Ej: "Compra lavandina", "Pago a fletero"
+  category String // Ej: "LIMPIEZA", "LOGISTICA", "OTROS"
+
   // INYECCIÓN RECUPERADA: Clasificación Financiera Estructural (Fijo vs Variable)
-  type            String        @default("VARIABLE") // "FIXED" or "VARIABLE"
-  
+  type String @default("VARIABLE") // "FIXED" or "VARIABLE"
+
   // Link to the exact shift from which the money was taken
-  cashRegisterId  Int
-  cashRegister    CashRegister  @relation(fields: [cashRegisterId], references: [id])
+  cashRegisterId Int
+  cashRegister   CashRegister @relation(fields: [cashRegisterId], references: [id])
 
-  userId          Int           // Employee who registered the expense
-  user            User          @relation(fields: [userId], references: [id])
+  userId Int // Employee who registered the expense
+  user   User @relation(fields: [userId], references: [id])
 
-  branchId        Int           
-  branch          Branch        @relation(fields: [branchId], references: [id])
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
 
-  createdAt       DateTime      @default(now())
+  createdAt DateTime @default(now())
 }
 
 // ------------------------------------------------------
@@ -251,68 +251,89 @@ model Expense {
 
 // Generate billing tickets and track pending balances (Fiados)
 model Sale {
-  id            Int        @id @default(autoincrement())
-  totalAmount   Float      
-  paymentMethod String     // CASH, CARD, CREDIT_ACCOUNT
-  
-  status        String     @default("PAID") // PAID, PENDING, PARTIAL
-  balance       Float      @default(0)      // Pending amount to be paid
-  pickedUpBy    String?    // Name/ID of the person who physically took the items
-  
-  customerId    Int?
-  customer      Customer?  @relation(fields: [customerId], references: [id])
+  id            Int     @id @default(autoincrement())
+  totalAmount   Decimal @db.Decimal(14, 2)
+  paymentMethod String // CASH, CARD, CREDIT_ACCOUNT
 
-  branchId      Int
-  branch        Branch     @relation(fields: [branchId], references: [id])
-  
-  userId        Int        
-  user          User       @relation(fields: [userId], references: [id])
-  
+  status     String  @default("PAID") // PAID, PENDING, PARTIAL
+  balance    Decimal @default(0) @db.Decimal(14, 2) // Pending amount to be paid
+  pickedUpBy String? // Name/ID of the person who physically took the items
+
+  customerId Int?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
   // Link to the active shift
   cashRegisterId Int?
   cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
-  
-  items         SaleItem[] 
-  payments      Payment[]  // Link partial or full payments to this ticket
-  
-  createdAt     DateTime   @default(now())
+
+  items    SaleItem[]
+  payments Payment[] // Link partial or full payments to this ticket
+  returns  Return[] // Partial or full returns against this sale
+
+  createdAt DateTime @default(now())
 }
 
 // Record individual billing rows with frozen historical costs
 model SaleItem {
-  id          Int      @id @default(autoincrement())
-  quantity    Int      
-  unitPrice   Float    
-  subtotal    Float    
-  unitCost    Float?   // Frozen cost snapshot
-  
-  saleId      Int
-  sale        Sale     @relation(fields: [saleId], references: [id])
-  
-  productId   Int
-  product     Product  @relation(fields: [productId], references: [id])
+  id        Int      @id @default(autoincrement())
+  quantity  Int
+  unitPrice Decimal  @db.Decimal(14, 4)
+  subtotal  Decimal  @db.Decimal(14, 2)
+  unitCost  Decimal? @db.Decimal(14, 4) // Frozen cost snapshot
+
+  saleId Int
+  sale   Sale @relation(fields: [saleId], references: [id])
+
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
 }
 
 // Register physical money entering the drawer (Cash Flow)
 model Payment {
-  id            Int      @id @default(autoincrement())
-  amount        Float    // Physical money collected
-  paymentMethod String   // CASH, TRANSFER, etc.
+  id            Int     @id @default(autoincrement())
+  amount        Decimal @db.Decimal(14, 2) // Physical money collected
+  paymentMethod String // CASH, TRANSFER, etc.
 
-  saleId        Int
-  sale          Sale     @relation(fields: [saleId], references: [id])
+  saleId Int
+  sale   Sale @relation(fields: [saleId], references: [id])
 
-  userId        Int      // Cashier who collected the money
-  user          User     @relation(fields: [userId], references: [id])
+  userId Int // Cashier who collected the money
+  user   User @relation(fields: [userId], references: [id])
 
-  branchId      Int
-  branch        Branch   @relation(fields: [branchId], references: [id])
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
 
   // Link to the active shift
   cashRegisterId Int?
   cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
 
-  createdAt     DateTime @default(now())
+  createdAt DateTime @default(now())
+}
+
+// ==========================================
+// RMA & RETURNS MODULE
+// ==========================================
+model Return {
+  id             Int      @id @default(autoincrement())
+  saleId         Int
+  sale           Sale     @relation(fields: [saleId], references: [id])
+  reason         String
+  branchId       Int
+  createdById    Int
+  totalRefund    Decimal  @db.Decimal(14, 2)
+  // JSON snapshot: [{saleItemId, productId, quantity, refundedUnitPrice}]
+  items          Json
+  cashRegisterId Int?
+  createdAt      DateTime @default(now())
+
+  @@index([saleId])
+  @@index([branchId])
 }
 
 // ------------------------------------------------------
@@ -428,15 +449,15 @@ model InternalReceipt {
 // ==========================================
 
 model Employee {
-  id           Int             @id @default(autoincrement())
-  userId       Int             @unique
-  position     String          // e.g. "Vendedor", "Encargado"
-  salaryType   String          @default("FIXED") // FIXED | HOURLY | COMMISSION
-  baseSalary   Decimal         @db.Decimal(12, 2)
-  branchId     Int
-  isActive     Boolean         @default(true)
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
+  id         Int      @id @default(autoincrement())
+  userId     Int      @unique
+  position   String // e.g. "Vendedor", "Encargado"
+  salaryType String   @default("FIXED") // FIXED | HOURLY | COMMISSION
+  baseSalary Decimal  @db.Decimal(12, 2)
+  branchId   Int
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   payrollRecords PayrollRecord[]
 
@@ -448,7 +469,7 @@ model PayrollRecord {
   id           Int       @id @default(autoincrement())
   employeeId   Int
   employee     Employee  @relation(fields: [employeeId], references: [id])
-  period       String    // "YYYY-MM"
+  period       String // "YYYY-MM"
   baseSalary   Decimal   @db.Decimal(12, 2)
   advances     Decimal   @default(0) @db.Decimal(12, 2)
   bonuses      Decimal   @default(0) @db.Decimal(12, 2)

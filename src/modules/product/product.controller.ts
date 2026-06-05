@@ -17,7 +17,7 @@
 // HTTP and ORM interface imports
 import { logger } from '../../config/logger';
 import { Request, Response } from "express";
-import prisma from "../../config/db";
+import prisma, { PrismaTx } from "../../config/db";
 import { Prisma } from "@prisma/client";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 // Processing and storage utility imports
@@ -78,7 +78,7 @@ const isOperationalProductError = (error: unknown) =>
     error.message.includes("sucursal indicada"));
 
 const applyCatalogStockSnapshot = async (
-  tx: Prisma.TransactionClient,
+  tx: PrismaTx | Prisma.TransactionClient,
   {
     productId,
     branchId,

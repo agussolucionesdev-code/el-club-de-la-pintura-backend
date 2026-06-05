@@ -140,9 +140,20 @@ export const authenticateUser = async (req: Request, res: Response) => {
       },
     );
 
+    const isProduction = process.env.NODE_ENV === "production";
+    // Use 'none' for cross-origin deployments (Vercel frontend + Render backend).
+    // Use 'lax' for same-domain deployments. Controlled via COOKIE_SAME_SITE env var.
+    const sameSite = (process.env.COOKIE_SAME_SITE as "none" | "lax" | "strict") ?? "lax";
+
+    res.cookie("club_token", token, {
+      httpOnly: true,
+      secure: isProduction || sameSite === "none",
+      sameSite,
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    });
+
     res.status(200).json({
       message: "Inicio de sesion exitoso.",
-      token,
       user: {
         id: user.id,
         name: user.name,
@@ -656,6 +667,20 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
  *
  * @body confirmationPhrase - Must equal `"CONFIRMAR_BORRADO"`.
  */
+/**
+ * POST /users/logout
+ *
+ * Clears the HttpOnly session cookie. Safe to call even when already logged out.
+ */
+export const logoutUser = (_req: Request, res: Response) => {
+  res.clearCookie("club_token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production" || process.env.COOKIE_SAME_SITE === "none",
+    sameSite: (process.env.COOKIE_SAME_SITE as "none" | "lax" | "strict") ?? "lax",
+  });
+  res.status(200).json({ message: "Sesion cerrada correctamente." });
+};
+
 export const deleteAllOperationalRoleUsers = async (
   req: AuthRequest,
   res: Response,

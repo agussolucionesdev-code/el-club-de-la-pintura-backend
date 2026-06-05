@@ -298,7 +298,7 @@ export const cancelSale = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      const refundPayments: Payment[] = [];
+      const refundPayments: { id: number }[] = [];
       if (originalPayments.length > 0) {
         if (!refundCashRegisterId) {
           throw new Error(
@@ -588,7 +588,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      const createdPayments: Payment[] = [];
+      const createdPayments: { id: number; amount: number; paymentMethod: string }[] = [];
       for (const payment of immediatePayments) {
         const createdPayment = await tx.payment.create({
           data: {

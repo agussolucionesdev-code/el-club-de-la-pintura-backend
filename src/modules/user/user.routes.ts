@@ -10,6 +10,7 @@ import {
 } from "../../schemas/user.schema";
 import {
   authenticateUser,
+  logoutUser,
   retrieveWorkforceDirectory,
   onboardEmployee,
   modifyEmployeeProfile,
@@ -36,6 +37,7 @@ const loginRateLimiter = rateLimit({
 });
 
 router.post("/login", loginRateLimiter, authenticateUser);
+router.post("/logout", logoutUser);
 
 router.get("/me", authenticateToken, getCurrentUserProfile);
 router.patch("/me", authenticateToken, updateMyProfile);

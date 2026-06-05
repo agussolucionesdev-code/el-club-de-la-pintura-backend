@@ -14,7 +14,7 @@
  */
 import { Response } from "express";
 import { Prisma, Stock } from "@prisma/client";
-import prisma from "../../config/db";
+import prisma, { PrismaTx } from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 
@@ -105,7 +105,7 @@ const parseSupplierId = (value: unknown) => {
 };
 
 const assertPurchaseReferences = async (
-  tx: Prisma.TransactionClient,
+  tx: PrismaTx | Prisma.TransactionClient,
   items: PurchaseItem[],
   supplierId: number | null,
 ): Promise<PurchaseReferenceSnapshot> => {
