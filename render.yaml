@@ -13,12 +13,23 @@ services:
         value: production
       - key: DATABASE_URL
         sync: false
+      # IMPORTANT: Set JWT_SECRET to a strong, stable secret in Render's
+      # environment secrets. Do NOT use generateValue — it rotates on every
+      # deploy, logging out all active users.
       - key: JWT_SECRET
-        generateValue: true
+        sync: false
       - key: JWT_EXPIRES_IN
-        value: 24h
+        value: 8h
       - key: ADMIN_ONBOARD_SECRET
         generateValue: true
+      # Required for initial admin user creation on first deploy:
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # Use 'none' for cross-origin Vercel+Render deployment, 'lax' for same-domain:
+      - key: COOKIE_SAME_SITE
+        value: none
       - key: FRONTEND_URL
         sync: false
       - key: CLOUDINARY_CLOUD_NAME
