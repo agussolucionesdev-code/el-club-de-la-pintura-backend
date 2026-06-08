@@ -98,7 +98,22 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
 
       ensureBranchAccess(sale.branchId, authUser);
 
-      // ── 2. Validate each requested item against the original sale ─────────────
+      // ── 2a. Load all previous returns to compute already-returned quantities ──
+      const previousReturns = await tx.return.findMany({
+        where: { saleId },
+        select: { items: true },
+      });
+
+      // Build a map: saleItemId → total units already returned across all returns
+      const alreadyReturned = new Map<number, number>();
+      for (const prev of previousReturns) {
+        const prevItems = (prev.items ?? []) as { saleItemId: number; quantity: number }[];
+        for (const pi of prevItems) {
+          alreadyReturned.set(pi.saleItemId, (alreadyReturned.get(pi.saleItemId) ?? 0) + pi.quantity);
+        }
+      }
+
+      // ── 2b. Validate each requested item against original qty and remaining qty ─
       const returnLineItems: {
         saleItemId: number;
         productId: number;
@@ -112,9 +127,18 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
         if (!originalItem) {
           throw new Error(`El ítem ${req.saleItemId} no pertenece a esta venta.`);
         }
-        if (req.quantity > originalItem.quantity) {
+
+        const previouslyReturned = alreadyReturned.get(req.saleItemId) ?? 0;
+        const remainingReturnable = originalItem.quantity - previouslyReturned;
+
+        if (req.quantity <= 0) {
+          throw new Error(`La cantidad a devolver debe ser positiva.`);
+        }
+        if (req.quantity > remainingReturnable) {
           throw new Error(
-            `No se pueden devolver ${req.quantity} unidades de "${originalItem.product.name}": la venta solo tiene ${originalItem.quantity}.`,
+            `No se pueden devolver ${req.quantity} unidades de "${originalItem.product.name}": ` +
+            `ya se devolvieron ${previouslyReturned} y la venta original tenía ${originalItem.quantity} ` +
+            `(quedan ${remainingReturnable} devolvibles).`,
           );
         }
         returnLineItems.push({

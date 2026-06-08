@@ -2,9 +2,11 @@
 module.exports = {
   preset: "ts-jest",
   testEnvironment: "node",
-  // Le decimos al robot dónde buscar los archivos de prueba
   roots: ["<rootDir>/tests"],
-  // Ignoramos la carpeta de compilación por si acaso
   testPathIgnorePatterns: ["/node_modules/", "/dist/"],
   testTimeout: 30000,
+  // Ensure a known JWT_SECRET is available for token signing in tests.
+  // The real .env value is NOT loaded by Jest — tests must be hermetic.
+  testEnvironmentOptions: {},
+  setupFiles: ["<rootDir>/tests/helpers/setup.ts"],
 };

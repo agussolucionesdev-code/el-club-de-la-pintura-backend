@@ -3,7 +3,7 @@ import { logger } from './config/logger';
 import "dotenv/config";
 
 // Core modules and utilities
-import express, { Application, Request, Response } from "express";
+import express, { Application, Request, Response, NextFunction } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
@@ -15,6 +15,7 @@ import {
   notFoundHandler,
 } from "./middlewares/error.middleware";
 import { serializeDecimals } from "./middlewares/serialize.middleware";
+import { csrfProtection, attachCsrfToken } from "./middlewares/csrf.middleware";
 
 // Modular routers (feature-first architecture)
 import branchRoutes from "./modules/branch/branch.routes";
@@ -75,7 +76,40 @@ app.use(serializeDecimals);
 app.use("/api", globalRateLimiter);
 
 // ============================================================================
-// 2. DIAGNOSTIC ENDPOINTS
+// 2. CSRF SETUP
+// ============================================================================
+// The XSRF-TOKEN cookie (readable by JS) is issued on every GET request so
+// Axios always has a fresh token before any state-changing request is made.
+// POST /PUT /PATCH /DELETE must carry X-XSRF-TOKEN matching the cookie.
+//
+// Exempt routes:
+//   POST /api/users/login  — no session cookie exists yet; GET /api/users/me
+//                            always fires first (AuthContext), setting the token
+//   POST /api/users/logout — clearing cookies; nothing sensitive to protect
+
+// Issue/refresh XSRF-TOKEN cookie on every GET so Axios always has a fresh one
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (req.method === "GET") attachCsrfToken(req, res);
+  next();
+});
+
+// CSRF protection: validate X-XSRF-TOKEN on all mutating requests except the
+// two routes listed below (login has no prior token; logout is idempotent).
+const CSRF_EXEMPT = new Set([
+  "/api/users/login",
+  "/api/users/logout",
+]);
+
+app.use((req: Request, res: Response, next: NextFunction) => {
+  // Skip CSRF in the test environment — supertest does not manage cookies
+  if (process.env.NODE_ENV === "test") return next();
+  if (CSRF_EXEMPT.has(req.path)) return next();
+  csrfProtection(req, res, next);
+});
+
+// ============================================================================
+// 3. DIAGNOSTIC ENDPOINTS (registered after CSRF so GET /api/health also
+//    issues the XSRF-TOKEN cookie for uptime monitors / initial page loads)
 // ============================================================================
 app.get("/api/health", (_req: Request, res: Response) => {
   res.status(200).json({
@@ -85,7 +119,7 @@ app.get("/api/health", (_req: Request, res: Response) => {
 });
 
 // ============================================================================
-// 3. BUSINESS ROUTES (REST API)
+// 4. BUSINESS ROUTES (REST API)
 // ============================================================================
 app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);
@@ -118,43 +152,45 @@ app.use(globalErrorHandler);
 // ============================================================================
 
 /**
- * Ensures a default admin user exists in the database on every startup.
- * Uses the ADMIN_EMAIL / ADMIN_PASSWORD env vars (falls back to dev defaults).
- * This is an idempotent upsert — safe to run on every boot.
- * Prevents the "no admin user in production" problem after fresh deploys.
+ * One-time admin bootstrap: creates the initial admin user when the DB is
+ * empty. Requires ADMIN_EMAIL and ADMIN_PASSWORD env vars to be explicitly
+ * set. If either is missing, bootstrap is skipped and a warning is logged —
+ * no hardcoded credentials exist in production.
+ *
+ * This function is idempotent: if the admin already exists it does nothing.
+ * It does NOT overwrite the password on subsequent restarts.
  */
-async function ensureAdminUser(): Promise<void> {
+async function bootstrapAdminIfNeeded(): Promise<void> {
+  const email    = process.env.ADMIN_EMAIL;
+  const password = process.env.ADMIN_PASSWORD;
+  const name     = process.env.ADMIN_NAME || "Administrador";
+
+  if (!email || !password) {
+    logger.warn(
+      "[STARTUP] ADMIN_EMAIL or ADMIN_PASSWORD not set — skipping admin bootstrap. " +
+      "Set both env vars to create the initial admin user."
+    );
+    return;
+  }
+
   const { default: prisma } = await import("./config/db");
   const bcrypt = await import("bcrypt");
 
-  const email    = process.env.ADMIN_EMAIL    || "admin@clubpintura.local";
-  const password = process.env.ADMIN_PASSWORD || process.env.SEED_DEFAULT_PASSWORD || "ClubPintura2026!";
-  const name     = process.env.ADMIN_NAME     || "Administrador";
-
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
-
     if (existing) {
-      // Always keep the admin password in sync with the configured value.
-      // This guarantees the account is always recoverable after a fresh deploy.
-      const passwordHash = await bcrypt.hash(password, 10);
-      await prisma.user.update({
-        where: { email },
-        data: { password: passwordHash, name },
-      });
-      logger.info(`Admin user synced: ${email}`);
+      logger.info(`[STARTUP] Admin user already exists: ${email} — no changes made.`);
       return;
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
 
-    // Ensure at least one branch exists
     let branch = await prisma.branch.findFirst({ orderBy: { id: "asc" } });
     if (!branch) {
       branch = await prisma.branch.create({
         data: { name: "Casa Central", location: "Principal" },
       });
-      logger.info("Created default branch: Casa Central");
+      logger.info("[STARTUP] Created default branch: Casa Central");
     }
 
     await prisma.user.create({
@@ -167,97 +203,9 @@ async function ensureAdminUser(): Promise<void> {
       },
     });
 
-    logger.info(`Admin user created: ${email}`);
+    logger.info(`[STARTUP] Admin user created: ${email}`);
   } catch (err) {
-    // Non-fatal — log and continue. The app should still start.
-    logger.error("Failed to ensure admin user on startup:", err);
-  }
-}
-
-/**
- * Ensures payroll tables exist using raw SQL (CREATE TABLE IF NOT EXISTS).
- * This bypasses Prisma migrate entirely — safe to run on every boot.
- * Required because the original baseline migration predates payroll models.
- */
-async function ensurePayrollTables(): Promise<void> {
-  const { default: prisma } = await import("./config/db");
-  try {
-    await prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "Employee" (
-        "id"         SERIAL        NOT NULL,
-        "userId"     INTEGER       NOT NULL,
-        "position"   TEXT          NOT NULL,
-        "salaryType" TEXT          NOT NULL DEFAULT 'FIXED',
-        "baseSalary" DECIMAL(12,2) NOT NULL,
-        "branchId"   INTEGER       NOT NULL,
-        "isActive"   BOOLEAN       NOT NULL DEFAULT true,
-        "createdAt"  TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        "updatedAt"  TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT "Employee_pkey" PRIMARY KEY ("id")
-      );
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "Employee_userId_key" ON "Employee"("userId");
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE INDEX IF NOT EXISTS "Employee_branchId_idx" ON "Employee"("branchId");
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE TABLE IF NOT EXISTS "PayrollRecord" (
-        "id"           SERIAL        NOT NULL,
-        "employeeId"   INTEGER       NOT NULL,
-        "period"       TEXT          NOT NULL,
-        "baseSalary"   DECIMAL(12,2) NOT NULL,
-        "advances"     DECIMAL(12,2) NOT NULL DEFAULT 0,
-        "bonuses"      DECIMAL(12,2) NOT NULL DEFAULT 0,
-        "deductions"   DECIMAL(12,2) NOT NULL DEFAULT 0,
-        "netPay"       DECIMAL(12,2) NOT NULL,
-        "status"       TEXT          NOT NULL DEFAULT 'PENDING',
-        "paidAt"       TIMESTAMP(3),
-        "observations" TEXT,
-        "createdAt"    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        "updatedAt"    TIMESTAMP(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT "PayrollRecord_pkey" PRIMARY KEY ("id")
-      );
-    `);
-    await prisma.$executeRawUnsafe(`
-      DO $$ BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'PayrollRecord_employeeId_fkey'
-        ) THEN
-          ALTER TABLE "PayrollRecord"
-            ADD CONSTRAINT "PayrollRecord_employeeId_fkey"
-            FOREIGN KEY ("employeeId") REFERENCES "Employee"("id")
-            ON DELETE RESTRICT ON UPDATE CASCADE;
-        END IF;
-      END $$;
-    `);
-    await prisma.$executeRawUnsafe(`
-      CREATE UNIQUE INDEX IF NOT EXISTS "PayrollRecord_employeeId_period_key"
-        ON "PayrollRecord"("employeeId", "period");
-    `);
-    logger.info("Payroll tables ready");
-  } catch (err) {
-    logger.error("Failed to ensure payroll tables on startup:", err);
-  }
-}
-
-/**
- * Ensures the Customer table has the credit-control columns introduced in the
- * 2026-05-30 schema update. Uses ADD COLUMN IF NOT EXISTS so it is idempotent
- * and safe on every startup, whether running on a fresh DB or an existing one.
- */
-async function ensureCustomerCreditFields(): Promise<void> {
-  const { default: prisma } = await import("./config/db");
-  try {
-    await prisma.$executeRawUnsafe(`
-      ALTER TABLE "Customer"
-        ADD COLUMN IF NOT EXISTS "creditLimit"     INTEGER NOT NULL DEFAULT 0,
-        ADD COLUMN IF NOT EXISTS "defaultDiscount" INTEGER NOT NULL DEFAULT 0;
-    `);
-    logger.info("Customer credit fields ready");
-  } catch (err) {
-    logger.error("Failed to ensure Customer credit fields on startup:", err);
+    logger.error("[STARTUP] Failed to bootstrap admin user:", err);
   }
 }
 
@@ -266,9 +214,7 @@ if (process.env.NODE_ENV !== "test") {
 
   app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
-    await ensurePayrollTables();
-    await ensureCustomerCreditFields();
-    await ensureAdminUser();
+    await bootstrapAdminIfNeeded();
   });
 }
 

@@ -2,6 +2,7 @@ import request from "supertest";
 import bcrypt from "bcrypt";
 import app from "../src/app";
 import prisma from "../src/config/db";
+import { generateTestToken } from "./helpers/auth";
 
 describe("Gestion segura de proveedores", () => {
   const runId = Date.now();
@@ -38,10 +39,7 @@ describe("Gestion segura de proveedores", () => {
     });
     adminId = admin.id;
 
-    const loginResponse = await request(app)
-      .post("/api/users/login")
-      .send(adminCreds);
-    adminToken = loginResponse.body.token;
+    adminToken = generateTestToken({ userId: adminId, role: "ADMIN", branchIds: [branchId] });
   });
 
   afterAll(async () => {

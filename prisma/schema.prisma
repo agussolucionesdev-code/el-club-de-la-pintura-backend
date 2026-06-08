@@ -485,3 +485,24 @@ model PayrollRecord {
   @@index([period])
   @@index([status])
 }
+
+// Tracks bulk price-update jobs so job status survives server restarts.
+// Previously stored in-memory only (Map<string, JobState>) which lost state
+// on any restart or crash.
+model BulkPriceJob {
+  id           String   @id @default(uuid())
+  userId       Int
+  filename     String
+  status       String   @default("PENDING") // PENDING | PROCESSING | DONE | ERROR
+  processed    Int      @default(0)
+  total        Int      @default(0)
+  successCount Int      @default(0)
+  errorCount   Int      @default(0)
+  errors       Json?    // Array of { row, sku, message } for failed rows (capped at 200)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  finishedAt   DateTime?
+
+  @@index([userId])
+  @@index([status])
+}

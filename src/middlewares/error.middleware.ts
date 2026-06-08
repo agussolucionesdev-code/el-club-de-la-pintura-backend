@@ -16,14 +16,20 @@ export const globalErrorHandler = (
   // Human-readable message forwarded to the frontend for display
   const message = err.message || "Fallo estructural interno en el servidor.";
 
-  res.status(statusCode).json({
+  const body: Record<string, unknown> = {
     status: "error",
     statusCode,
     message,
-    // Note: consider omitting `path` in production to avoid leaking route structure
-    path: req.originalUrl,
     timestamp: new Date().toISOString(),
-  });
+  };
+
+  // Only expose the route path in non-production environments to avoid
+  // leaking internal route structure to external callers.
+  if (process.env.NODE_ENV !== "production") {
+    body.path = req.originalUrl;
+  }
+
+  res.status(statusCode).json(body);
 };
 
 // 404 handler — catches requests to undefined routes
