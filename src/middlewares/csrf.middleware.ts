@@ -31,11 +31,17 @@ const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
 
 /**
  * Issues/refreshes the XSRF-TOKEN cookie on the response.
- * Call this on GET /api/users/me (via global GET middleware in app.ts)
+ * Call this on every GET request (via global GET middleware in app.ts)
  * and on successful login (to rotate the token after privilege change).
+ *
+ * Also mirrors the token value in the X-CSRF-Token response header so
+ * cross-origin clients (e.g. Vercel → Render) can capture it via JS.
+ * JavaScript cannot read cookies set by a different domain, so the cookie
+ * alone is not sufficient in a cross-origin deployment.
  */
 export function attachCsrfToken(req: Request, res: Response): void {
-  generateCsrfToken(req, res);
+  const token = generateCsrfToken(req, res);
+  res.setHeader("X-CSRF-Token", token);
 }
 
 /**
