@@ -65,6 +65,9 @@ app.use(
       : ["http://localhost:5173", "http://localhost:5174"],
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    // Expose X-CSRF-Token so cross-origin JS (Vercel → Render) can read it.
+    // Without this, the browser hides the header and _csrfToken stays null.
+    exposedHeaders: ["X-CSRF-Token"],
   }),
 );
 
