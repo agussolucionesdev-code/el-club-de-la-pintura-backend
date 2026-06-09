@@ -143,8 +143,10 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       ...branchWhere,
       ...(createdAt ? { createdAt } : {}),
     };
-    const stockWhere: Prisma.StockWhereInput | undefined =
-      branchFilter === undefined ? undefined : { branchId: branchFilter };
+    const stockWhere: Prisma.StockWhereInput =
+      branchFilter === undefined
+        ? { product: { isActive: true } }
+        : { branchId: branchFilter, product: { isActive: true } };
 
     // Safety cap: prevent out-of-memory crashes on large datasets.
     // Date filters applied by the UI keep the typical result well below this threshold.
@@ -653,7 +655,9 @@ export const getProductsAnalytics = async (req: Request, res: Response) => {
       }),
     );
 
-    const stockWhereClause = branchId ? { branchId: Number(branchId) } : {};
+    const stockWhereClause = branchId
+      ? { branchId: Number(branchId), product: { isActive: true } }
+      : { product: { isActive: true } };
     const currentInventory = await prisma.stock.findMany({
       where: stockWhereClause,
       include: {
