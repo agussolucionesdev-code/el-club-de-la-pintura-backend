@@ -337,12 +337,32 @@ export const getInternalReceipts = async (req: AuthRequest, res: Response) => {
       typeof req.query.receiptType === "string"
         ? req.query.receiptType
         : undefined;
-    const take = Math.min(Number(req.query.limit || 100), 300);
+    const take = Math.min(Number(req.query.limit || 100), 500);
+
+    // Optional ISO date range — dateTo is inclusive (covers the whole day)
+    const dateFrom =
+      typeof req.query.dateFrom === "string" && req.query.dateFrom
+        ? new Date(`${req.query.dateFrom}T00:00:00`)
+        : undefined;
+    const dateTo =
+      typeof req.query.dateTo === "string" && req.query.dateTo
+        ? new Date(`${req.query.dateTo}T23:59:59.999`)
+        : undefined;
+    const createdAtWhere =
+      dateFrom || dateTo
+        ? {
+            createdAt: {
+              ...(dateFrom && !isNaN(dateFrom.getTime()) ? { gte: dateFrom } : {}),
+              ...(dateTo && !isNaN(dateTo.getTime()) ? { lte: dateTo } : {}),
+            },
+          }
+        : {};
 
     const receipts = await prisma.internalReceipt.findMany({
       where: {
         ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
         ...(receiptType ? { receiptType } : {}),
+        ...createdAtWhere,
       },
       orderBy: { createdAt: "desc" },
       take,

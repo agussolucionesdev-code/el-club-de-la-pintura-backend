@@ -190,9 +190,16 @@ export const getProducts = async (req: Request, res: Response) => {
 
     const totalPages = Math.ceil(totalRecords / pageSize);
 
+    // List views only need the thumbnail — full gallery loads via GET /products/:id.
+    // Trimming extra images keeps large catalogs from producing multi-MB payloads.
+    const slimProducts = products.map((product) => ({
+      ...product,
+      images: product.images.slice(0, 1),
+    }));
+
     res.status(200).json({
       metadata: { totalRecords, totalPages, currentPage: pageNumber, pageSize },
-      data: products,
+      data: slimProducts,
     });
   } catch (error) {
     logger.error("Error al buscar los productos:", error);

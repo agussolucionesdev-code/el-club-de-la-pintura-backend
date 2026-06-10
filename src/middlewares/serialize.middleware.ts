@@ -19,6 +19,8 @@ function isDecimalLike(value: unknown): value is { toNumber(): number } {
 
 function toSerializable(value: unknown): unknown {
   if (isDecimalLike(value)) return value.toNumber();
+  // Dates have no enumerable keys — Object.entries would turn them into {}
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(toSerializable);
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
