@@ -368,9 +368,22 @@ export const getInternalReceipts = async (req: AuthRequest, res: Response) => {
       take,
     });
 
+    // InternalReceipt stores createdBy as a plain int (no relation) — resolve
+    // operator names in one query so the UI can show "Facundo" instead of "#2".
+    const creatorIds = [...new Set(receipts.map((r) => r.createdBy))];
+    const creators = await prisma.user.findMany({
+      where: { id: { in: creatorIds } },
+      select: { id: true, name: true },
+    });
+    const nameById = new Map(creators.map((u) => [u.id, u.name]));
+    const receiptsWithCreator = receipts.map((r) => ({
+      ...r,
+      createdByName: nameById.get(r.createdBy) ?? null,
+    }));
+
     res.status(200).json({
       message: "Comprobantes internos recuperados.",
-      data: receipts,
+      data: receiptsWithCreator,
     });
   } catch (error: unknown) {
     const errorMsg =
