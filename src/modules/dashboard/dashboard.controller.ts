@@ -817,6 +817,100 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
  *
  * @deprecated Use `exportScopedFinancialReportToExcel` for filtered, role-aware exports.
  */
+/**
+ * Applies the El Club de la Pintura brand style to a populated worksheet:
+ * brand banner + title rows on top, styled header, zebra striping, borders,
+ * and currency/date number formats. Header is assumed to be on row 1 when
+ * called (it gets pushed to row 3 by the inserted banner rows).
+ */
+const styleBrandSheet = (
+  sheet: ExcelJS.Worksheet,
+  title: string,
+  moneyKeys: string[] = [],
+  dateKeys: string[] = [],
+) => {
+  const EBONY = "FF2E1A0E";
+  const AMBER = "FFE8900A";
+  const CREAM = "FFFFF8EC";
+  const BORDER = "FFE8D9C0";
+  const colCount = sheet.columnCount;
+  const lastCol = sheet.getColumn(colCount).letter;
+
+  const moneyIdx = new Set(
+    moneyKeys
+      .map((key) => sheet.columns.findIndex((c) => c.key === key) + 1)
+      .filter((i) => i > 0),
+  );
+  const dateIdx = new Set(
+    dateKeys
+      .map((key) => sheet.columns.findIndex((c) => c.key === key) + 1)
+      .filter((i) => i > 0),
+  );
+
+  // Push everything down 2 rows for the banner + title
+  sheet.insertRow(1, []);
+  sheet.insertRow(2, []);
+
+  sheet.mergeCells(`A1:${lastCol}1`);
+  const banner = sheet.getCell("A1");
+  banner.value = "EL CLUB DE LA PINTURA";
+  banner.font = { size: 13, bold: true, color: { argb: "FFFFC72C" } };
+  banner.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EBONY } };
+  banner.alignment = { vertical: "middle", horizontal: "center" };
+  sheet.getRow(1).height = 26;
+
+  sheet.mergeCells(`A2:${lastCol}2`);
+  const titleCell = sheet.getCell("A2");
+  titleCell.value = `${title} — ${new Date().toLocaleDateString("es-AR")}`;
+  titleCell.font = { size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+  titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AMBER } };
+  titleCell.alignment = { vertical: "middle", horizontal: "center" };
+  sheet.getRow(2).height = 18;
+
+  const thinBorder = {
+    top: { style: "thin" as const, color: { argb: BORDER } },
+    left: { style: "thin" as const, color: { argb: BORDER } },
+    bottom: { style: "thin" as const, color: { argb: BORDER } },
+    right: { style: "thin" as const, color: { argb: BORDER } },
+  };
+
+  const headerRow = sheet.getRow(3);
+  headerRow.height = 20;
+  for (let c = 1; c <= colCount; c++) {
+    const cell = headerRow.getCell(c);
+    cell.font = { size: 10, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: EBONY } };
+    cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+    cell.border = thinBorder;
+  }
+
+  for (let r = 4; r <= sheet.rowCount; r++) {
+    const row = sheet.getRow(r);
+    const zebra = (r - 4) % 2 === 1;
+    for (let c = 1; c <= colCount; c++) {
+      const cell = row.getCell(c);
+      cell.border = thinBorder;
+      cell.font = { size: 10 };
+      if (zebra) {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: CREAM } };
+      }
+      if (moneyIdx.has(c)) {
+        cell.numFmt = '"$" #,##0.00';
+        cell.alignment = { horizontal: "right" };
+      }
+      if (dateIdx.has(c)) {
+        cell.numFmt = "dd/mm/yyyy hh:mm";
+      }
+    }
+  }
+
+  sheet.views = [{ state: "frozen", ySplit: 3 }];
+  sheet.autoFilter = {
+    from: { row: 3, column: 1 },
+    to: { row: 3, column: colCount },
+  };
+};
+
 export const exportFinancialReportToExcel = async (
   req: Request,
   res: Response,
@@ -850,6 +944,8 @@ export const exportFinancialReportToExcel = async (
         total: sale.totalAmount,
       });
     });
+
+    styleBrandSheet(worksheet, "Reporte de Ventas", ["total"]);
 
     // Set HTTP headers to force file download
     res.setHeader(
@@ -1086,14 +1182,10 @@ export const exportScopedFinancialReportToExcel = async (
       });
     });
 
-    [summarySheet, salesSheet, paymentsSheet, expensesSheet].forEach((sheet) => {
-      sheet.getRow(1).font = { bold: true };
-      sheet.views = [{ state: "frozen", ySplit: 1 }];
-      sheet.autoFilter = {
-        from: { row: 1, column: 1 },
-        to: { row: 1, column: sheet.columnCount },
-      };
-    });
+    styleBrandSheet(summarySheet, "Resumen Ejecutivo");
+    styleBrandSheet(salesSheet, "Detalle de Ventas", ["total", "balance", "cost", "grossProfit"], ["date"]);
+    styleBrandSheet(paymentsSheet, "Cobranzas", ["amount"], ["date"]);
+    styleBrandSheet(expensesSheet, "Gastos", ["amount"], ["date"]);
 
     res.setHeader(
       "Content-Type",
