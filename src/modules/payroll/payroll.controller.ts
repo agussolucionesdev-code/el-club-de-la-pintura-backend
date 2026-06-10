@@ -569,7 +569,7 @@ export const getPayrollReceiptPdf = async (req: AuthRequest, res: Response) => {
 
     if (record.status === "PAID" && record.paidAt) {
       doc.fontSize(9).font("Helvetica").fillColor("#059669");
-      doc.text(`Pagado el ${new Date(record.paidAt).toLocaleDateString("es-AR")}`);
+      doc.text(`Pagado el ${new Date(record.paidAt).toLocaleDateString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })}`);
       doc.fillColor("black");
     }
 

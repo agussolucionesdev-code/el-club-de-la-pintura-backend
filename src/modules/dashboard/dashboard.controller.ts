@@ -823,6 +823,17 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
  * and currency/date number formats. Header is assumed to be on row 1 when
  * called (it gets pushed to row 3 by the inserted banner rows).
  */
+/** Formats a Date as `DD/MM/AAAA HH:mm` in Argentina time for Excel cells. */
+const formatExcelDateAR = (d: Date) =>
+  d.toLocaleString("es-AR", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "America/Argentina/Buenos_Aires",
+  });
+
 const styleBrandSheet = (
   sheet: ExcelJS.Worksheet,
   title: string,
@@ -861,7 +872,7 @@ const styleBrandSheet = (
 
   sheet.mergeCells(`A2:${lastCol}2`);
   const titleCell = sheet.getCell("A2");
-  titleCell.value = `${title} — ${new Date().toLocaleDateString("es-AR")}`;
+  titleCell.value = `${title} — ${new Date().toLocaleDateString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })}`;
   titleCell.font = { size: 10, bold: true, color: { argb: "FFFFFFFF" } };
   titleCell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AMBER } };
   titleCell.alignment = { vertical: "middle", horizontal: "center" };
@@ -937,7 +948,9 @@ export const exportFinancialReportToExcel = async (
     // Row population
     sales.forEach((sale) => {
       worksheet.addRow({
-        date: sale.createdAt.toLocaleDateString("es-AR"),
+        date: sale.createdAt.toLocaleDateString("es-AR", {
+          timeZone: "America/Argentina/Buenos_Aires",
+        }),
         id: sale.id,
         customer: sale.customer?.name || "Consumidor Final",
         method: sale.paymentMethod,
@@ -1117,7 +1130,7 @@ export const exportScopedFinancialReportToExcel = async (
         0,
       );
       salesSheet.addRow({
-        date: sale.createdAt,
+        date: formatExcelDateAR(sale.createdAt),
         id: sale.id,
         branch: sale.branch.name,
         customer: sale.customer?.name || "Consumidor Final",
@@ -1148,7 +1161,7 @@ export const exportScopedFinancialReportToExcel = async (
     ];
     payments.forEach((payment) => {
       paymentsSheet.addRow({
-        date: payment.createdAt,
+        date: formatExcelDateAR(payment.createdAt),
         id: payment.id,
         branch: payment.branch.name,
         saleId: payment.sale.id,
@@ -1171,7 +1184,7 @@ export const exportScopedFinancialReportToExcel = async (
     ];
     expenses.forEach((expense) => {
       expensesSheet.addRow({
-        date: expense.createdAt,
+        date: formatExcelDateAR(expense.createdAt),
         id: expense.id,
         branch: expense.branch.name,
         user: expense.user.name,

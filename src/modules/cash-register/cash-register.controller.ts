@@ -642,6 +642,7 @@ export const generateCorteZPdf = async (req: AuthRequest, res: Response) => {
       day: "2-digit",
       month: "long",
       year: "numeric",
+      timeZone: "America/Argentina/Buenos_Aires",
     });
     const branchLabel = branch?.name ?? "Todas las sucursales";
 
@@ -660,7 +661,7 @@ export const generateCorteZPdf = async (req: AuthRequest, res: Response) => {
     doc.fontSize(8).text(branchLabel, { align: "center" });
     doc.moveDown(0.5);
     doc.fontSize(8).text(`Fecha: ${dateLabel}`);
-    doc.text(`Generado: ${now.toLocaleString("es-AR")}`);
+    doc.text(`Generado: ${now.toLocaleString("es-AR", { timeZone: "America/Argentina/Buenos_Aires" })}`);
     doc.moveDown(0.5);
     doc.moveTo(18, doc.y).lineTo(208.77, doc.y).stroke();
     doc.moveDown(0.3);

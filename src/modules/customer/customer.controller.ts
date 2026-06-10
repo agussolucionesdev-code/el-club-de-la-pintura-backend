@@ -329,6 +329,7 @@ export const getCustomerStatement = async (
     const formatDate = (d: Date) =>
       new Date(d).toLocaleDateString("es-AR", {
         day: "2-digit", month: "2-digit", year: "numeric",
+        timeZone: "America/Argentina/Buenos_Aires",
       });
 
     const pageHeight = Math.max(700, 350 + pendingSales.length * 80);

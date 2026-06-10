@@ -798,7 +798,9 @@ export const exportPendingAccountsExcel = async (
       const balance = Number(sale.balance);
 
       const row = sheet.addRow({
-        date: new Date(sale.createdAt).toLocaleDateString("es-AR"),
+        date: new Date(sale.createdAt).toLocaleDateString("es-AR", {
+          timeZone: "America/Argentina/Buenos_Aires",
+        }),
         id: sale.id,
         customer: sale.customer?.name ?? "Consumidor Final",
         pickedUpBy: sale.pickedUpBy ?? "-",
