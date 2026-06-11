@@ -1195,10 +1195,88 @@ export const exportScopedFinancialReportToExcel = async (
       });
     });
 
+    // ── Top products ranking (aggregated from the same sales set) ──
+    const productTotals = new Map<
+      number,
+      { name: string; sku: string; units: number; revenue: number; cost: number }
+    >();
+    for (const sale of sales) {
+      for (const item of sale.items) {
+        const current = productTotals.get(item.productId) ?? {
+          name: item.product.name,
+          sku: item.product.sku,
+          units: 0,
+          revenue: 0,
+          cost: 0,
+        };
+        current.units += item.quantity;
+        current.revenue += Number(item.subtotal ?? 0);
+        current.cost += Number(item.unitCost || 0) * item.quantity;
+        productTotals.set(item.productId, current);
+      }
+    }
+    const ranking = [...productTotals.values()].sort((a, b) => b.revenue - a.revenue);
+
+    const rankingSheet = workbook.addWorksheet("Top Productos");
+    rankingSheet.columns = [
+      { header: "#", key: "rank", width: 6 },
+      { header: "Producto", key: "name", width: 38 },
+      { header: "SKU", key: "sku", width: 24 },
+      { header: "Unidades", key: "units", width: 12 },
+      { header: "Facturado", key: "revenue", width: 16 },
+      { header: "Costo estimado", key: "cost", width: 16 },
+      { header: "Margen", key: "margin", width: 16 },
+    ];
+    ranking.forEach((product, index) => {
+      rankingSheet.addRow({
+        rank: index + 1,
+        name: product.name,
+        sku: product.sku,
+        units: product.units,
+        revenue: product.revenue,
+        cost: product.cost,
+        margin: product.revenue - product.cost,
+      });
+    });
+
+    // ── Payment method distribution ──
+    const methodLabels: Record<string, string> = {
+      CASH: "Efectivo",
+      DEBIT: "Débito",
+      CREDIT: "Crédito",
+      TRANSFER: "Transferencia",
+      MIXED: "Mixto",
+      CREDIT_ACCOUNT: "Cuenta corriente",
+      ACCOUNT: "Cuenta corriente",
+    };
+    const methodTotals = new Map<string, number>();
+    for (const payment of payments) {
+      const key = methodLabels[payment.paymentMethod] ?? payment.paymentMethod;
+      methodTotals.set(key, (methodTotals.get(key) ?? 0) + payment.amount);
+    }
+    const methodsSheet = workbook.addWorksheet("Medios de Pago");
+    methodsSheet.columns = [
+      { header: "Medio de pago", key: "method", width: 24 },
+      { header: "Cobrado", key: "amount", width: 18 },
+      { header: "Participación %", key: "pct", width: 16 },
+    ];
+    const methodsTotal = [...methodTotals.values()].reduce((s, v) => s + v, 0);
+    [...methodTotals.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([method, amount]) => {
+        methodsSheet.addRow({
+          method,
+          amount,
+          pct: methodsTotal > 0 ? Math.round((amount / methodsTotal) * 1000) / 10 : 0,
+        });
+      });
+
     styleBrandSheet(summarySheet, "Resumen Ejecutivo");
     styleBrandSheet(salesSheet, "Detalle de Ventas", ["total", "balance", "cost", "grossProfit"], ["date"]);
     styleBrandSheet(paymentsSheet, "Cobranzas", ["amount"], ["date"]);
     styleBrandSheet(expensesSheet, "Gastos", ["amount"], ["date"]);
+    styleBrandSheet(rankingSheet, "Productos Más Vendidos", ["revenue", "cost", "margin"]);
+    styleBrandSheet(methodsSheet, "Distribución por Medio de Pago", ["amount"]);
 
     res.setHeader(
       "Content-Type",
