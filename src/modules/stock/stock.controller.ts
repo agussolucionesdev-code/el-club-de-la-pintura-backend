@@ -473,7 +473,7 @@ export const updateStock = async (req: AuthRequest, res: Response) => {
     });
 
     res.status(200).json({
-      message: `Stock actualizado con exito. Razon: ${reason || "Ajuste manual"}`,
+      message: `Stock actualizado con éxito. Motivo: ${reason || "Ajuste manual"}`,
       data: result,
     });
   } catch (error: unknown) {
