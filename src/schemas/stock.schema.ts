@@ -38,5 +38,9 @@ export const updateStockThresholdsSchema = z.object({
     productId: z.number().int().positive("El ID del producto es obligatorio."),
     branchId: z.number().int().positive("El ID de la sucursal es obligatorio."),
     minStock: z.number().nonnegative("El umbral mínimo no puede ser negativo."),
+    criticalStock: z
+      .number()
+      .nonnegative("El umbral crítico no puede ser negativo.")
+      .optional(),
   }),
 });

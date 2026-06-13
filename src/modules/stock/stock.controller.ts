@@ -730,7 +730,7 @@ export const updateStockThresholds = async (
 ) => {
   try {
     const authUser = getAuthUser(req);
-    const { productId, branchId, minStock } = req.body;
+    const { productId, branchId, minStock, criticalStock } = req.body;
     const parsedBranchId = Number(branchId);
 
     if (!authUser) {
@@ -748,7 +748,12 @@ export const updateStockThresholds = async (
           branchId: parsedBranchId,
         },
       },
-      data: { minStock: Number(minStock) },
+      data: {
+        minStock: Number(minStock),
+        ...(criticalStock !== undefined
+          ? { criticalStock: Number(criticalStock) }
+          : {}),
+      },
     });
 
     res.status(200).json({
