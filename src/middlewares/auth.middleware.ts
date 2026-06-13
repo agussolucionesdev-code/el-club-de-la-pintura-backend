@@ -75,7 +75,9 @@ export const authenticateToken = (
     const authenticatedUser = parseAuthenticatedUser(decoded);
 
     if (!authenticatedUser) {
-      return res.status(403).json({
+      // 401, not 403: this is an authentication failure (bad token), not a
+      // permission denial. The frontend interceptor redirects to login on 401.
+      return res.status(401).json({
         error: "El token recibido no contiene una identidad válida.",
       });
     }
@@ -84,8 +86,9 @@ export const authenticateToken = (
     next();
   } catch (error) {
     logger.error("Fallo critico en validacion de identidad:", error);
-    res.status(403).json({
-      error: "Sesion invalida o expirada. Por favor, reingrese al sistema.",
+    // Expired/invalid JWT → 401 so the client cleanly redirects to re-login.
+    res.status(401).json({
+      error: "Sesión inválida o expirada. Por favor, reingresá al sistema.",
     });
   }
 };
