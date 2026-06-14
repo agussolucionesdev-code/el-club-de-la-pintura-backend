@@ -163,6 +163,24 @@ app.use(globalErrorHandler);
  * This function is idempotent: if the admin already exists it does nothing.
  * It does NOT overwrite the password on subsequent restarts.
  */
+/**
+ * Guarantees columns that newer code depends on actually exist, even if the
+ * Prisma migration history is out of sync with the live database (this project
+ * has historically mixed `db push` and migrations). Idempotent: ADD COLUMN IF
+ * NOT EXISTS is a no-op once the column is present.
+ */
+async function ensureRuntimeColumns(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(
+      'ALTER TABLE "SaleItem" ADD COLUMN IF NOT EXISTS "listPrice" DECIMAL(14,4), ADD COLUMN IF NOT EXISTS "discountPct" DECIMAL(7,4);',
+    );
+    logger.info("[STARTUP] Runtime columns ensured (SaleItem.listPrice, discountPct).");
+  } catch (err) {
+    logger.error("[STARTUP] Failed to ensure runtime columns:", err);
+  }
+}
+
 async function bootstrapAdminIfNeeded(): Promise<void> {
   const email    = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
@@ -217,6 +235,7 @@ if (process.env.NODE_ENV !== "test") {
 
   app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
+    await ensureRuntimeColumns();
     await bootstrapAdminIfNeeded();
   });
 }
