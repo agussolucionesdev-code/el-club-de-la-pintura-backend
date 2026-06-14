@@ -573,6 +573,15 @@ export const createSale = async (req: AuthRequest, res: Response) => {
             unitPrice: Number(item.unitPrice),
             subtotal: Number(item.quantity) * Number(item.unitPrice),
             unitCost: item.unitCost ? Number(item.unitCost) : 0,
+            // Optional discount transparency: list price + % applied per line.
+            listPrice:
+              item.listPrice !== undefined && item.listPrice !== null
+                ? Number(item.listPrice)
+                : null,
+            discountPct:
+              item.discountPct !== undefined && item.discountPct !== null
+                ? Number(item.discountPct)
+                : null,
           },
         });
 
@@ -1079,6 +1088,17 @@ export const generateSaleReceiptPdf = async (
 
     sale.items.forEach((item) => {
       doc.fontSize(8).text(`${item.product.name} (${item.product.sku})`);
+      const discountPct = Number(item.discountPct ?? 0);
+      const listPrice = item.listPrice != null ? Number(item.listPrice) : null;
+      // When a discount was recorded, show the original price struck through-style
+      // and the discount, then the final line — supermarket-style transparency.
+      if (discountPct > 0 && listPrice && listPrice > Number(item.unitPrice)) {
+        doc.fillColor("#888888").text(
+          `   Precio lista: ${formatMoney(listPrice)} · Desc ${discountPct}%`,
+          { align: "right" },
+        );
+        doc.fillColor("black");
+      }
       doc.text(
         `${item.quantity} x ${formatMoney(item.unitPrice)} = ${formatMoney(
           item.subtotal,

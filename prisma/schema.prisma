@@ -283,9 +283,11 @@ model Sale {
 model SaleItem {
   id        Int      @id @default(autoincrement())
   quantity  Int
-  unitPrice Decimal  @db.Decimal(14, 4)
+  unitPrice Decimal  @db.Decimal(14, 4) // Final price actually charged (post-discount)
   subtotal  Decimal  @db.Decimal(14, 2)
   unitCost  Decimal? @db.Decimal(14, 4) // Frozen cost snapshot
+  listPrice   Decimal? @db.Decimal(14, 4) // Original list price before any discount
+  discountPct Decimal? @db.Decimal(7, 4)  // Discount % applied to this line (0-100)
 
   saleId Int
   sale   Sale @relation(fields: [saleId], references: [id])

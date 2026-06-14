@@ -8,6 +8,9 @@ const saleItemSchema = z.object({
     .number()
     .nonnegative("El precio unitario no puede ser negativo."),
   subtotal: z.number().nonnegative(),
+  // Optional discount transparency for the printed ticket.
+  listPrice: z.number().nonnegative().optional().nullable(),
+  discountPct: z.number().min(0).max(100).optional().nullable(),
 });
 
 // All accepted payment method identifiers (CREDIT_ACCOUNT enables the store-credit / fiado flow)
