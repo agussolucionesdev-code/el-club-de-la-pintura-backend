@@ -148,31 +148,80 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         ? { product: { isActive: true } }
         : { branchId: branchFilter, product: { isActive: true } };
 
-    // Safety cap: prevent out-of-memory crashes on large datasets.
-    // Date filters applied by the UI keep the typical result well below this threshold.
-    const QUERY_LIMIT = 10_000;
+    // Headline KPIs come straight from Postgres aggregates (exact, index-backed
+    // by the Phase-1 hot-path indexes). Heavier per-row data is pulled in lean,
+    // targeted queries instead of one mega-join. Every money value is wrapped in
+    // Number() because the Decimal→number client extension (see config/db.ts)
+    // applies to model-field reads but NOT to aggregate/groupBy `_sum` results.
+    const ITEM_LIMIT = 50_000;
+    const TREND_SALE_LIMIT = 20_000;
 
-    const [sales, payments, expenses, stocks, openCashRegisters] =
-      await Promise.all([
-      prisma.sale.findMany({
+    const [
+      saleTotals,
+      paymentGroups,
+      expenseGroups,
+      saleItems,
+      trendSales,
+      recentSalesRows,
+      stocks,
+      openCashRegisters,
+    ] = await Promise.all([
+      prisma.sale.aggregate({
         where: saleWhere,
-        take: QUERY_LIMIT,
-        include: {
-          branch: { select: { id: true, name: true } },
-          customer: { select: { id: true, name: true } },
-          user: { select: { id: true, name: true } },
-          items: {
-            include: {
-              product: {
-                select: { id: true, name: true, sku: true, brand: true, category: true },
-              },
-            },
+        _sum: { totalAmount: true, balance: true },
+        _count: { _all: true },
+      }),
+      prisma.payment.groupBy({
+        by: ["paymentMethod"],
+        where: paymentWhere,
+        _sum: { amount: true },
+      }),
+      prisma.expense.groupBy({
+        by: ["category"],
+        where: expenseWhere,
+        _sum: { amount: true },
+      }),
+      // Item-level rows power topProducts, categoryBreakdown and estimated cost.
+      prisma.saleItem.findMany({
+        where: { sale: saleWhere },
+        take: ITEM_LIMIT,
+        select: {
+          productId: true,
+          quantity: true,
+          subtotal: true,
+          unitCost: true,
+          product: {
+            select: { name: true, sku: true, brand: true, category: true },
           },
         },
-        orderBy: { createdAt: "desc" },
       }),
-      prisma.payment.findMany({ where: paymentWhere, take: QUERY_LIMIT }),
-      prisma.expense.findMany({ where: expenseWhere, take: QUERY_LIMIT }),
+      // Lightweight sale rows (no item/customer joins) for the trend charts.
+      prisma.sale.findMany({
+        where: saleWhere,
+        take: TREND_SALE_LIMIT,
+        orderBy: { createdAt: "desc" },
+        select: {
+          totalAmount: true,
+          createdAt: true,
+          userId: true,
+          user: { select: { name: true } },
+        },
+      }),
+      prisma.sale.findMany({
+        where: saleWhere,
+        take: 8,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          totalAmount: true,
+          balance: true,
+          status: true,
+          paymentMethod: true,
+          createdAt: true,
+          customer: { select: { name: true } },
+          branch: { select: { name: true } },
+        },
+      }),
       prisma.stock.findMany({
         where: stockWhere,
         take: 5_000,
@@ -194,23 +243,18 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       }),
     ]);
 
-    const totalBilled = sales.reduce((sum, sale) => sum + sale.totalAmount, 0);
-    const totalDebt = sales.reduce((sum, sale) => sum + sale.balance, 0);
-    const totalCollected = payments.reduce(
-      (sum, payment) => sum + payment.amount,
+    const totalBilled = Number(saleTotals._sum.totalAmount ?? 0);
+    const totalDebt = Number(saleTotals._sum.balance ?? 0);
+    const salesCount = saleTotals._count._all;
+    const totalCollected = paymentGroups.reduce(
+      (sum, group) => sum + Number(group._sum.amount ?? 0),
       0,
     );
-    const totalExpenses = expenses.reduce(
-      (sum, expense) => sum + expense.amount,
+    const totalExpenses = expenseGroups.reduce(
+      (sum, group) => sum + Number(group._sum.amount ?? 0),
       0,
     );
-    const totalCost = sales.reduce((saleSum, sale) => {
-      const itemsCost = sale.items.reduce(
-        (itemSum, item) => itemSum + Number(item.unitCost || 0) * item.quantity,
-        0,
-      );
-      return saleSum + itemsCost;
-    }, 0);
+
     const stockAlerts = stocks.filter(
       (stock) => stock.quantity <= stock.minStock,
     );
@@ -221,24 +265,27 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       (stock) => stock.quantity > stock.criticalStock,
     );
 
-    const paymentBreakdown = payments.reduce<Record<string, number>>(
-      (breakdown, payment) => {
-        const method = payment.paymentMethod.toUpperCase();
-        breakdown[method] = (breakdown[method] || 0) + payment.amount;
+    const paymentBreakdown = paymentGroups.reduce<Record<string, number>>(
+      (breakdown, group) => {
+        const method = group.paymentMethod.toUpperCase();
+        breakdown[method] =
+          (breakdown[method] || 0) + Number(group._sum.amount ?? 0);
         return breakdown;
       },
       {},
     );
 
-    const expenseBreakdown = expenses.reduce<Record<string, number>>(
-      (breakdown, expense) => {
-        const category = expense.category.toUpperCase();
-        breakdown[category] = (breakdown[category] || 0) + expense.amount;
+    const expenseBreakdown = expenseGroups.reduce<Record<string, number>>(
+      (breakdown, group) => {
+        const category = group.category.toUpperCase();
+        breakdown[category] =
+          (breakdown[category] || 0) + Number(group._sum.amount ?? 0);
         return breakdown;
       },
       {},
     );
 
+    // ── Item-level aggregation: total cost, top products, category margins ──
     const topProductsMap = new Map<
       number,
       {
@@ -252,37 +299,36 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         estimatedCost: number;
       }
     >();
-
-    // Category profitability breakdown: revenue and margin per product category
     const categoryMap = new Map<string, { revenue: number; cost: number }>();
+    let totalCost = 0;
 
-    sales.forEach((sale) => {
-      sale.items.forEach((item) => {
-        const product = item.product;
-        const current = topProductsMap.get(item.productId) || {
-          productId: item.productId,
-          name: product.name,
-          sku: product.sku,
-          brand: product.brand,
-          category: product.category || "Sin categoría",
-          units: 0,
-          revenue: 0,
-          estimatedCost: 0,
-        };
+    for (const item of saleItems) {
+      const itemCost = Number(item.unitCost || 0) * item.quantity;
+      const itemRevenue = Number(item.subtotal);
+      totalCost += itemCost;
 
-        current.units += item.quantity;
-        current.revenue += item.subtotal;
-        current.estimatedCost += Number(item.unitCost || 0) * item.quantity;
-        topProductsMap.set(item.productId, current);
+      const product = item.product;
+      const current = topProductsMap.get(item.productId) || {
+        productId: item.productId,
+        name: product.name,
+        sku: product.sku,
+        brand: product.brand,
+        category: product.category || "Sin categoría",
+        units: 0,
+        revenue: 0,
+        estimatedCost: 0,
+      };
+      current.units += item.quantity;
+      current.revenue += itemRevenue;
+      current.estimatedCost += itemCost;
+      topProductsMap.set(item.productId, current);
 
-        // Accumulate category stats
-        const cat = product.category || "Sin categoría";
-        const catCurrent = categoryMap.get(cat) || { revenue: 0, cost: 0 };
-        catCurrent.revenue += item.subtotal;
-        catCurrent.cost += Number(item.unitCost || 0) * item.quantity;
-        categoryMap.set(cat, catCurrent);
-      });
-    });
+      const cat = product.category || "Sin categoría";
+      const catCurrent = categoryMap.get(cat) || { revenue: 0, cost: 0 };
+      catCurrent.revenue += itemRevenue;
+      catCurrent.cost += itemCost;
+      categoryMap.set(cat, catCurrent);
+    }
 
     const categoryBreakdown = Array.from(categoryMap.entries())
       .map(([category, { revenue, cost }]) => ({
@@ -297,10 +343,11 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     const topProducts = Array.from(topProductsMap.values())
       .sort((a, b) => b.revenue - a.revenue || b.units - a.units)
       .slice(0, 8);
-    const recentSales = sales.slice(0, 8).map((sale) => ({
+
+    const recentSales = recentSalesRows.map((sale) => ({
       id: sale.id,
-      totalAmount: sale.totalAmount,
-      balance: sale.balance,
+      totalAmount: Number(sale.totalAmount),
+      balance: Number(sale.balance),
       status: sale.status,
       paymentMethod: sale.paymentMethod,
       customerName: sale.customer?.name || "Consumidor final",
@@ -308,13 +355,13 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       createdAt: sale.createdAt,
     }));
 
-    // Group sales by calendar day for the trend chart (reuses the already-fetched sales array).
+    // Group sales by calendar day (UTC) for the trend chart.
     const salesByDayMap = new Map<string, { total: number; count: number }>();
-    for (const sale of sales) {
+    for (const sale of trendSales) {
       const day = sale.createdAt.toISOString().slice(0, 10); // "YYYY-MM-DD"
       const existing = salesByDayMap.get(day) ?? { total: 0, count: 0 };
       salesByDayMap.set(day, {
-        total: existing.total + sale.totalAmount,
+        total: existing.total + Number(sale.totalAmount),
         count: existing.count + 1,
       });
     }
@@ -322,13 +369,12 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, { total, count }]) => ({ date, total, count }));
 
-    // Group sales by seller — user data is already included in the sales join above.
+    // Group sales by seller (Sale.userId is non-nullable).
     const sellerMap = new Map<
       number,
       { userId: number; userName: string; total: number; count: number }
     >();
-    for (const sale of sales) {
-      if (!sale.user) continue;
+    for (const sale of trendSales) {
       const existing = sellerMap.get(sale.userId) ?? {
         userId: sale.userId,
         userName: sale.user.name,
@@ -337,12 +383,13 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       };
       sellerMap.set(sale.userId, {
         ...existing,
-        total: existing.total + sale.totalAmount,
+        total: existing.total + Number(sale.totalAmount),
         count: existing.count + 1,
       });
     }
-    const salesBySeller = Array.from(sellerMap.values())
-      .sort((a, b) => b.total - a.total);
+    const salesBySeller = Array.from(sellerMap.values()).sort(
+      (a, b) => b.total - a.total,
+    );
 
     res.status(200).json({
       scope: {
@@ -360,7 +407,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         stockAlerts: stockAlerts.length,
         criticalStockAlerts: criticalStockAlerts.length,
         warningStockAlerts: warningStockAlerts.length,
-        salesCount: sales.length,
+        salesCount,
         openCashRegisters: openCashRegisters.length,
       },
       stockAlerts: stockAlerts.slice(0, 50),
