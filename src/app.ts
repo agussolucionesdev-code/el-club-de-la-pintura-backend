@@ -8,6 +8,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
+import helmet from "helmet";
 
 // Global security middlewares
 import {
@@ -56,6 +57,17 @@ const globalRateLimiter = rateLimit({
 // 1. REQUEST PROCESSING AND SECURITY MIDDLEWARES
 // ============================================================================
 
+// Security headers (X-Content-Type-Options, X-Frame-Options, HSTS in prod, ...).
+// This is a JSON + PDF API consumed by a cross-origin SPA (Vercel → Render):
+//   - contentSecurityPolicy off: CSP targets HTML documents, not a JSON/PDF API.
+//   - crossOriginResourcePolicy "cross-origin": let the SPA read API/PDF responses.
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
 // Restrict cross-origin requests to the configured frontend origin only.
 // Wildcard CORS is disabled in all environments to prevent unauthorized API access.
 app.use(
@@ -74,7 +86,7 @@ app.use(
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(morgan("dev"));
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(serializeDecimals);
 app.use("/api", globalRateLimiter);
 
@@ -163,24 +175,6 @@ app.use(globalErrorHandler);
  * This function is idempotent: if the admin already exists it does nothing.
  * It does NOT overwrite the password on subsequent restarts.
  */
-/**
- * Guarantees columns that newer code depends on actually exist, even if the
- * Prisma migration history is out of sync with the live database (this project
- * has historically mixed `db push` and migrations). Idempotent: ADD COLUMN IF
- * NOT EXISTS is a no-op once the column is present.
- */
-async function ensureRuntimeColumns(): Promise<void> {
-  try {
-    const { default: prisma } = await import("./config/db");
-    await prisma.$executeRawUnsafe(
-      'ALTER TABLE "SaleItem" ADD COLUMN IF NOT EXISTS "listPrice" DECIMAL(14,4), ADD COLUMN IF NOT EXISTS "discountPct" DECIMAL(7,4);',
-    );
-    logger.info("[STARTUP] Runtime columns ensured (SaleItem.listPrice, discountPct).");
-  } catch (err) {
-    logger.error("[STARTUP] Failed to ensure runtime columns:", err);
-  }
-}
-
 async function bootstrapAdminIfNeeded(): Promise<void> {
   const email    = process.env.ADMIN_EMAIL;
   const password = process.env.ADMIN_PASSWORD;
@@ -233,11 +227,42 @@ async function bootstrapAdminIfNeeded(): Promise<void> {
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
-  app.listen(portNumber, "0.0.0.0", async () => {
+  const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
-    await ensureRuntimeColumns();
     await bootstrapAdminIfNeeded();
   });
+
+  // Graceful shutdown: stop accepting new connections, drain in-flight
+  // requests, then close the DB pool. Render sends SIGTERM on deploy/restart.
+  const shutdown = (signal: string) => {
+    logger.info(`[SHUTDOWN] ${signal} received — draining connections...`);
+    server.close(async () => {
+      try {
+        const { default: prisma } = await import("./config/db");
+        await prisma.$disconnect();
+      } catch (err) {
+        logger.error("[SHUTDOWN] Error disconnecting Prisma:", err);
+      }
+      logger.info("[SHUTDOWN] Closed cleanly.");
+      process.exit(0);
+    });
+    // Safety net: force-exit if draining hangs.
+    setTimeout(() => {
+      logger.error("[SHUTDOWN] Forced exit after 10s drain timeout.");
+      process.exit(1);
+    }, 10_000).unref();
+  };
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }
+
+// Last-resort handlers: log stray async errors instead of crashing silently
+// or leaving the process in an inconsistent state.
+process.on("unhandledRejection", (reason) => {
+  logger.error("[UNHANDLED REJECTION]", reason);
+});
+process.on("uncaughtException", (err) => {
+  logger.error("[UNCAUGHT EXCEPTION]", err);
+});
 
 export default app;

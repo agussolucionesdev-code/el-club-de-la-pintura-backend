@@ -4,8 +4,17 @@ import { Request, Response, NextFunction } from "express";
 const isProduction = process.env.NODE_ENV === "production";
 
 const { generateCsrfToken, doubleCsrfProtection } = doubleCsrf({
-  // Uses JWT_SECRET so no extra env var is needed
-  getSecret: () => process.env.JWT_SECRET ?? "dev-csrf-secret-change-me",
+  // Uses JWT_SECRET so no extra env var is needed. Fail closed: never fall back
+  // to a hardcoded secret — a guessable CSRF secret defeats the protection.
+  getSecret: () => {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error(
+        "JWT_SECRET no está configurado. Es obligatorio para firmar los tokens CSRF y de sesión.",
+      );
+    }
+    return secret;
+  },
 
   // Session identifier: use the auth cookie value, fallback to IP
   getSessionIdentifier: (req: Request) =>

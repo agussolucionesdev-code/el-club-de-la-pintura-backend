@@ -167,6 +167,7 @@ model Stock {
   updatedAt DateTime @updatedAt
 
   @@unique([productId, branchId])
+  @@index([branchId])
 }
 
 // Track every physical movement of goods (Audit Trail)
@@ -186,6 +187,9 @@ model Movement {
   user   User @relation(fields: [userId], references: [id])
 
   createdAt DateTime @default(now())
+
+  @@index([branchId, createdAt])
+  @@index([productId, branchId])
 }
 
 // ==========================================
@@ -218,6 +222,9 @@ model CashRegister {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([branchId, status])
+  @@index([userId])
 }
 
 // ==========================================
@@ -243,6 +250,9 @@ model Expense {
   branch   Branch @relation(fields: [branchId], references: [id])
 
   createdAt DateTime @default(now())
+
+  @@index([branchId, createdAt])
+  @@index([cashRegisterId])
 }
 
 // ------------------------------------------------------
@@ -277,6 +287,12 @@ model Sale {
   returns  Return[] // Partial or full returns against this sale
 
   createdAt DateTime @default(now())
+
+  @@index([branchId, createdAt])
+  @@index([cashRegisterId])
+  @@index([userId])
+  @@index([customerId])
+  @@index([status])
 }
 
 // Record individual billing rows with frozen historical costs
@@ -294,6 +310,9 @@ model SaleItem {
 
   productId Int
   product   Product @relation(fields: [productId], references: [id])
+
+  @@index([saleId])
+  @@index([productId])
 }
 
 // Register physical money entering the drawer (Cash Flow)
@@ -316,6 +335,10 @@ model Payment {
   cashRegister   CashRegister? @relation(fields: [cashRegisterId], references: [id])
 
   createdAt DateTime @default(now())
+
+  @@index([saleId])
+  @@index([cashRegisterId])
+  @@index([branchId, createdAt])
 }
 
 // ==========================================
