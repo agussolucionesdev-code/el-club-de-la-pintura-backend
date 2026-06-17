@@ -10,6 +10,12 @@
 import { Router } from "express";
 import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
+import { validate } from "../../middlewares/validate.middleware";
+import {
+  createEmployeeSchema,
+  updateEmployeeSchema,
+  createPayrollRecordSchema,
+} from "../../schemas/payroll.schema";
 import {
   getEmployees,
   createEmployee,
@@ -27,12 +33,12 @@ router.use(authenticateToken);
 
 // Employee management — ADMIN only for mutations, ADMIN/ENCARGADO for reads
 router.get("/employees", authorizeRoles("ADMIN", "ENCARGADO"), getEmployees);
-router.post("/employees", authorizeRoles("ADMIN"), createEmployee);
-router.patch("/employees/:id", authorizeRoles("ADMIN"), updateEmployee);
+router.post("/employees", authorizeRoles("ADMIN"), validate(createEmployeeSchema), createEmployee);
+router.patch("/employees/:id", authorizeRoles("ADMIN"), validate(updateEmployeeSchema), updateEmployee);
 
 // Payroll record management
 router.get("/records", authorizeRoles("ADMIN", "ENCARGADO"), getRecords);
-router.post("/records", authorizeRoles("ADMIN", "ENCARGADO"), createRecord);
+router.post("/records", authorizeRoles("ADMIN", "ENCARGADO"), validate(createPayrollRecordSchema), createRecord);
 router.patch("/records/:id/pay", authorizeRoles("ADMIN", "ENCARGADO"), markAsPaid);
 
 // Payroll receipt PDF — available for PAID records

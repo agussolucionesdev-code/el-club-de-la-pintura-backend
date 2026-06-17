@@ -3,7 +3,7 @@ import { upload, uploadToDisk } from "../../middlewares/upload.middleware";
 import { authenticateToken } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
-import { createProductSchema } from "../../schemas/product.schema";
+import { createProductSchema, updateProductSchema } from "../../schemas/product.schema";
 import {
   getProducts,
   createProduct,
@@ -73,6 +73,7 @@ router.put(
   "/:id",
   authenticateToken,
   authorizeRoles("ADMIN", "ENCARGADO"),
+  validate(updateProductSchema),
   updateProduct,
 );
 
