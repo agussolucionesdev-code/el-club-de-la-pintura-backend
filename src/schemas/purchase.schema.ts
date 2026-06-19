@@ -32,12 +32,9 @@ export const createPurchaseOrderSchema = z.object({
 export const receivePurchaseReceiptSchema = z.object({
   body: purchaseBody.extend({
     // Optional link to an existing purchase order being fulfilled.
-    purchaseOrderId: z.coerce
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .nullable(),
+    // PurchaseOrder.id is a UUID string (not numeric); the controller treats an
+    // empty string as "no linked order".
+    purchaseOrderId: z.string().optional().nullable(),
     reason: z.string().optional().nullable(),
   }),
 });
