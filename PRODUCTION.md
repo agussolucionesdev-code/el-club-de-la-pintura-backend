@@ -167,7 +167,10 @@ Backups are only real once a restore has been tested.
 5. Record the restore time (RTO) and the backup age (RPO). Target: RPO ≤ 24h.
 6. Drop the scratch database.
 
-Bridge option until managed backups exist: a scheduled `pg_dump` to cheap object storage.
+Bridge option until managed backups exist: run `scripts/backup-db.sh` on a daily
+schedule (Render Cron Job or crontab). It writes a compressed `pg_dump` to
+`BACKUP_DIR` and prunes to the last `RETENTION` copies. Restore with:
+`gunzip -c <dump>.sql.gz | psql "$SCRATCH_DATABASE_URL"` (into a scratch DB first).
 
 ## Secret rotation
 
