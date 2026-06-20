@@ -182,11 +182,28 @@ CAE storage, sandbox/production separation, and certificate/private key manageme
 npm run dev         # Development server with hot reload
 npm run build       # Compile TypeScript to dist/
 npm run start       # Production server (from dist/)
-npm test            # Run Jest test suite (requires DATABASE_URL)
+npm test            # Run Jest integration suite (needs TEST_DATABASE_URL)
 npx prisma studio   # Visual database browser
 npx prisma migrate deploy  # Apply all pending migrations (required before start in production)
 npx prisma migrate dev --name <name>  # Create a new migration (development only)
+./scripts/backup-db.sh     # Compressed pg_dump backup (bridge until managed backups)
 ```
+
+## Testing & CI
+
+The Jest suite (`tests/`) runs **integration tests against a real Postgres**.
+A safety guard (`tests/helpers/setup.ts`) refuses to run unless `TEST_DATABASE_URL`
+is set, so it never touches the production database. Run locally with a throwaway
+DB:
+
+```bash
+TEST_DATABASE_URL=postgres://localhost:5432/el_club_test npm test
+```
+
+**CI** (`.github/workflows/ci.yml`) runs on every push/PR to `main`: it spins up an
+ephemeral Postgres service, runs `prisma generate` → `tsc --noEmit` →
+`prisma db push` → `npm test`. A red pipeline blocks the change. The frontend's
+Playwright e2e covers the UI side; the two meet at the API contract.
 
 ## Database Migrations
 
