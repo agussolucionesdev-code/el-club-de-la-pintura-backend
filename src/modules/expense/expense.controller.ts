@@ -64,7 +64,10 @@ export const getExpenses = async (req: AuthRequest, res: Response) => {
           ? undefined
           : { branchId: { in: authUser.branchIds } },
       orderBy: { createdAt: "desc" },
-      include: { user: { select: { name: true } } },
+      include: {
+        user: { select: { name: true } },
+        supplier: { select: { id: true, companyName: true } },
+      },
     });
 
     res
@@ -119,7 +122,8 @@ export const registerExpense = async (req: AuthRequest, res: Response) => {
       const activeShift = await tx.cashRegister.findUnique({
         where: { id: Number(cashRegisterId) },
         include: {
-          expenses: true,
+          // Voided expenses must NOT count against the drawer.
+          expenses: { where: { voidedAt: null } },
           payments: true,
         },
       });
@@ -210,5 +214,132 @@ export const registerExpense = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: error.message });
     }
     res.status(500).json({ error: "Fallo estructural al procesar." });
+  }
+};
+
+/**
+ * POST /expenses/:id/void
+ *
+ * Annuls an expense (soft-void with reason) preserving the audit trail. If the
+ * originating shift is still OPEN, the cash is returned to the drawer. Voided
+ * expenses are excluded from every cash/financial sum going forward.
+ */
+export const voidExpense = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const id = Number(req.params.id);
+    const reason = String(req.body?.reason ?? "").trim();
+
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+    if (reason.length < 3) {
+      return res.status(400).json({ error: "Indicá el motivo de la anulación (mínimo 3 caracteres)." });
+    }
+
+    const result = await prisma.$transaction(async (tx) => {
+      const expense = await tx.expense.findUnique({
+        where: { id },
+        include: { cashRegister: { select: { id: true, status: true } } },
+      });
+      if (!expense) throw new Error("Egreso no encontrado.");
+      if (expense.voidedAt) throw new Error("El egreso ya estaba anulado.");
+      if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(expense.branchId)) {
+        throw new Error("No tenés acceso a esta sucursal.");
+      }
+
+      const voided = await tx.expense.update({
+        where: { id },
+        data: { voidedAt: new Date(), voidReason: reason, voidedById: authUser.id },
+      });
+
+      // Refund the drawer only while the shift is still open.
+      const shiftOpen = expense.cashRegister?.status === "OPEN";
+      if (shiftOpen) {
+        await tx.cashRegister.update({
+          where: { id: expense.cashRegisterId },
+          data: { expectedBalance: { increment: expense.amount } },
+        });
+      }
+
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: expense.branchId,
+          action: "expense.voided",
+          entityType: "Expense",
+          entityId: String(id),
+          metadata: toJsonPayload({
+            reason,
+            amount: expense.amount,
+            category: expense.category,
+            cashRegisterId: expense.cashRegisterId,
+            cashRefunded: shiftOpen,
+          }),
+        },
+      });
+
+      return voided;
+    });
+
+    res.status(200).json({ message: "Egreso anulado correctamente.", data: result });
+  } catch (error) {
+    if (error instanceof Error) return res.status(400).json({ error: error.message });
+    res.status(500).json({ error: "Fallo al anular el egreso." });
+  }
+};
+
+/**
+ * PATCH /expenses/:id
+ *
+ * Edits the non-financial fields of an expense (reason, category, type,
+ * supplier). The amount is intentionally immutable to keep cash reconciliation
+ * intact — to correct an amount, void and re-register.
+ */
+export const updateExpense = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const id = Number(req.params.id);
+    const { reason, category, type, supplierId } = req.body;
+
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+
+    const expense = await prisma.expense.findUnique({ where: { id } });
+    if (!expense) return res.status(404).json({ error: "Egreso no encontrado." });
+    if (expense.voidedAt) return res.status(400).json({ error: "No se puede editar un egreso anulado." });
+    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(expense.branchId)) {
+      return res.status(403).json({ error: "No tenés acceso a esta sucursal." });
+    }
+
+    const updated = await prisma.expense.update({
+      where: { id },
+      data: {
+        ...(reason !== undefined && { reason: String(reason) }),
+        ...(category !== undefined && { category: String(category) }),
+        ...(type !== undefined && { type: String(type) }),
+        ...(supplierId !== undefined && {
+          supplierId: supplierId === null || supplierId === "" ? null : Number(supplierId),
+        }),
+      },
+      include: { supplier: { select: { id: true, companyName: true } } },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: authUser.id,
+        branchId: expense.branchId,
+        action: "expense.updated",
+        entityType: "Expense",
+        entityId: String(id),
+        metadata: toJsonPayload({ reason, category, type, supplierId }),
+      },
+    });
+
+    res.status(200).json({ message: "Egreso actualizado.", data: updated });
+  } catch (error) {
+    if (error instanceof Error) return res.status(400).json({ error: error.message });
+    res.status(500).json({ error: "Fallo al actualizar el egreso." });
   }
 };

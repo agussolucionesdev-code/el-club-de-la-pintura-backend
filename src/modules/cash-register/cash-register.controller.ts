@@ -194,7 +194,7 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
       },
       include: {
         user: { select: { id: true, name: true } },
-        expenses: true,
+        expenses: { where: { voidedAt: null } },
         payments: true,
       },
     });
@@ -366,7 +366,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
       where: { id: Number(id) },
       include: {
         payments: true,
-        expenses: true,
+        expenses: { where: { voidedAt: null } },
       },
     });
 
@@ -599,7 +599,7 @@ export const generateCorteZPdf = async (req: AuthRequest, res: Response) => {
         include: { payments: true },
       }),
       prisma.expense.findMany({
-        where: { ...branchFilter, createdAt: { gte: from, lte: to } },
+        where: { ...branchFilter, createdAt: { gte: from, lte: to }, voidedAt: null },
       }),
       branchId > 0
         ? prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } })

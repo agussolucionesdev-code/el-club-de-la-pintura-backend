@@ -142,6 +142,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     const expenseWhere: Prisma.ExpenseWhereInput = {
       ...branchWhere,
       ...(createdAt ? { createdAt } : {}),
+      voidedAt: null,
     };
     const stockWhere: Prisma.StockWhereInput =
       branchFilter === undefined
@@ -464,7 +465,7 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
     const saleWhereClause: Prisma.SaleWhereInput = {
       status: ACTIVE_SALE_STATUS_FILTER,
     };
-    const expenseWhereClause: Prisma.ExpenseWhereInput = {};
+    const expenseWhereClause: Prisma.ExpenseWhereInput = { voidedAt: null };
 
     if (branchId) {
       saleWhereClause.branchId = Number(branchId);
@@ -1073,6 +1074,7 @@ export const exportScopedFinancialReportToExcel = async (
     const expenseWhere: Prisma.ExpenseWhereInput = {
       ...branchWhere,
       ...(createdAt ? { createdAt } : {}),
+      voidedAt: null,
     };
 
     const [sales, payments, expenses] = await Promise.all([

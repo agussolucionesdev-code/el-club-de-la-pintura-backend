@@ -103,6 +103,7 @@ model Supplier {
   isActive    Boolean @default(true) // Soft delete
 
   products Product[] // M:1: Products supplied by this company
+  expenses Expense[] // Expenses paid to this supplier
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -249,10 +250,64 @@ model Expense {
   branchId Int
   branch   Branch @relation(fields: [branchId], references: [id])
 
+  // ── Soft-void (anulación con motivo) — preserves the audit trail ──
+  voidedAt   DateTime? // When the expense was annulled (null = active)
+  voidReason String? // Why it was annulled
+  voidedById Int? // User id who annulled it (plain ref, no relation)
+
+  // ── Receipt image (factura/ticket) — Cloudinary URL ──
+  receiptImageUrl String?
+
+  // ── Optional link to the supplier paid ──
+  supplierId Int?
+  supplier   Supplier? @relation(fields: [supplierId], references: [id])
+
+  // ── If generated from a recurring template (plain ref) ──
+  recurringExpenseId Int?
+
   createdAt DateTime @default(now())
 
   @@index([branchId, createdAt])
   @@index([cashRegisterId])
+  @@index([voidedAt])
+  @@index([supplierId])
+}
+
+// ==========================================
+// EXPENSE BUDGETS (Presupuestos de gastos)
+// ==========================================
+// Monthly spending ceiling, global (branchId/category = null) or scoped.
+model ExpenseBudget {
+  id        Int      @id @default(autoincrement())
+  branchId  Int? // null = applies to all branches
+  category  String? // null = applies to all categories (global budget)
+  amount    Decimal  @db.Decimal(14, 2)
+  period    String   @default("MONTHLY")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([branchId, category])
+}
+
+// ==========================================
+// RECURRING EXPENSES (Gastos recurrentes/programados)
+// ==========================================
+// Template that the operator can instantiate into a real expense in one click.
+model RecurringExpense {
+  id          Int      @id @default(autoincrement())
+  amount      Decimal  @db.Decimal(14, 2)
+  reason      String
+  category    String
+  type        String   @default("VARIABLE")
+  frequency   String   @default("MONTHLY") // MONTHLY | WEEKLY
+  branchId    Int
+  supplierId  Int? // plain ref
+  active      Boolean  @default(true)
+  createdById Int // plain ref
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([branchId, active])
 }
 
 // ------------------------------------------------------

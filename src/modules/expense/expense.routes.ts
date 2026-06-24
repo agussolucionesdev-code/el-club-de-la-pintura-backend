@@ -4,7 +4,12 @@ import { authorizeBranchAccess } from "../../middlewares/branch.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { registerExpenseSchema } from "../../schemas/expense.schema";
-import { registerExpense, getExpenses } from "./expense.controller";
+import {
+  registerExpense,
+  getExpenses,
+  voidExpense,
+  updateExpense,
+} from "./expense.controller";
 
 const router = Router();
 
@@ -17,5 +22,7 @@ router.post(
   validate(registerExpenseSchema),
   registerExpense,
 );
+router.patch("/:id", updateExpense);
+router.post("/:id/void", voidExpense);
 
 export default router;
