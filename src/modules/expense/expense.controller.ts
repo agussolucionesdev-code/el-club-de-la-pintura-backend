@@ -399,6 +399,135 @@ export const deleteBudget = async (req: AuthRequest, res: Response) => {
   }
 };
 
+// ── Recurring expenses (gastos recurrentes/programados) ──────────────────────
+
+/**
+ * GET /expenses/recurring — list recurring templates for visible branches.
+ */
+export const getRecurring = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "No autorizado." });
+    const items = await prisma.recurringExpense.findMany({
+      where: authUser.role === "ADMIN" ? undefined : { branchId: { in: authUser.branchIds } },
+      orderBy: { id: "desc" },
+    });
+    res.status(200).json({ data: items });
+  } catch {
+    res.status(500).json({ error: "No se pudieron cargar los gastos recurrentes." });
+  }
+};
+
+/**
+ * POST /expenses/recurring — create a recurring template.
+ */
+export const createRecurring = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "No autorizado." });
+    const { amount, reason, category, type, frequency, branchId, supplierId } = req.body;
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: "Monto inválido." });
+    if (!reason || String(reason).trim().length < 3) return res.status(400).json({ error: "Indicá un motivo." });
+    if (!branchId) return res.status(400).json({ error: "Falta la sucursal." });
+    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(Number(branchId))) {
+      return res.status(403).json({ error: "No tenés acceso a esta sucursal." });
+    }
+    const item = await prisma.recurringExpense.create({
+      data: {
+        amount: amt,
+        reason: String(reason).trim(),
+        category: String(category || "OTHER"),
+        type: type === "FIXED" ? "FIXED" : "VARIABLE",
+        frequency: frequency === "WEEKLY" ? "WEEKLY" : "MONTHLY",
+        branchId: Number(branchId),
+        supplierId: supplierId ? Number(supplierId) : null,
+        createdById: authUser.id,
+      },
+    });
+    res.status(201).json({ message: "Plantilla creada.", data: item });
+  } catch {
+    res.status(500).json({ error: "No se pudo crear la plantilla." });
+  }
+};
+
+/**
+ * DELETE /expenses/recurring/:id — remove a recurring template.
+ */
+export const deleteRecurring = async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.recurringExpense.delete({ where: { id: Number(req.params.id) } });
+    res.status(200).json({ message: "Plantilla eliminada." });
+  } catch {
+    res.status(500).json({ error: "No se pudo eliminar la plantilla." });
+  }
+};
+
+/**
+ * POST /expenses/recurring/:id/run — instantiate the template into a real
+ * expense, charged to the open shift of the template's branch (with the same
+ * cash validation and audit trail as a manual expense).
+ */
+export const runRecurring = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "No autorizado." });
+    const id = Number(req.params.id);
+
+    const template = await prisma.recurringExpense.findUnique({ where: { id } });
+    if (!template) return res.status(404).json({ error: "Plantilla no encontrada." });
+    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(template.branchId)) {
+      return res.status(403).json({ error: "No tenés acceso a esta sucursal." });
+    }
+
+    const expense = await prisma.$transaction(async (tx) => {
+      const shift = await tx.cashRegister.findFirst({
+        where: { branchId: template.branchId, status: "OPEN" },
+        include: { expenses: { where: { voidedAt: null } }, payments: true },
+      });
+      if (!shift) throw new Error("No hay caja abierta en la sucursal de la plantilla.");
+
+      const available = calculateAvailableCash(shift);
+      const amt = Number(template.amount);
+      if (amt > available) throw new Error("No hay efectivo suficiente para este gasto recurrente.");
+
+      const created = await tx.expense.create({
+        data: {
+          amount: amt,
+          reason: template.reason,
+          category: template.category,
+          type: template.type,
+          branchId: template.branchId,
+          userId: authUser.id,
+          cashRegisterId: shift.id,
+          supplierId: template.supplierId,
+          recurringExpenseId: template.id,
+        },
+      });
+      await tx.cashRegister.update({
+        where: { id: shift.id },
+        data: { expectedBalance: available - amt },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorUserId: authUser.id,
+          branchId: template.branchId,
+          action: "expense.recurring.run",
+          entityType: "Expense",
+          entityId: String(created.id),
+          metadata: toJsonPayload({ recurringExpenseId: template.id, amount: amt, reason: template.reason }),
+        },
+      });
+      return created;
+    });
+
+    res.status(201).json({ message: "Gasto recurrente registrado.", data: expense });
+  } catch (error) {
+    if (error instanceof Error) return res.status(400).json({ error: error.message });
+    res.status(500).json({ error: "No se pudo registrar el gasto recurrente." });
+  }
+};
+
 /**
  * POST /expenses/receipt-upload
  *

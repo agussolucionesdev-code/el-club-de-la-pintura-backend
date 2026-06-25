@@ -14,6 +14,10 @@ import {
   getBudgets,
   upsertBudget,
   deleteBudget,
+  getRecurring,
+  createRecurring,
+  deleteRecurring,
+  runRecurring,
 } from "./expense.controller";
 
 const router = Router();
@@ -24,6 +28,10 @@ router.get("/", getExpenses);
 router.get("/budgets", getBudgets);
 router.put("/budgets", upsertBudget);
 router.delete("/budgets/:id", deleteBudget);
+router.get("/recurring", getRecurring);
+router.post("/recurring", createRecurring);
+router.delete("/recurring/:id", deleteRecurring);
+router.post("/recurring/:id/run", runRecurring);
 router.post("/receipt-upload", upload.single("file"), uploadExpenseReceipt);
 router.post(
   "/",
