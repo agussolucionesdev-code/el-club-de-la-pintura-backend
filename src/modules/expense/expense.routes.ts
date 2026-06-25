@@ -11,6 +11,9 @@ import {
   voidExpense,
   updateExpense,
   uploadExpenseReceipt,
+  getBudgets,
+  upsertBudget,
+  deleteBudget,
 } from "./expense.controller";
 
 const router = Router();
@@ -18,6 +21,9 @@ const router = Router();
 router.use(authenticateToken, authorizeRoles("ADMIN", "ENCARGADO"));
 
 router.get("/", getExpenses);
+router.get("/budgets", getBudgets);
+router.put("/budgets", upsertBudget);
+router.delete("/budgets/:id", deleteBudget);
 router.post("/receipt-upload", upload.single("file"), uploadExpenseReceipt);
 router.post(
   "/",

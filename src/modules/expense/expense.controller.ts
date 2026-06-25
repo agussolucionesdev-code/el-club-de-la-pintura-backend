@@ -351,6 +351,55 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * GET /expenses/budgets — list every spending budget (global + scoped).
+ */
+export const getBudgets = async (_req: AuthRequest, res: Response) => {
+  try {
+    const budgets = await prisma.expenseBudget.findMany({ orderBy: { id: "asc" } });
+    res.status(200).json({ data: budgets });
+  } catch {
+    res.status(500).json({ error: "No se pudieron cargar los presupuestos." });
+  }
+};
+
+/**
+ * PUT /expenses/budgets — create or update a budget (upsert by branch+category).
+ * branchId null = all branches, category null = global ceiling.
+ */
+export const upsertBudget = async (req: AuthRequest, res: Response) => {
+  try {
+    const { branchId, category, amount } = req.body;
+    const amt = Number(amount);
+    if (!Number.isFinite(amt) || amt < 0) {
+      return res.status(400).json({ error: "El monto del presupuesto no es válido." });
+    }
+    const bId = branchId === null || branchId === undefined || Number(branchId) === 0 ? null : Number(branchId);
+    const cat = category ? String(category) : null;
+
+    const existing = await prisma.expenseBudget.findFirst({ where: { branchId: bId, category: cat } });
+    const budget = existing
+      ? await prisma.expenseBudget.update({ where: { id: existing.id }, data: { amount: amt } })
+      : await prisma.expenseBudget.create({ data: { branchId: bId, category: cat, amount: amt } });
+
+    res.status(200).json({ message: "Presupuesto guardado.", data: budget });
+  } catch {
+    res.status(500).json({ error: "No se pudo guardar el presupuesto." });
+  }
+};
+
+/**
+ * DELETE /expenses/budgets/:id — remove a budget.
+ */
+export const deleteBudget = async (req: AuthRequest, res: Response) => {
+  try {
+    await prisma.expenseBudget.delete({ where: { id: Number(req.params.id) } });
+    res.status(200).json({ message: "Presupuesto eliminado." });
+  } catch {
+    res.status(500).json({ error: "No se pudo eliminar el presupuesto." });
+  }
+};
+
+/**
  * POST /expenses/receipt-upload
  *
  * Uploads a receipt (image or PDF) to Cloudinary and returns its secure URL.
