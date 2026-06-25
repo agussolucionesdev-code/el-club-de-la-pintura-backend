@@ -8,6 +8,10 @@ export const registerExpenseSchema = z.object({
     type: z.enum(["FIXED", "VARIABLE"]),
     branchId: z.number().int().positive(),
 
+    // Optional: attached receipt (Cloudinary URL) and supplier link
+    receiptImageUrl: z.string().url().optional().nullable(),
+    supplierId: z.number().int().positive().optional().nullable(),
+
     // cashRegisterId is required — Zod strips unknown keys by default
     cashRegisterId: z
       .number()

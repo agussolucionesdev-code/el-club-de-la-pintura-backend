@@ -15,6 +15,7 @@ import { Response } from "express";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
+import cloudinary from "../../config/cloudinary";
 
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -95,7 +96,7 @@ export const getExpenses = async (req: AuthRequest, res: Response) => {
 export const registerExpense = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
-    const { amount, reason, category, type, branchId, cashRegisterId } =
+    const { amount, reason, category, type, branchId, cashRegisterId, receiptImageUrl, supplierId } =
       req.body;
     const withdrawalAmount = Number(amount);
 
@@ -155,6 +156,8 @@ export const registerExpense = async (req: AuthRequest, res: Response) => {
           branchId: activeShift.branchId,
           userId: authUser.id,
           cashRegisterId: activeShift.id,
+          receiptImageUrl: receiptImageUrl || null,
+          supplierId: supplierId ? Number(supplierId) : null,
         },
       });
 
@@ -300,7 +303,7 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const id = Number(req.params.id);
-    const { reason, category, type, supplierId } = req.body;
+    const { reason, category, type, supplierId, receiptImageUrl } = req.body;
 
     if (!authUser) {
       return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
@@ -322,6 +325,9 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
         ...(supplierId !== undefined && {
           supplierId: supplierId === null || supplierId === "" ? null : Number(supplierId),
         }),
+        ...(receiptImageUrl !== undefined && {
+          receiptImageUrl: receiptImageUrl || null,
+        }),
       },
       include: { supplier: { select: { id: true, companyName: true } } },
     });
@@ -341,5 +347,29 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
   } catch (error) {
     if (error instanceof Error) return res.status(400).json({ error: error.message });
     res.status(500).json({ error: "Fallo al actualizar el egreso." });
+  }
+};
+
+/**
+ * POST /expenses/receipt-upload
+ *
+ * Uploads a receipt (image or PDF) to Cloudinary and returns its secure URL.
+ * The caller then includes that URL as `receiptImageUrl` when creating/editing
+ * an expense. Expects multipart/form-data with a `file` field.
+ */
+export const uploadExpenseReceipt = async (req: AuthRequest, res: Response) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No se adjuntó ningún comprobante." });
+    }
+    const b64 = Buffer.from(req.file.buffer).toString("base64");
+    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+    const uploadResult = await cloudinary.uploader.upload(dataURI, {
+      folder: "el-club-pintura/comprobantes",
+      resource_type: "auto",
+    });
+    res.status(200).json({ message: "Comprobante subido.", url: uploadResult.secure_url });
+  } catch (error) {
+    res.status(500).json({ error: "No se pudo subir el comprobante a la nube." });
   }
 };
