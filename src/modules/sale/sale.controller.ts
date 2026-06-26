@@ -434,6 +434,11 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       totalAmount,
       items,
       pickedUpBy,
+      cardBrand,
+      cardLast4,
+      cardInstallments,
+      cardSurchargePct,
+      couponNumber,
     } = req.body;
 
     if (!authUser) {
@@ -447,6 +452,29 @@ export const createSale = async (req: AuthRequest, res: Response) => {
     const parsedTotalAmount = Number(totalAmount) > 0 ? Number(totalAmount) : 0.01;
     const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
     const isCredit = normalizedPaymentMethod === "CREDIT_ACCOUNT";
+
+    // Card reconciliation metadata is only meaningful when a card was involved.
+    // The terminal handles the PAN; we keep brand/cuotas/coupon/last4 to match
+    // the Posnet receipt. Surcharge % is informational and never alters totals.
+    const involvesCard =
+      normalizedPaymentMethod === "DEBIT" ||
+      normalizedPaymentMethod === "CREDIT" ||
+      normalizedPaymentMethod === "MIXED";
+    const cardData = involvesCard
+      ? {
+          cardBrand: cardBrand ? String(cardBrand).toUpperCase().slice(0, 40) : null,
+          cardLast4: /^\d{4}$/u.test(String(cardLast4 ?? "")) ? String(cardLast4) : null,
+          cardInstallments:
+            Number.isFinite(Number(cardInstallments)) && Number(cardInstallments) > 0
+              ? Math.trunc(Number(cardInstallments))
+              : null,
+          cardSurchargePct:
+            Number.isFinite(Number(cardSurchargePct)) && Number(cardSurchargePct) >= 0
+              ? Number(cardSurchargePct)
+              : null,
+          couponNumber: couponNumber ? String(couponNumber).slice(0, 40) : null,
+        }
+      : { cardBrand: null, cardLast4: null, cardInstallments: null, cardSurchargePct: null, couponNumber: null };
 
     if (isCredit) {
       if (!customerId) {
@@ -521,6 +549,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           status: initialStatus,
           balance: initialBalance,
           pickedUpBy: isCredit ? pickedUpBy : null,
+          ...cardData,
           customerId: customerId ? Number(customerId) : null,
           branchId: parsedBranchId,
           userId: authUser.id,
@@ -1110,6 +1139,19 @@ export const generateSaleReceiptPdf = async (
 
     doc.moveDown(0.6);
     doc.fontSize(9).text(`Medio principal: ${sale.paymentMethod}`);
+    // Card reconciliation line (brand · cuotas · cupón · últimos 4)
+    if (sale.cardBrand || sale.couponNumber || sale.cardLast4 || sale.cardInstallments) {
+      const cardBits: string[] = [];
+      if (sale.cardBrand) cardBits.push(sale.cardBrand);
+      if (sale.cardInstallments && sale.cardInstallments > 1) cardBits.push(`${sale.cardInstallments} cuotas`);
+      if (sale.cardLast4) cardBits.push(`•••• ${sale.cardLast4}`);
+      if (cardBits.length > 0) doc.fontSize(8).text(`Tarjeta: ${cardBits.join(" · ")}`);
+      if (sale.couponNumber) doc.fontSize(8).text(`Cupón: ${sale.couponNumber}`);
+      if (sale.cardSurchargePct && Number(sale.cardSurchargePct) > 0) {
+        doc.fontSize(8).text(`Recargo informado: ${Number(sale.cardSurchargePct)}%`);
+      }
+      doc.fontSize(9);
+    }
     doc.text(`Estado: ${sale.status}`);
     doc.text(`Total: ${formatMoney(sale.totalAmount)}`);
     doc.text(`Cobrado: ${formatMoney(paidAmount)}`);

@@ -324,6 +324,14 @@ model Sale {
   balance    Decimal @default(0) @db.Decimal(14, 2) // Pending amount to be paid
   pickedUpBy String? // Name/ID of the person who physically took the items
 
+  // ── Card reconciliation metadata (terminal handled by a separate Posnet /
+  //    MercadoPago Point — the system NEVER stores the full card number) ──
+  cardBrand        String? // VISA, MASTERCARD, AMEX, CABAL, NARANJA, MAESTRO, MERCADOPAGO, OTRA
+  cardLast4        String? // Last 4 digits, for matching the Posnet coupon (optional)
+  cardInstallments Int? // Cuotas (1 = single payment)
+  cardSurchargePct Decimal? @db.Decimal(7, 4) // Recargo % — informational, does NOT alter totalAmount
+  couponNumber     String? // Posnet/terminal coupon (cupón/lote) number for reconciliation
+
   customerId Int?
   customer   Customer? @relation(fields: [customerId], references: [id])
 
