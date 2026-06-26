@@ -4,7 +4,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install --include=dev && npx prisma generate && npm run build && (npx prisma migrate resolve --rolled-back 20260624120000_expense_module_upgrade || true) && npx prisma migrate deploy
+    buildCommand: npm install --include=dev && npx prisma generate && npm run build && node scripts/patch-db.mjs && (npx prisma migrate resolve --rolled-back 20260624120000_expense_module_upgrade || true) && (npx prisma migrate resolve --rolled-back 20260626000000_ensure_expense_tables || true) && npx prisma migrate deploy
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
