@@ -224,11 +224,37 @@ async function bootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
+/**
+ * Safety net: ensure the additive card-reconciliation columns on Sale exist,
+ * regardless of the migration-history state on the host. Idempotent
+ * (IF NOT EXISTS); runs once per boot before the API serves traffic. Mirrors
+ * the pattern used to recover the expense module on the same fragile host.
+ */
+async function ensureSaleCardColumns(): Promise<void> {
+  const { default: prisma } = await import("./config/db");
+  const ddl: string[] = [
+    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardBrand" TEXT`,
+    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardLast4" TEXT`,
+    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardInstallments" INTEGER`,
+    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardSurchargePct" DECIMAL(7,4)`,
+    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "couponNumber" TEXT`,
+  ];
+  for (const sql of ddl) {
+    try {
+      await prisma.$executeRawUnsafe(sql);
+    } catch (err) {
+      logger.error("[STARTUP] ensureSaleCardColumns failed:", err);
+    }
+  }
+  logger.info("[STARTUP] ensureSaleCardColumns: card columns verified.");
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
+    await ensureSaleCardColumns();
     await bootstrapAdminIfNeeded();
   });
 
