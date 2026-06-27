@@ -61,8 +61,11 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
         }
       : {};
 
+    // Optional ?type= filter (e.g. INTERNAL for staff consumption accounts).
+    const typeFilter = req.query.type ? { type: String(req.query.type) } : {};
+
     const customers = await prisma.customer.findMany({
-      where: { isActive: true, ...searchFilter },
+      where: { isActive: true, ...searchFilter, ...typeFilter },
       orderBy: { name: "asc" },
       ...(limit ? { take: limit } : {}),
       // Include outstanding balance summary for directory display
