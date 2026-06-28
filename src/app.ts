@@ -224,91 +224,11 @@ async function bootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
-/**
- * Safety net: ensure the additive card-reconciliation columns on Sale exist,
- * regardless of the migration-history state on the host. Idempotent
- * (IF NOT EXISTS); runs once per boot before the API serves traffic. Mirrors
- * the pattern used to recover the expense module on the same fragile host.
- */
-async function ensureSaleCardColumns(): Promise<void> {
-  const { default: prisma } = await import("./config/db");
-  const ddl: string[] = [
-    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardBrand" TEXT`,
-    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardLast4" TEXT`,
-    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardInstallments" INTEGER`,
-    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "cardSurchargePct" DECIMAL(7,4)`,
-    `ALTER TABLE "Sale" ADD COLUMN IF NOT EXISTS "couponNumber" TEXT`,
-  ];
-  for (const sql of ddl) {
-    try {
-      await prisma.$executeRawUnsafe(sql);
-    } catch (err) {
-      logger.error("[STARTUP] ensureSaleCardColumns failed:", err);
-    }
-  }
-  logger.info("[STARTUP] ensureSaleCardColumns: card columns verified.");
-}
-
-/**
- * One-time migration-history reconciliation at runtime (observable, DB always
- * reachable here). Records the 3 migration folders that were never written to
- * `_prisma_migrations` as applied — with the exact sha256 checksum Prisma
- * validates — without re-running their (already-applied) SQL. Idempotent.
- */
-async function reconcileMigrationHistory(): Promise<void> {
-  const { default: prisma } = await import("./config/db");
-  const { createHash, randomUUID } = await import("node:crypto");
-  const { readFileSync } = await import("node:fs");
-  const { join } = await import("node:path");
-
-  const targets = [
-    "20260624120000_expense_module_upgrade",
-    "20260626000000_ensure_expense_tables",
-    "20260626140000_add_sale_card_fields",
-  ];
-  const dir = join(process.cwd(), "prisma", "migrations");
-
-  for (const name of targets) {
-    try {
-      const rows = await prisma.$queryRawUnsafe<Array<{ ok: boolean }>>(
-        `SELECT EXISTS(
-           SELECT 1 FROM "_prisma_migrations"
-           WHERE migration_name = $1 AND finished_at IS NOT NULL AND rolled_back_at IS NULL
-         ) AS ok`,
-        name,
-      );
-      if (rows[0]?.ok) {
-        logger.info(`[RECONCILE] ${name} already applied`);
-        continue;
-      }
-      const sql = readFileSync(join(dir, name, "migration.sql"));
-      const checksum = createHash("sha256").update(sql).digest("hex");
-      await prisma.$executeRawUnsafe(
-        `DELETE FROM "_prisma_migrations" WHERE migration_name = $1`,
-        name,
-      );
-      await prisma.$executeRawUnsafe(
-        `INSERT INTO "_prisma_migrations"
-           (id, checksum, finished_at, migration_name, started_at, applied_steps_count)
-         VALUES ($1, $2, NOW(), $3, NOW(), 1)`,
-        randomUUID(),
-        checksum,
-        name,
-      );
-      logger.info(`[RECONCILE] recorded ${name} (checksum ${checksum.slice(0, 12)})`);
-    } catch (err) {
-      logger.error(`[RECONCILE] failed for ${name}:`, err);
-    }
-  }
-}
-
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
-    await reconcileMigrationHistory();
-    await ensureSaleCardColumns();
     await bootstrapAdminIfNeeded();
   });
 
