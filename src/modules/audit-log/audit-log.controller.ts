@@ -141,6 +141,7 @@ export const migrationsDiag = async (_req: AuthRequest, res: Response) => {
        FROM "_prisma_migrations" ORDER BY started_at ASC`,
     );
     res.status(200).json({
+      marker: "boot-reconcile-v1",
       data: rows.map((r) => ({
         migration_name: r.migration_name,
         applied: !!r.finished_at && !r.rolled_back_at,
