@@ -1,16 +1,19 @@
 /**
- * One-time migration history reconciliation.
+ * One-time migration history reconciliation (deterministic, no prisma CLI).
  *
  * Three migration folders exist in prisma/migrations but were never recorded in
  * the host's `_prisma_migrations` table (their columns already exist in the DB
- * via earlier idempotent boot scripts). This records them as applied — WITHOUT
- * re-running their SQL — so `prisma migrate deploy` sees a clean, consistent
- * history again and future migrations apply normally.
+ * via earlier idempotent boot scripts). This records them as applied by inserting
+ * the bookkeeping row directly — with the SAME sha256 checksum Prisma computes
+ * from the migration.sql bytes — so `prisma migrate deploy` sees a clean history
+ * and validates the checksum without re-running the SQL.
  *
- * Safe: only touches the bookkeeping rows for these 3 specific migrations,
- * never any data and never the already-applied migrations.
+ * Safe: only inserts/normalizes the bookkeeping rows for these 3 specific
+ * migrations, never any data and never the already-applied migrations.
  */
-import { execSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import process from "node:process";
 import pkg from "pg";
 
@@ -21,6 +24,8 @@ const TARGETS = [
   "20260626000000_ensure_expense_tables",
   "20260626140000_add_sale_card_fields",
 ];
+
+const MIGRATIONS_DIR = join(process.cwd(), "prisma", "migrations");
 
 const client = new Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
@@ -35,15 +40,20 @@ for (const name of TARGETS) {
     console.log(`[reconcile] ${name} already applied — skip`);
     continue;
   }
-  // Drop any stale/failed/rolled-back bookkeeping rows for this migration so
-  // `resolve --applied` can baseline it cleanly.
+
+  // Checksum = hex(sha256(migration.sql bytes)) — exactly what Prisma stores/validates.
+  const sql = readFileSync(join(MIGRATIONS_DIR, name, "migration.sql"));
+  const checksum = createHash("sha256").update(sql).digest("hex");
+
+  // Clear any stale/failed/rolled-back rows for this migration, then insert a clean applied row.
   await client.query(`DELETE FROM "_prisma_migrations" WHERE migration_name = $1`, [name]);
-  try {
-    execSync(`npx prisma migrate resolve --applied ${name}`, { stdio: "inherit" });
-    console.log(`[reconcile] marked ${name} as applied`);
-  } catch (err) {
-    console.error(`[reconcile] could not resolve ${name}:`, err.message);
-  }
+  await client.query(
+    `INSERT INTO "_prisma_migrations"
+       (id, checksum, finished_at, migration_name, logs, rolled_back_at, started_at, applied_steps_count)
+     VALUES ($1, $2, NOW(), $3, NULL, NULL, NOW(), 1)`,
+    [randomUUID(), checksum, name],
+  );
+  console.log(`[reconcile] recorded ${name} as applied (checksum ${checksum.slice(0, 12)}…)`);
 }
 
 await client.end();
