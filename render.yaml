@@ -4,7 +4,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    buildCommand: npm install --include=dev && npx prisma generate && npm run build && npx prisma migrate deploy
+    buildCommand: npm install --include=dev && npx prisma generate && npm run build && node scripts/reconcile-migrations.mjs && npx prisma migrate deploy
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
