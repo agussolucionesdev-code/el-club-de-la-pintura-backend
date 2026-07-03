@@ -1,6 +1,7 @@
 ﻿// Automatic loading of environment variables (top priority at startup)
 import { logger } from './config/logger';
 import "dotenv/config";
+import { execSync } from "node:child_process";
 
 // Core modules and utilities
 import express, { Application, Request, Response, NextFunction } from "express";
@@ -224,8 +225,29 @@ async function bootstrapAdminIfNeeded(): Promise<void> {
   }
 }
 
+/**
+ * Apply pending Prisma migrations at boot, BEFORE serving traffic.
+ *
+ * The hosting dashboard's build command overrides render.yaml, so
+ * `prisma migrate deploy` never runs during builds — the root cause of every
+ * "column does not exist" incident on this host. Running it here guarantees
+ * each release ships its schema changes, no matter how the build is configured.
+ */
+function applyMigrationsAtBoot(): void {
+  try {
+    execSync("npx prisma migrate deploy", { stdio: "inherit", timeout: 180_000 });
+    logger.info("[STARTUP] prisma migrate deploy: schema up to date.");
+  } catch (err) {
+    // Keep serving with the previous schema rather than crash-looping;
+    // the log line is the signal to investigate.
+    logger.error("[STARTUP] prisma migrate deploy failed:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
+
+  applyMigrationsAtBoot();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);
