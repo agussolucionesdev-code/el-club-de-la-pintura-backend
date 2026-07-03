@@ -12,6 +12,8 @@ import {
   exportPendingAccountsExcel,
   generateSaleReceiptPdf,
   cancelSale,
+  getDiscountCode,
+  validateDiscountCode,
 } from "./sale.controller";
 
 const router = Router();
@@ -28,6 +30,11 @@ router.get(
   authorizeRoles("ADMIN", "ENCARGADO"),
   exportPendingAccountsExcel,
 );
+// Ticket-discount authorization code — registered BEFORE "/:id" so the
+// literal path never gets swallowed by the param route.
+router.get("/discount-code", authorizeRoles("ADMIN", "ENCARGADO"), getDiscountCode);
+router.post("/discount-code/validate", validateDiscountCode);
+
 router.get("/", getSales);
 router.get("/:id/receipt/pdf", generateSaleReceiptPdf);
 router.post("/:id/cancel", authorizeRoles("ADMIN", "ENCARGADO"), cancelSale);

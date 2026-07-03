@@ -16,6 +16,7 @@
  *
  * @module sale.controller
  */
+import { createHmac } from "node:crypto";
 import { Response } from "express";
 import { Payment } from "@prisma/client";
 import { logger } from '../../config/logger';
@@ -71,6 +72,58 @@ const parseCancellationReason = (value: unknown) => {
 };
 
 const roundMoney = (value: number) => Math.round(value * 100) / 100;
+
+// ────────────────────────────────────────────────────────────────────────────
+// Ticket-discount authorization code (supervisor override, supermarket style)
+// ────────────────────────────────────────────────────────────────────────────
+// A 6-digit code derived from the server secret, per branch, per day (Argentina
+// time). ADMIN/ENCARGADO can read it and hand it to the cashier; EMPLOYEE must
+// type it to apply a whole-ticket discount. Deterministic — nothing to store,
+// rotates automatically at midnight.
+const dailyDiscountCode = (branchId: number): string => {
+  const day = new Date().toLocaleDateString("en-CA", {
+    timeZone: "America/Argentina/Buenos_Aires",
+  });
+  const digest = createHmac("sha256", process.env.JWT_SECRET ?? "")
+    .update(`ticket-discount:${branchId}:${day}`)
+    .digest("hex");
+  return String(parseInt(digest.slice(0, 8), 16) % 1_000_000).padStart(6, "0");
+};
+
+/**
+ * GET /sales/discount-code?branchId=N — ADMIN/ENCARGADO only.
+ * Returns today's authorization code so the supervisor can share it verbally.
+ */
+export const getDiscountCode = (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const branchId = Number(req.query.branchId);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad." });
+    }
+    if (!Number.isInteger(branchId) || branchId <= 0) {
+      return res.status(400).json({ error: "Sucursal inválida." });
+    }
+    ensureBranchAccess(branchId, authUser);
+    res.status(200).json({ code: dailyDiscountCode(branchId) });
+  } catch {
+    res.status(403).json({ error: "Sin acceso a la sucursal indicada." });
+  }
+};
+
+/**
+ * POST /sales/discount-code/validate — any authenticated role.
+ * Body: { branchId, code }. Confirms whether the typed code authorizes a
+ * ticket discount today for that branch.
+ */
+export const validateDiscountCode = (req: AuthRequest, res: Response) => {
+  const branchId = Number(req.body?.branchId);
+  const code = String(req.body?.code ?? "").trim();
+  if (!Number.isInteger(branchId) || branchId <= 0 || !/^\d{6}$/u.test(code)) {
+    return res.status(400).json({ valid: false });
+  }
+  res.status(200).json({ valid: code === dailyDiscountCode(branchId) });
+};
 
 const normalizePaymentMethod = (value: unknown) => {
   const method = String(value || "").trim().toUpperCase();
