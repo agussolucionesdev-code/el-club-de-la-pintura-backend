@@ -323,6 +323,7 @@ model Sale {
   status     String  @default("PAID") // PAID, PENDING, PARTIAL
   balance    Decimal @default(0) @db.Decimal(14, 2) // Pending amount to be paid
   pickedUpBy String? // Name/ID of the person who physically took the items
+  note       String? // Optional ticket note (printed on the receipt)
 
   // ── Card reconciliation metadata (terminal handled by a separate Posnet /
   //    MercadoPago Point — the system NEVER stores the full card number) ──

@@ -48,6 +48,9 @@ export const createSaleSchema = z.object({
     // pickedUpBy is required for store-credit sales to record who picked up the goods
     pickedUpBy: z.string().optional().nullable(),
 
+    // Optional free-text note printed on the ticket (e.g. "entregar 15hs")
+    note: z.string().max(300).optional().nullable(),
+
     // Card reconciliation metadata (terminal is a separate Posnet; never the PAN)
     cardBrand: z.string().max(40).optional().nullable(),
     cardLast4: z.string().regex(/^\d{4}$/u, "Deben ser 4 dígitos.").optional().nullable(),

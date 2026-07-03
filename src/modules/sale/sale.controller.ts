@@ -439,6 +439,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       totalAmount,
       items,
       pickedUpBy,
+      note,
       cardBrand,
       cardLast4,
       cardInstallments,
@@ -554,6 +555,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           status: initialStatus,
           balance: initialBalance,
           pickedUpBy: isCredit ? pickedUpBy : null,
+          note: typeof note === "string" && note.trim() ? note.trim().slice(0, 300) : null,
           ...cardData,
           customerId: customerId ? Number(customerId) : null,
           branchId: parsedBranchId,
@@ -1115,6 +1117,9 @@ export const generateSaleReceiptPdf = async (
     }
     if (sale.pickedUpBy) {
       doc.text(`Retiro autorizado: ${sale.pickedUpBy}`);
+    }
+    if (sale.note) {
+      doc.text(`Nota: ${sale.note}`);
     }
     doc.moveDown(0.8);
     doc.text("Detalle de productos");
