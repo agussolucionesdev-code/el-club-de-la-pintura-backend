@@ -142,9 +142,9 @@ const parseImmediatePayments = ({
   payments: unknown;
   totalAmount: number;
 }) => {
-  if (isCredit) return [];
-
   if (!Array.isArray(payments) || payments.length === 0) {
+    // Credit sale with no down payment: the whole total becomes debt.
+    if (isCredit) return [];
     return [
       {
         paymentMethod: normalizePaymentMethod(paymentMethod),
@@ -181,6 +181,17 @@ const parseImmediatePayments = ({
   const paidAmount = roundMoney(
     parsedPayments.reduce((sum, payment) => sum + payment.amount, 0),
   );
+
+  if (isCredit) {
+    // Down payment on a credit sale: something must remain as debt —
+    // otherwise it is a plain sale and must be charged as such.
+    if (paidAmount >= roundMoney(totalAmount)) {
+      throw new Error(
+        "La entrega inicial cubre el total: cobrala como venta común, no como cuenta corriente.",
+      );
+    }
+    return parsedPayments;
+  }
 
   if (Math.abs(paidAmount - roundMoney(totalAmount)) > 0.01) {
     throw new Error(
@@ -535,6 +546,21 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         }
       : { cardBrand: null, cardLast4: null, cardInstallments: null, cardSurchargePct: null, couponNumber: null };
 
+    const immediatePayments = parseImmediatePayments({
+      isCredit,
+      paymentMethod: normalizedPaymentMethod,
+      payments,
+      totalAmount: parsedTotalAmount,
+    });
+    // What lands on the customer's account: total minus any down payment.
+    const paidNow = roundMoney(
+      immediatePayments.reduce((sum, payment) => sum + payment.amount, 0),
+    );
+    const debtAmount = isCredit ? roundMoney(parsedTotalAmount - paidNow) : 0;
+    const salePaymentMethod = isCredit
+      ? "CREDIT_ACCOUNT"
+      : resolveSalePaymentMethod(normalizedPaymentMethod, immediatePayments);
+
     if (isCredit) {
       if (!customerId) {
         throw new Error(
@@ -548,7 +574,8 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       }
 
       // Credit limit check: if the customer has a creditLimit > 0, verify that
-      // their current outstanding balance + this sale does not exceed the limit.
+      // their current outstanding balance + the DEBT of this sale (net of any
+      // down payment) does not exceed the limit.
       const customer = await prisma.customer.findUnique({
         where: { id: Number(customerId) },
         select: { creditLimit: true, name: true },
@@ -560,7 +587,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           _sum: { balance: true },
         });
         const outstanding = currentDebt._sum.balance ?? 0;
-        if (outstanding + parsedTotalAmount > customer.creditLimit) {
+        if (outstanding + debtAmount > customer.creditLimit) {
           const available = Math.max(0, customer.creditLimit - outstanding);
           throw new Error(
             `Límite de crédito superado para ${customer.name}. Disponible: $${available.toLocaleString("es-AR")}. ` +
@@ -569,17 +596,6 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         }
       }
     }
-
-    const immediatePayments = parseImmediatePayments({
-      isCredit,
-      paymentMethod: normalizedPaymentMethod,
-      payments,
-      totalAmount: parsedTotalAmount,
-    });
-    const salePaymentMethod = resolveSalePaymentMethod(
-      normalizedPaymentMethod,
-      immediatePayments,
-    );
 
     const result = await prisma.$transaction(async (tx) => {
       const activeRegister = await tx.cashRegister.findUnique({
@@ -598,8 +614,10 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         );
       }
 
-      const initialStatus = isCredit ? "PENDING" : "PAID";
-      const initialBalance = isCredit ? parsedTotalAmount : 0;
+      // A credit sale with a down payment starts PARTIAL: part is in the till,
+      // the rest is receivable on the customer's account.
+      const initialStatus = isCredit ? (paidNow > 0 ? "PARTIAL" : "PENDING") : "PAID";
+      const initialBalance = debtAmount;
 
       const newSale = await tx.sale.create({
         data: {
@@ -733,7 +751,9 @@ export const createSale = async (req: AuthRequest, res: Response) => {
     res.status(201).json({
       message:
         salePaymentMethod === "CREDIT_ACCOUNT"
-          ? "Venta a credito registrada."
+          ? paidNow > 0
+            ? "Venta a credito registrada con entrega inicial."
+            : "Venta a credito registrada."
           : salePaymentMethod === "MIXED"
             ? "Venta procesada con pagos multiples."
           : "Venta procesada con éxito.",

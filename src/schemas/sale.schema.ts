@@ -43,6 +43,17 @@ export const createSaleSchema = z.object({
       message: "Método de pago no reconocido por el sistema.",
     }),
 
+    // Split payments (MIXED) or a partial down payment on a credit sale.
+    // Domain rules (sum vs total, no CC inside the array) live in the controller.
+    payments: z
+      .array(
+        z.object({
+          paymentMethod: z.enum(PAYMENT_METHODS),
+          amount: z.number().positive("Cada pago debe ser mayor a cero."),
+        }),
+      )
+      .optional(),
+
     status: z.enum(SALE_STATUS).default("PAID"),
 
     // pickedUpBy is required for store-credit sales to record who picked up the goods
