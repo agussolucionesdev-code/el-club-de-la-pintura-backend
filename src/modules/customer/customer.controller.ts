@@ -61,11 +61,16 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
         }
       : {};
 
-    // Optional ?type= filter (e.g. INTERNAL for staff consumption accounts).
+    // Optional ?type= filter (e.g. INTERNAL for staff consumption accounts)
+    // and ?excludeType= (the POS customer picker hides INTERNAL accounts so
+    // staff and clients never mix in the same list).
     const typeFilter = req.query.type ? { type: String(req.query.type) } : {};
+    const excludeFilter = req.query.excludeType
+      ? { type: { not: String(req.query.excludeType) } }
+      : {};
 
     const customers = await prisma.customer.findMany({
-      where: { isActive: true, ...searchFilter, ...typeFilter },
+      where: { isActive: true, ...searchFilter, ...typeFilter, ...excludeFilter },
       orderBy: { name: "asc" },
       ...(limit ? { take: limit } : {}),
       // Include outstanding balance summary for directory display
