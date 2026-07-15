@@ -23,6 +23,7 @@ interface CashRegisterShift {
   initialBalance: number;
   payments: { amount: number; paymentMethod: string }[];
   expenses: { amount: number }[];
+  cashMovements: { amount: number; type: string }[];
 }
 
 interface CashDenominationBreakdown {
@@ -105,8 +106,24 @@ const buildCashRegisterSummary = (shift: CashRegisterShift) => {
     (acc, expense) => acc + expense.amount,
     0,
   );
+
+  // Manual cash movements (ingreso/retiro sin venta) — add IN, subtract OUT.
+  const movements = shift.cashMovements ?? [];
+  const totalCashIn = movements.reduce(
+    (acc, m) => (m.type === "IN" ? acc + m.amount : acc),
+    0,
+  );
+  const totalCashOut = movements.reduce(
+    (acc, m) => (m.type === "OUT" ? acc + m.amount : acc),
+    0,
+  );
+
   const expectedBalance =
-    shift.initialBalance + totalCashPayments - totalExpenses;
+    shift.initialBalance +
+    totalCashPayments -
+    totalExpenses +
+    totalCashIn -
+    totalCashOut;
 
   return {
     initialBalance: roundMoney(shift.initialBalance),
@@ -115,10 +132,15 @@ const buildCashRegisterSummary = (shift: CashRegisterShift) => {
     totalCashPayments: roundMoney(totalCashPayments),
     totalNonCashPayments: roundMoney(totalPayments - totalCashPayments),
     totalExpenses: roundMoney(totalExpenses),
-    netCashMovement: roundMoney(totalCashPayments - totalExpenses),
+    totalCashIn: roundMoney(totalCashIn),
+    totalCashOut: roundMoney(totalCashOut),
+    netCashMovement: roundMoney(
+      totalCashPayments - totalExpenses + totalCashIn - totalCashOut,
+    ),
     expectedBalance: roundMoney(expectedBalance),
     paymentsCount: shift.payments.length,
     expensesCount: shift.expenses.length,
+    movementsCount: movements.length,
   };
 };
 
@@ -196,6 +218,7 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
         user: { select: { id: true, name: true } },
         expenses: { where: { voidedAt: null } },
         payments: true,
+        cashMovements: true,
       },
     });
 
@@ -206,7 +229,13 @@ export const getActiveShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const cashSummary = buildCashRegisterSummary(activeShift);
+    const cashSummary = buildCashRegisterSummary({
+      ...activeShift,
+      cashMovements: activeShift.cashMovements.map((m) => ({
+        amount: Number(m.amount),
+        type: m.type,
+      })),
+    });
     const syncSafety = await buildCashRegisterSyncSafety(branchId);
 
     res.status(200).json({
@@ -301,6 +330,96 @@ export const openShift = async (req: AuthRequest, res: Response) => {
 };
 
 /**
+ * POST /cash-registers/:id/movement
+ *
+ * Registers a manual cash movement (ingreso/retiro) on an OPEN shift — money
+ * physically added to or taken from the drawer that is NOT a sale or expense.
+ * It flows straight into the shift's expected balance for the arqueo.
+ *
+ * A withdrawal (OUT) can never exceed the cash currently in the drawer, so the
+ * drawer can never be driven negative by this operation.
+ *
+ * @param id     - Cash register shift ID (must be OPEN).
+ * @body type    - "IN" (ingreso) or "OUT" (retiro).
+ * @body amount  - Positive amount in ARS.
+ * @body reason  - Required short note (e.g. "Cambio para el turno", "Retiro socio").
+ */
+export const registerCashMovement = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const { id } = req.params;
+    const rawType = String(req.body?.type ?? "").trim().toUpperCase();
+    const amount = Number(req.body?.amount);
+    const reason = String(req.body?.reason ?? "").trim();
+
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del operador." });
+    }
+    if (rawType !== "IN" && rawType !== "OUT") {
+      return res.status(400).json({ error: "El tipo de movimiento debe ser ingreso o retiro." });
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "El monto del movimiento debe ser mayor a cero." });
+    }
+    if (reason.length < 3) {
+      return res.status(400).json({ error: "Indicá un motivo para el movimiento de efectivo." });
+    }
+
+    const shift = await prisma.cashRegister.findUnique({
+      where: { id: Number(id) },
+      include: {
+        payments: true,
+        expenses: { where: { voidedAt: null } },
+        cashMovements: true,
+      },
+    });
+
+    if (!shift || shift.status !== "OPEN") {
+      return res.status(400).json({ error: "No hay un turno de caja abierto para registrar el movimiento." });
+    }
+    if (authUser.role !== "ADMIN" && !authUser.branchIds.includes(shift.branchId)) {
+      return res.status(403).json({ error: "No tenés acceso a la caja de esta sucursal." });
+    }
+
+    const roundedAmount = roundMoney(amount);
+
+    // A withdrawal can't exceed the cash physically in the drawer right now.
+    if (rawType === "OUT") {
+      const summary = buildCashRegisterSummary({
+        initialBalance: Number(shift.initialBalance),
+        payments: shift.payments.map((p) => ({ amount: Number(p.amount), paymentMethod: p.paymentMethod })),
+        expenses: shift.expenses.map((e) => ({ amount: Number(e.amount) })),
+        cashMovements: shift.cashMovements.map((m) => ({ amount: Number(m.amount), type: m.type })),
+      });
+      if (roundedAmount > summary.expectedBalance + 0.01) {
+        return res.status(400).json({
+          error: `No podés retirar $${roundedAmount.toLocaleString("es-AR")}: en el cajón hay $${summary.expectedBalance.toLocaleString("es-AR")}.`,
+        });
+      }
+    }
+
+    const movement = await prisma.cashMovement.create({
+      data: {
+        type: rawType,
+        amount: roundedAmount,
+        reason: reason.slice(0, 200),
+        cashRegisterId: shift.id,
+        userId: authUser.id,
+        branchId: shift.branchId,
+      },
+    });
+
+    res.status(201).json({
+      message: rawType === "IN" ? "Ingreso de efectivo registrado." : "Retiro de efectivo registrado.",
+      data: movement,
+    });
+  } catch (error: unknown) {
+    logger.error("Error al registrar movimiento de efectivo:", error);
+    res.status(500).json({ error: "Fallo al registrar el movimiento de efectivo." });
+  }
+};
+
+/**
  * PATCH /cash-registers/:id/close
  *
  * Closes the shift identified by `:id`. Validates that there are no pending
@@ -367,6 +486,7 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
       include: {
         payments: true,
         expenses: { where: { voidedAt: null } },
+        cashMovements: true,
       },
     });
 
@@ -385,7 +505,13 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const cashSummary = buildCashRegisterSummary(shift);
+    const cashSummary = buildCashRegisterSummary({
+      ...shift,
+      cashMovements: shift.cashMovements.map((m) => ({
+        amount: Number(m.amount),
+        type: m.type,
+      })),
+    });
     const expectedBalance = cashSummary.expectedBalance;
     const discrepancy = roundMoney(countedBalance - expectedBalance);
     const syncSafety = await buildCashRegisterSyncSafety(
@@ -441,9 +567,12 @@ export const closeShift = async (req: AuthRequest, res: Response) => {
           totalNonCashPayments: cashSummary.totalNonCashPayments,
           totalPayments: cashSummary.totalPayments,
           totalExpenses: cashSummary.totalExpenses,
+          totalCashIn: cashSummary.totalCashIn,
+          totalCashOut: cashSummary.totalCashOut,
           netCashMovement: cashSummary.netCashMovement,
           paymentsCount: cashSummary.paymentsCount,
           expensesCount: cashSummary.expensesCount,
+          movementsCount: cashSummary.movementsCount,
           paymentsByMethod: cashSummary.paymentsByMethod,
           ...syncSafety,
           denominationBreakdown: cashDenominationBreakdown,

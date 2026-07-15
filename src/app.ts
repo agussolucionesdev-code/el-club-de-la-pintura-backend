@@ -244,10 +244,44 @@ function applyMigrationsAtBoot(): void {
   }
 }
 
+/**
+ * Belt-and-suspenders: guarantee the CashMovement table exists even if
+ * `migrate deploy` was skipped by the host. Idempotent raw DDL, mirrors the
+ * migration. This host has a history of migrations not applying at build time.
+ */
+async function ensureCashMovementTable(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "CashMovement" (
+        "id" SERIAL NOT NULL,
+        "type" TEXT NOT NULL,
+        "amount" DECIMAL(14,2) NOT NULL,
+        "reason" TEXT NOT NULL,
+        "cashRegisterId" INTEGER NOT NULL,
+        "userId" INTEGER NOT NULL,
+        "branchId" INTEGER NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "CashMovement_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "CashMovement_cashRegisterId_idx" ON "CashMovement"("cashRegisterId");`,
+    );
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "CashMovement_branchId_createdAt_idx" ON "CashMovement"("branchId", "createdAt");`,
+    );
+    logger.info("[STARTUP] CashMovement table ensured.");
+  } catch (err) {
+    logger.error("[STARTUP] ensureCashMovementTable failed:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   applyMigrationsAtBoot();
+  void ensureCashMovementTable();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);

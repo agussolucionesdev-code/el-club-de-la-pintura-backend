@@ -13,6 +13,7 @@ import {
   closeShift,
   getShiftHistory,
   generateCorteZPdf,
+  registerCashMovement,
 } from "./cash-register.controller";
 
 const router = Router();
@@ -45,6 +46,11 @@ router.post(
   authorizeRoles("ADMIN", "ENCARGADO"),
   validate(closeShiftSchema),
   closeShift,
+);
+router.post(
+  "/:id/movement",
+  authorizeRoles("ADMIN", "ENCARGADO"),
+  registerCashMovement,
 );
 router.get(
   "/:branchId/history",
