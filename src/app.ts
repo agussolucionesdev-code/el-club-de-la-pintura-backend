@@ -39,6 +39,7 @@ import auditLogRoutes from "./modules/audit-log/audit-log.routes";
 import payrollRoutes from "./modules/payroll/payroll.routes";
 import returnRoutes from "./modules/return/return.routes";
 import afipRoutes from "./modules/afip/afip.routes";
+import alertsRoutes from "./modules/alerts/alerts.routes";
 
 // Express app initialization
 const app: Application = express();
@@ -156,6 +157,7 @@ app.use("/api/audit-logs", auditLogRoutes);
 app.use("/api/payroll", payrollRoutes);
 app.use("/api/sales", returnRoutes);
 app.use("/api/afip", afipRoutes);
+app.use("/api/alerts", alertsRoutes);
 
 // ============================================================================
 // 4. ERROR HANDLERS — must be registered after all routes
