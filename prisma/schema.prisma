@@ -47,6 +47,9 @@ model User {
   password String
   role     String @default("EMPLOYEE")
 
+  // Cloudinary URL of the profile photo. Null = fall back to the initial.
+  avatarUrl String?
+
   branches Branch[] // M:N: Branches this user can operate in
 
   movements Movement[]

@@ -19,6 +19,7 @@
 import { Response, Request } from "express";
 import { logger } from '../../config/logger';
 import { attachCsrfToken } from "../../middlewares/csrf.middleware";
+import cloudinary from "../../config/cloudinary";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
@@ -163,6 +164,7 @@ export const authenticateUser = async (req: Request, res: Response) => {
         name: user.name,
         email: user.email,
         role: user.role,
+        avatarUrl: user.avatarUrl,
         branches: user.branches,
       },
     });
@@ -198,6 +200,7 @@ export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => 
         name: true,
         email: true,
         role: true,
+        avatarUrl: true,
         branches: { where: { isActive: true }, select: { id: true, name: true, location: true } },
       },
     });
@@ -268,13 +271,100 @@ export const updateMyProfile = async (req: AuthRequest, res: Response) => {
     const updated = await prisma.user.update({
       where: { id: authUser.id },
       data: updateData,
-      select: { id: true, name: true, email: true, role: true },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
     });
 
     res.status(200).json({ message: "Perfil actualizado con éxito.", user: updated });
   } catch (error) {
     logger.error("Error al actualizar perfil propio:", error);
     res.status(500).json({ error: "Error al actualizar el perfil." });
+  }
+};
+
+/**
+ * POST /users/me/avatar
+ *
+ * Uploads the caller's profile photo to Cloudinary and stores its URL.
+ * Always the caller's own account — the id comes from the token, never the
+ * body, so nobody can set someone else's picture.
+ *
+ * Cloudinary does the cropping server-side: a 400x400 face-centred square,
+ * so a phone photo of any shape lands correctly framed and the app never
+ * downloads megabytes to render a 40px avatar.
+ */
+export const uploadMyAvatar = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+    if (!req.file) {
+      return res.status(400).json({ error: "No se proporcionó ninguna imagen." });
+    }
+    if (!req.file.mimetype.startsWith("image/")) {
+      return res.status(400).json({ error: "El archivo debe ser una imagen (JPG, PNG o WEBP)." });
+    }
+
+    const b64 = Buffer.from(req.file.buffer).toString("base64");
+    const dataURI = `data:${req.file.mimetype};base64,${b64}`;
+
+    const uploadResult = await cloudinary.uploader.upload(dataURI, {
+      folder: "el-club-pintura/avatares",
+      // One image per user: re-uploading overwrites instead of piling up
+      // orphaned files in the account.
+      public_id: `user-${authUser.id}`,
+      overwrite: true,
+      invalidate: true,
+      transformation: [
+        { width: 400, height: 400, crop: "fill", gravity: "face" },
+        { quality: "auto", fetch_format: "auto" },
+      ],
+    });
+
+    const updated = await prisma.user.update({
+      where: { id: authUser.id },
+      data: { avatarUrl: uploadResult.secure_url },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
+    });
+
+    res.status(200).json({ message: "Foto de perfil actualizada.", user: updated });
+  } catch (error) {
+    logger.error("Error al subir la foto de perfil:", error);
+    res.status(500).json({ error: "No se pudo procesar la foto en la nube." });
+  }
+};
+
+/**
+ * DELETE /users/me/avatar
+ *
+ * Removes the caller's profile photo, falling the UI back to their initial.
+ * Clears the DB first: if Cloudinary fails, the account is already free of a
+ * dead link rather than pointing at an image that may no longer exist.
+ */
+export const deleteMyAvatar = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: authUser.id },
+      data: { avatarUrl: null },
+      select: { id: true, name: true, email: true, role: true, avatarUrl: true },
+    });
+
+    try {
+      await cloudinary.uploader.destroy(`el-club-pintura/avatares/user-${authUser.id}`);
+    } catch (err) {
+      // The account is already clean; a leftover file is not worth a 500.
+      logger.warn("No se pudo borrar el avatar en Cloudinary:", err);
+    }
+
+    res.status(200).json({ message: "Foto de perfil eliminada.", user: updated });
+  } catch (error) {
+    logger.error("Error al eliminar la foto de perfil:", error);
+    res.status(500).json({ error: "No se pudo eliminar la foto." });
   }
 };
 

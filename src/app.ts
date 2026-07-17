@@ -279,11 +279,28 @@ async function ensureCashMovementTable(): Promise<void> {
   }
 }
 
+/**
+ * Belt-and-suspenders for the profile photo column, same reasoning as
+ * `ensureCashMovementTable`: additive, idempotent, safe to run every boot.
+ */
+async function ensureUserAvatarColumn(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "avatarUrl" TEXT;`,
+    );
+    logger.info("[STARTUP] User.avatarUrl column ensured.");
+  } catch (err) {
+    logger.error("[STARTUP] ensureUserAvatarColumn failed:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   applyMigrationsAtBoot();
   void ensureCashMovementTable();
+  void ensureUserAvatarColumn();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);

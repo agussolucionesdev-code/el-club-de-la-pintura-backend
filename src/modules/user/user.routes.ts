@@ -8,6 +8,7 @@ import {
   modifyEmployeeSchema,
   resetPasswordSchema,
 } from "../../schemas/user.schema";
+import { upload } from "../../middlewares/upload.middleware";
 import {
   authenticateUser,
   logoutUser,
@@ -18,6 +19,8 @@ import {
   terminateEmployee,
   getCurrentUserProfile,
   updateMyProfile,
+  uploadMyAvatar,
+  deleteMyAvatar,
   retrieveRoleCatalog,
   deleteUsersByRole,
   deleteAllOperationalRoleUsers,
@@ -41,6 +44,11 @@ router.post("/logout", logoutUser);
 
 router.get("/me", authenticateToken, getCurrentUserProfile);
 router.patch("/me", authenticateToken, updateMyProfile);
+
+// Own profile photo — every role, since each account manages its own. Must stay
+// above the ADMIN guard below, which applies to everything after it.
+router.post("/me/avatar", authenticateToken, upload.single("image"), uploadMyAvatar);
+router.delete("/me/avatar", authenticateToken, deleteMyAvatar);
 
 router.use(authenticateToken, authorizeRoles("ADMIN"));
 
