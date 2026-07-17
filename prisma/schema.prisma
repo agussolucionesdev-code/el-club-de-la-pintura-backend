@@ -70,6 +70,31 @@ model User {
 }
 
 // ==========================================
+// APP SETTINGS
+// ==========================================
+// Business-wide switches the owner controls from Configuración.
+// One row, always id = 1: these are settings for the shop, not per user, so a
+// key/value bag would only trade type safety for nothing.
+model AppSetting {
+  id Int @id @default(1)
+
+  // Whether an ENCARGADO may read the daily discount code. The owner may want
+  // to hand it out personally; enforced server-side, not just hidden in the UI.
+  discountCodeVisibleToEncargado Boolean @default(true)
+
+  // Sidebar alerts. Each can be silenced, and the noisy ones have a floor so a
+  // single stale item does not badge the menu forever.
+  alertCashEnabled     Boolean @default(true)
+  alertStockEnabled    Boolean @default(true)
+  alertStockMinCount   Int     @default(1) // badge only from N flagged products up
+  alertAccountsEnabled Boolean @default(true)
+  alertAccountsMinDebt Int     @default(0) // badge only past this total debt ($)
+  alertPayrollEnabled  Boolean @default(true)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ==========================================
 // CUSTOMER & ACCOUNTS RECEIVABLE MODULE
 // ==========================================
 // Store client profiles, contractors, and companies

@@ -15,6 +15,7 @@ import { Response } from "express";
 import { logger } from "../../config/logger";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { readSettings } from "../settings/settings.controller";
 
 type AuthUser = { id: number; role: string; branchIds: number[] };
 
@@ -64,12 +65,16 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
     const canSeeOps = authUser.role === "ADMIN" || authUser.role === "ENCARGADO";
     const isAdmin = authUser.role === "ADMIN";
 
+    // What the owner chose to be told about. A silenced alert is not queried
+    // at all, so turning one off also saves the work of computing it.
+    const settings = await readSettings();
+
     // ── Caja: is there an open shift in this branch? ──────────────────────
     // Only meaningful for a concrete branch: the consolidated view spans
     // several shifts at once, so it reports nothing rather than something
     // misleading.
     const cashShift =
-      branchId > 0
+      settings.alertCashEnabled && branchId > 0
         ? await prisma.cashRegister.findFirst({
             where: { branchId, status: "OPEN" },
             select: { id: true },
@@ -78,7 +83,7 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
 
     const summary: AlertsSummary = {
       cash: {
-        open: branchId > 0 ? cashShift !== null : null,
+        open: settings.alertCashEnabled && branchId > 0 ? cashShift !== null : null,
         shiftId: cashShift?.id ?? null,
       },
       stock: null,
@@ -87,7 +92,7 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
     };
 
     // ── Stock: below-threshold counts ────────────────────────────────────
-    if (canSeeOps) {
+    if (canSeeOps && settings.alertStockEnabled) {
       const stocks = await prisma.stock.findMany({
         where: {
           ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
@@ -98,15 +103,15 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
       // Filtered here because Prisma cannot compare two columns in `where`.
       const atAlert = stocks.filter((s) => s.quantity <= s.minStock);
       const critical = atAlert.filter((s) => s.quantity <= s.criticalStock).length;
-      summary.stock = {
-        critical,
-        warning: atAlert.length - critical,
-        total: atAlert.length,
-      };
+      // Below the owner's floor there is nothing worth badging the menu for.
+      summary.stock =
+        atAlert.length >= settings.alertStockMinCount
+          ? { critical, warning: atAlert.length - critical, total: atAlert.length }
+          : { critical: 0, warning: 0, total: 0 };
     }
 
     // ── Cuentas corrientes: open debt and customers past their limit ──────
-    if (canSeeOps) {
+    if (canSeeOps && settings.alertAccountsEnabled) {
       const debtors = await prisma.customer.findMany({
         where: { isActive: true, sales: { some: { status: { in: ["PENDING", "PARTIAL"] } } } },
         select: {
@@ -131,11 +136,17 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
         if (c.creditLimit > 0 && debt > c.creditLimit) overLimit += 1;
       }
 
-      summary.accounts = { overLimit, withDebt, totalDebt };
+      // Small debt is normal in a paint shop; the owner sets what counts as
+      // worth a badge. Customers over their credit limit always report — that
+      // is the money-losing case, not a matter of volume.
+      summary.accounts =
+        totalDebt >= settings.alertAccountsMinDebt || overLimit > 0
+          ? { overLimit, withDebt, totalDebt }
+          : { overLimit: 0, withDebt: 0, totalDebt };
     }
 
     // ── Liquidaciones pendientes de pago ─────────────────────────────────
-    if (isAdmin) {
+    if (isAdmin && settings.alertPayrollEnabled) {
       const pending = await prisma.payrollRecord.count({
         where: { status: "PENDING" },
       });

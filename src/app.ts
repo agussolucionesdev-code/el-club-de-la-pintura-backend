@@ -40,6 +40,7 @@ import payrollRoutes from "./modules/payroll/payroll.routes";
 import returnRoutes from "./modules/return/return.routes";
 import afipRoutes from "./modules/afip/afip.routes";
 import alertsRoutes from "./modules/alerts/alerts.routes";
+import settingsRoutes from "./modules/settings/settings.routes";
 
 // Express app initialization
 const app: Application = express();
@@ -158,6 +159,7 @@ app.use("/api/payroll", payrollRoutes);
 app.use("/api/sales", returnRoutes);
 app.use("/api/afip", afipRoutes);
 app.use("/api/alerts", alertsRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // ============================================================================
 // 4. ERROR HANDLERS — must be registered after all routes
@@ -295,12 +297,43 @@ async function ensureUserAvatarColumn(): Promise<void> {
   }
 }
 
+/**
+ * Belt-and-suspenders for the settings table, same reasoning as the two above.
+ * Seeds the single row so the first read never races to create it.
+ */
+async function ensureAppSettingTable(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "AppSetting" (
+        "id" INTEGER NOT NULL DEFAULT 1,
+        "discountCodeVisibleToEncargado" BOOLEAN NOT NULL DEFAULT true,
+        "alertCashEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "alertStockEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "alertStockMinCount" INTEGER NOT NULL DEFAULT 1,
+        "alertAccountsEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "alertAccountsMinDebt" INTEGER NOT NULL DEFAULT 0,
+        "alertPayrollEnabled" BOOLEAN NOT NULL DEFAULT true,
+        "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "AppSetting_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(
+      `INSERT INTO "AppSetting" ("id") VALUES (1) ON CONFLICT ("id") DO NOTHING;`,
+    );
+    logger.info("[STARTUP] AppSetting table ensured.");
+  } catch (err) {
+    logger.error("[STARTUP] ensureAppSettingTable failed:", err);
+  }
+}
+
 if (process.env.NODE_ENV !== "test") {
   const portNumber = typeof PORT === "string" ? parseInt(PORT, 10) : PORT;
 
   applyMigrationsAtBoot();
   void ensureCashMovementTable();
   void ensureUserAvatarColumn();
+  void ensureAppSettingTable();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);

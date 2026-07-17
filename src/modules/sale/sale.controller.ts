@@ -25,6 +25,7 @@ import * as ExcelJS from "exceljs";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
+import { readSettings } from "../settings/settings.controller";
 
 class SaleBranchAccessError extends Error {}
 class SaleNotFoundError extends Error {}
@@ -94,7 +95,7 @@ const dailyDiscountCode = (branchId: number): string => {
  * GET /sales/discount-code?branchId=N — ADMIN/ENCARGADO only.
  * Returns today's authorization code so the supervisor can share it verbally.
  */
-export const getDiscountCode = (req: AuthRequest, res: Response) => {
+export const getDiscountCode = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
     const branchId = Number(req.query.branchId);
@@ -104,6 +105,18 @@ export const getDiscountCode = (req: AuthRequest, res: Response) => {
     if (!Number.isInteger(branchId) || branchId <= 0) {
       return res.status(400).json({ error: "Sucursal inválida." });
     }
+
+    // The owner can reserve the code for themselves. Enforced here, not just
+    // hidden in the UI: hiding a button is decoration, this is the lock.
+    if (authUser.role === "ENCARGADO") {
+      const settings = await readSettings();
+      if (!settings.discountCodeVisibleToEncargado) {
+        return res.status(403).json({
+          error: "El código del día lo entrega el administrador.",
+        });
+      }
+    }
+
     ensureBranchAccess(branchId, authUser);
     res.status(200).json({ code: dailyDiscountCode(branchId) });
   } catch {
