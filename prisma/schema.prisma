@@ -192,6 +192,12 @@ model Stock {
   // INYECCIÓN RECUPERADA: Semáforo Dinámico
   criticalStock Int @default(0)
 
+  // The level the owner wants to keep. At or above it the product reads as
+  // "Sano"; between minStock and this it is merely "Suficiente" — enough to
+  // sell, not enough to relax. 0 = unset, and then "sano" is simply anything
+  // above minStock, which is how it behaved before this existed.
+  healthyStock Int @default(0)
+
   productId Int
   product   Product @relation(fields: [productId], references: [id])
 

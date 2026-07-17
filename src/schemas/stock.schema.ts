@@ -42,5 +42,10 @@ export const updateStockThresholdsSchema = z.object({
       .number()
       .nonnegative("El umbral crítico no puede ser negativo.")
       .optional(),
+    // 0 = sin definir; entonces "sano" es simplemente por encima de minStock.
+    healthyStock: z
+      .number()
+      .nonnegative("El umbral de stock sano no puede ser negativo.")
+      .optional(),
   }),
 });

@@ -115,6 +115,7 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
       // Shipped alongside minStock: the UI draws three bands (sano / reponer /
       // crítico) and cannot tell the last one apart without this.
       const criticalStock = firstStock?.criticalStock ?? 0;
+      const healthyStock = firstStock?.healthyStock ?? 0;
       const stockId = firstStock?.id ?? Number(`${product.id}999`);
 
       return {
@@ -122,6 +123,7 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
         quantity,
         minStock,
         criticalStock,
+        healthyStock,
         productId: product.id,
         branchId: branchId === 0 ? 0 : branchId,
         product: {
@@ -734,7 +736,7 @@ export const updateStockThresholds = async (
 ) => {
   try {
     const authUser = getAuthUser(req);
-    const { productId, branchId, minStock, criticalStock } = req.body;
+    const { productId, branchId, minStock, criticalStock, healthyStock } = req.body;
     const parsedBranchId = Number(branchId);
 
     if (!authUser) {
@@ -745,6 +747,21 @@ export const updateStockThresholds = async (
 
     ensureBranchAccess(parsedBranchId, authUser);
 
+    // The bands have to stay in order or they stop meaning anything: critical
+    // above restock would make "reponer" unreachable, and healthy at or below
+    // restock would leave a product both "hay que pedir" and "sano" at once.
+    const min = Number(minStock);
+    if (criticalStock !== undefined && Number(criticalStock) > min) {
+      return res.status(400).json({
+        error: "El umbral crítico no puede ser mayor que el de reposición.",
+      });
+    }
+    if (healthyStock !== undefined && Number(healthyStock) > 0 && Number(healthyStock) <= min) {
+      return res.status(400).json({
+        error: "El umbral de stock sano debe ser mayor que el de reposición.",
+      });
+    }
+
     const updatedThreshold = await prisma.stock.update({
       where: {
         productId_branchId: {
@@ -753,9 +770,12 @@ export const updateStockThresholds = async (
         },
       },
       data: {
-        minStock: Number(minStock),
+        minStock: min,
         ...(criticalStock !== undefined
           ? { criticalStock: Number(criticalStock) }
+          : {}),
+        ...(healthyStock !== undefined
+          ? { healthyStock: Number(healthyStock) }
           : {}),
       },
     });

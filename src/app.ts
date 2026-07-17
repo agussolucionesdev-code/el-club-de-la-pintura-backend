@@ -297,6 +297,19 @@ async function ensureUserAvatarColumn(): Promise<void> {
   }
 }
 
+/** Same belt-and-suspenders for the "Sano desde" threshold. */
+async function ensureHealthyStockColumn(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "Stock" ADD COLUMN IF NOT EXISTS "healthyStock" INTEGER NOT NULL DEFAULT 0;`,
+    );
+    logger.info("[STARTUP] Stock.healthyStock column ensured.");
+  } catch (err) {
+    logger.error("[STARTUP] ensureHealthyStockColumn failed:", err);
+  }
+}
+
 /**
  * Belt-and-suspenders for the settings table, same reasoning as the two above.
  * Seeds the single row so the first read never races to create it.
@@ -333,6 +346,7 @@ if (process.env.NODE_ENV !== "test") {
   applyMigrationsAtBoot();
   void ensureCashMovementTable();
   void ensureUserAvatarColumn();
+  void ensureHealthyStockColumn();
   void ensureAppSettingTable();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
