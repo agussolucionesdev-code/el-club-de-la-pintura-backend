@@ -112,12 +112,16 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
           : firstStock?.quantity ?? 0;
 
       const minStock = firstStock?.minStock ?? 5;
+      // Shipped alongside minStock: the UI draws three bands (sano / reponer /
+      // crítico) and cannot tell the last one apart without this.
+      const criticalStock = firstStock?.criticalStock ?? 0;
       const stockId = firstStock?.id ?? Number(`${product.id}999`);
 
       return {
         id: stockId,
         quantity,
         minStock,
+        criticalStock,
         productId: product.id,
         branchId: branchId === 0 ? 0 : branchId,
         product: {
