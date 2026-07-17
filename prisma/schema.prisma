@@ -78,9 +78,14 @@ model User {
 model AppSetting {
   id Int @id @default(1)
 
-  // Whether an ENCARGADO may read the daily discount code. The owner may want
-  // to hand it out personally; enforced server-side, not just hidden in the UI.
+  // Whether an ENCARGADO may read the discount code. The owner may want to hand
+  // it out personally; enforced server-side, not just hidden in the UI.
   discountCodeVisibleToEncargado Boolean @default(true)
+
+  // How discount authorization works:
+  //   "DAILY"    — one rotating code per branch per day (autonomous, default)
+  //   "PER_SALE" — admin/encargado mints a single-use code on demand per sale
+  discountCodeMode String @default("DAILY")
 
   // Sidebar alerts. Each can be silenced, and the noisy ones have a floor so a
   // single stale item does not badge the menu forever.
@@ -92,6 +97,22 @@ model AppSetting {
   alertPayrollEnabled  Boolean @default(true)
 
   updatedAt DateTime @updatedAt
+}
+
+// Single-use discount codes for PER_SALE mode. Kept tiny on purpose: they
+// expire fast and used/expired rows are swept on every generation, so the
+// table never accumulates the "muchos códigos" the owner worried about.
+model DiscountToken {
+  id        Int      @id @default(autoincrement())
+  code      String // 6-digit, shown to whoever authorizes the sale
+  branchId  Int
+  used      Boolean  @default(false)
+  createdBy Int // user id that minted it, for the audit trail
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([branchId, code])
+  @@index([expiresAt])
 }
 
 // ==========================================

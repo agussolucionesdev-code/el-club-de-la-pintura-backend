@@ -16,7 +16,7 @@
  *
  * @module sale.controller
  */
-import { createHmac } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { Response } from "express";
 import { Payment } from "@prisma/client";
 import { logger } from '../../config/logger';
@@ -95,6 +95,18 @@ const dailyDiscountCode = (branchId: number): string => {
  * GET /sales/discount-code?branchId=N — ADMIN/ENCARGADO only.
  * Returns today's authorization code so the supervisor can share it verbally.
  */
+/** Whoever asks for a code must be allowed to; the encargado gate is a setting. */
+const assertCanReadDiscountCode = async (authUser: { role: string }) => {
+  if (authUser.role === "ENCARGADO") {
+    const settings = await readSettings();
+    if (!settings.discountCodeVisibleToEncargado) {
+      throw new SaleBranchAccessError(
+        "El código de descuento lo entrega el administrador.",
+      );
+    }
+  }
+};
+
 export const getDiscountCode = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);
@@ -106,36 +118,129 @@ export const getDiscountCode = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Sucursal inválida." });
     }
 
-    // The owner can reserve the code for themselves. Enforced here, not just
-    // hidden in the UI: hiding a button is decoration, this is the lock.
-    if (authUser.role === "ENCARGADO") {
-      const settings = await readSettings();
-      if (!settings.discountCodeVisibleToEncargado) {
-        return res.status(403).json({
-          error: "El código del día lo entrega el administrador.",
-        });
-      }
+    await assertCanReadDiscountCode(authUser);
+    ensureBranchAccess(branchId, authUser);
+
+    const settings = await readSettings();
+    // In per-sale mode there is no standing code to show; the supervisor mints
+    // one on demand via /generate. Report the mode so the UI knows which panel
+    // to render instead of a code that would not exist.
+    if (settings.discountCodeMode === "PER_SALE") {
+      return res.status(200).json({ mode: "PER_SALE" });
+    }
+    res.status(200).json({ mode: "DAILY", code: dailyDiscountCode(branchId) });
+  } catch (error) {
+    if (error instanceof SaleBranchAccessError) {
+      return res.status(403).json({ error: error.message });
+    }
+    res.status(403).json({ error: "Sin acceso a la sucursal indicada." });
+  }
+};
+
+const PER_SALE_TTL_MINUTES = 30;
+
+/**
+ * POST /sales/discount-code/generate — ADMIN/ENCARGADO, per-sale mode only.
+ * Mints a single-use code tied to this branch, valid for a short window. Sweeps
+ * this branch's used/expired tokens first, so the table stays small.
+ */
+export const generateDiscountCode = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    const branchId = Number(req.body?.branchId);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad." });
+    }
+    if (!Number.isInteger(branchId) || branchId <= 0) {
+      return res.status(400).json({ error: "Sucursal inválida." });
     }
 
+    await assertCanReadDiscountCode(authUser);
     ensureBranchAccess(branchId, authUser);
-    res.status(200).json({ code: dailyDiscountCode(branchId) });
-  } catch {
-    res.status(403).json({ error: "Sin acceso a la sucursal indicada." });
+
+    const settings = await readSettings();
+    if (settings.discountCodeMode !== "PER_SALE") {
+      return res.status(409).json({
+        error: "El modo por venta no está activo. El código de hoy es el que corresponde.",
+      });
+    }
+
+    const now = new Date();
+    // Keep the table tiny: drop this branch's spent or expired codes each time.
+    await prisma.discountToken.deleteMany({
+      where: { branchId, OR: [{ used: true }, { expiresAt: { lt: now } }] },
+    });
+
+    // A random 6-digit code so it cannot be guessed from the day like the
+    // daily one; retried on the rare collision with a live token.
+    let code = "";
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = String(
+        parseInt(randomBytes(4).toString("hex"), 16) % 1_000_000,
+      ).padStart(6, "0");
+      const clash = await prisma.discountToken.findFirst({
+        where: { branchId, code: candidate, used: false, expiresAt: { gt: now } },
+      });
+      if (!clash) {
+        code = candidate;
+        break;
+      }
+    }
+    if (!code) {
+      return res.status(500).json({ error: "No se pudo generar un código único, reintentá." });
+    }
+
+    const expiresAt = new Date(now.getTime() + PER_SALE_TTL_MINUTES * 60_000);
+    await prisma.discountToken.create({
+      data: { code, branchId, createdBy: authUser.id, expiresAt },
+    });
+
+    res.status(200).json({ code, expiresAt, ttlMinutes: PER_SALE_TTL_MINUTES });
+  } catch (error) {
+    if (error instanceof SaleBranchAccessError) {
+      return res.status(403).json({ error: error.message });
+    }
+    logger.error("Error al generar el código de descuento:", error);
+    res.status(500).json({ error: "No se pudo generar el código." });
   }
 };
 
 /**
  * POST /sales/discount-code/validate — any authenticated role.
  * Body: { branchId, code }. Confirms whether the typed code authorizes a
- * ticket discount today for that branch.
+ * ticket discount. In per-sale mode the matching token is consumed here, so a
+ * code works exactly once.
  */
-export const validateDiscountCode = (req: AuthRequest, res: Response) => {
+export const validateDiscountCode = async (req: AuthRequest, res: Response) => {
   const branchId = Number(req.body?.branchId);
   const code = String(req.body?.code ?? "").trim();
   if (!Number.isInteger(branchId) || branchId <= 0 || !/^\d{6}$/u.test(code)) {
     return res.status(400).json({ valid: false });
   }
-  res.status(200).json({ valid: code === dailyDiscountCode(branchId) });
+
+  try {
+    const settings = await readSettings();
+
+    if (settings.discountCodeMode === "PER_SALE") {
+      const now = new Date();
+      const token = await prisma.discountToken.findFirst({
+        where: { branchId, code, used: false, expiresAt: { gt: now } },
+      });
+      if (!token) return res.status(200).json({ valid: false });
+      // Burn it: one code, one discount. updateMany guards against a double
+      // request racing to reuse the same token.
+      const consumed = await prisma.discountToken.updateMany({
+        where: { id: token.id, used: false },
+        data: { used: true },
+      });
+      return res.status(200).json({ valid: consumed.count === 1 });
+    }
+
+    res.status(200).json({ valid: code === dailyDiscountCode(branchId) });
+  } catch (error) {
+    logger.error("Error al validar el código de descuento:", error);
+    res.status(500).json({ valid: false });
+  }
 };
 
 const normalizePaymentMethod = (value: unknown) => {

@@ -334,9 +334,38 @@ async function ensureAppSettingTable(): Promise<void> {
     await prisma.$executeRawUnsafe(
       `INSERT INTO "AppSetting" ("id") VALUES (1) ON CONFLICT ("id") DO NOTHING;`,
     );
+    // Added after the table's first ship; older DBs won't have it yet.
+    await prisma.$executeRawUnsafe(
+      `ALTER TABLE "AppSetting" ADD COLUMN IF NOT EXISTS "discountCodeMode" TEXT NOT NULL DEFAULT 'DAILY';`,
+    );
     logger.info("[STARTUP] AppSetting table ensured.");
   } catch (err) {
     logger.error("[STARTUP] ensureAppSettingTable failed:", err);
+  }
+}
+
+/** Single-use discount codes for PER_SALE mode. */
+async function ensureDiscountTokenTable(): Promise<void> {
+  try {
+    const { default: prisma } = await import("./config/db");
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "DiscountToken" (
+        "id" SERIAL NOT NULL,
+        "code" TEXT NOT NULL,
+        "branchId" INTEGER NOT NULL,
+        "used" BOOLEAN NOT NULL DEFAULT false,
+        "createdBy" INTEGER NOT NULL,
+        "expiresAt" TIMESTAMP(3) NOT NULL,
+        "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT "DiscountToken_pkey" PRIMARY KEY ("id")
+      );
+    `);
+    await prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "DiscountToken_branchId_code_idx" ON "DiscountToken"("branchId", "code");`,
+    );
+    logger.info("[STARTUP] DiscountToken table ensured.");
+  } catch (err) {
+    logger.error("[STARTUP] ensureDiscountTokenTable failed:", err);
   }
 }
 
@@ -348,6 +377,7 @@ if (process.env.NODE_ENV !== "test") {
   void ensureUserAvatarColumn();
   void ensureHealthyStockColumn();
   void ensureAppSettingTable();
+  void ensureDiscountTokenTable();
 
   const server = app.listen(portNumber, "0.0.0.0", async () => {
     logger.info(`Server running on http://127.0.0.1:${portNumber}`);

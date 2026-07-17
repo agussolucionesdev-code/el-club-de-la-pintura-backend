@@ -13,8 +13,11 @@ import { logger } from "../../config/logger";
 import prisma from "../../config/db";
 import { AuthRequest } from "../../middlewares/auth.middleware";
 
+export type DiscountCodeMode = "DAILY" | "PER_SALE";
+
 export interface AppSettings {
   discountCodeVisibleToEncargado: boolean;
+  discountCodeMode: DiscountCodeMode;
   alertCashEnabled: boolean;
   alertStockEnabled: boolean;
   alertStockMinCount: number;
@@ -25,6 +28,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   discountCodeVisibleToEncargado: true,
+  discountCodeMode: "DAILY",
   alertCashEnabled: true,
   alertStockEnabled: true,
   alertStockMinCount: 1,
@@ -40,11 +44,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
  * there yet the app falls back to defaults instead of breaking the sidebar —
  * a missing setting must not take the menu down with it.
  */
+/** Narrow the free-text column back to the two modes the app understands. */
+const asMode = (value: unknown): DiscountCodeMode =>
+  value === "PER_SALE" ? "PER_SALE" : "DAILY";
+
 export const readSettings = async (): Promise<AppSettings> => {
   try {
-    const row = await prisma.appSetting.findUnique({ where: { id: 1 } });
-    if (row) return row;
-    return await prisma.appSetting.create({ data: { id: 1 } });
+    const row =
+      (await prisma.appSetting.findUnique({ where: { id: 1 } })) ??
+      (await prisma.appSetting.create({ data: { id: 1 } }));
+    return { ...row, discountCodeMode: asMode(row.discountCodeMode) };
   } catch (err) {
     logger.warn("No se pudo leer AppSetting; usando valores por defecto:", err);
     return DEFAULT_SETTINGS;
@@ -79,6 +88,10 @@ export const updateSettings = async (req: AuthRequest, res: Response) => {
         typeof b.discountCodeVisibleToEncargado === "boolean"
           ? b.discountCodeVisibleToEncargado
           : current.discountCodeVisibleToEncargado,
+      discountCodeMode:
+        b.discountCodeMode === "DAILY" || b.discountCodeMode === "PER_SALE"
+          ? b.discountCodeMode
+          : current.discountCodeMode,
       alertCashEnabled:
         typeof b.alertCashEnabled === "boolean" ? b.alertCashEnabled : current.alertCashEnabled,
       alertStockEnabled:

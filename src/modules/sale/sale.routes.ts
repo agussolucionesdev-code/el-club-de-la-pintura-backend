@@ -13,6 +13,7 @@ import {
   generateSaleReceiptPdf,
   cancelSale,
   getDiscountCode,
+  generateDiscountCode,
   validateDiscountCode,
 } from "./sale.controller";
 
@@ -33,6 +34,7 @@ router.get(
 // Ticket-discount authorization code — registered BEFORE "/:id" so the
 // literal path never gets swallowed by the param route.
 router.get("/discount-code", authorizeRoles("ADMIN", "ENCARGADO"), getDiscountCode);
+router.post("/discount-code/generate", authorizeRoles("ADMIN", "ENCARGADO"), generateDiscountCode);
 router.post("/discount-code/validate", validateDiscountCode);
 
 router.get("/", getSales);
