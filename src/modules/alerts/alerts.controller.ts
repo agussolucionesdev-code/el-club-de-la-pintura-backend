@@ -112,28 +112,56 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
 
     // ── Cuentas corrientes: open debt and customers past their limit ──────
     if (canSeeOps && settings.alertAccountsEnabled) {
+      const OPEN = { in: ["PENDING", "PARTIAL"] };
+
+      // Debt belongs to the branch that made the sale. This filter was missing,
+      // so every branch reported the same figure — Temperley's three debtors
+      // showed up in Lomas de Zamora too, which made the badge worthless.
+      const saleInBranch = {
+        status: OPEN,
+        ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
+      };
+
       const debtors = await prisma.customer.findMany({
-        where: { isActive: true, sales: { some: { status: { in: ["PENDING", "PARTIAL"] } } } },
+        // Only customers who owe something *here*.
+        where: { isActive: true, sales: { some: saleInBranch } },
         select: {
           creditLimit: true,
-          sales: {
-            where: { status: { in: ["PENDING", "PARTIAL"] } },
-            select: { balance: true },
-          },
+          // Every open sale of theirs, branch included: the money owed here is
+          // one question, whether they blew their credit limit is another.
+          sales: { where: { status: OPEN }, select: { balance: true, branchId: true } },
         },
       });
+
+      /** Does this sale count towards the branch currently on screen? */
+      const inScope = (saleBranchId: number) => {
+        if (branchWhere === undefined) return true; // consolidated (ADMIN)
+        if (typeof branchWhere === "number") return saleBranchId === branchWhere;
+        return branchWhere.in.includes(saleBranchId); // consolidated, own branches
+      };
 
       let overLimit = 0;
       let withDebt = 0;
       let totalDebt = 0;
 
       for (const c of debtors) {
-        const debt = c.sales.reduce((sum, s) => sum + Number(s.balance), 0);
-        if (debt <= 0) continue;
+        let branchDebt = 0;
+        let customerDebt = 0;
+        for (const s of c.sales) {
+          const amount = Number(s.balance);
+          customerDebt += amount;
+          if (inScope(s.branchId)) branchDebt += amount;
+        }
+
+        if (branchDebt <= 0) continue; // owes nothing here — not this branch's alert
         withDebt += 1;
-        totalDebt += debt;
+        totalDebt += branchDebt;
+
+        // The credit limit is the customer's, not the branch's: they are over it
+        // based on everything they owe. Reported here only because they also owe
+        // money at this branch, so the number always matches what you can act on.
         // creditLimit 0 means "no limit set", so it can never be exceeded.
-        if (c.creditLimit > 0 && debt > c.creditLimit) overLimit += 1;
+        if (c.creditLimit > 0 && customerDebt > c.creditLimit) overLimit += 1;
       }
 
       // Small debt is normal in a paint shop; the owner sets what counts as
@@ -147,8 +175,13 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
 
     // ── Liquidaciones pendientes de pago ─────────────────────────────────
     if (isAdmin && settings.alertPayrollEnabled) {
+      // Same bug as accounts had: staff belong to a branch, so unpaid wages
+      // are counted where the employee works instead of company-wide.
       const pending = await prisma.payrollRecord.count({
-        where: { status: "PENDING" },
+        where: {
+          status: "PENDING",
+          ...(branchWhere === undefined ? {} : { employee: { branchId: branchWhere } }),
+        },
       });
       summary.payroll = { pending };
     }
