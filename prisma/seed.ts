@@ -201,7 +201,7 @@ const CATALOGUE = [
 ];
 
 // Stock quantities per branch — different so the POS demo shows variety
-// [lomasQty, temperleyQty]
+// [qty893, qtyDonato]
 const STOCK_MAP: Record<string, [number, number]> = {
   "ALB-LAT-001": [24, 12],
   "ALB-LAT-002": [18, 8],
@@ -213,21 +213,21 @@ const STOCK_MAP: Record<string, [number, number]> = {
   "SHW-LAT-001": [6, 9],
   "SHW-LAT-002": [12, 5],
   "SHW-ESM-001": [3, 8],
-  "SHW-PISO-001": [5, 0],   // Temperley sin stock — para demo
+  "SHW-PISO-001": [5, 0],   // Donato Álvarez sin stock — para demo
   "SIN-LAT-001": [4, 11],
   "SIN-LAT-002": [16, 3],
   "SIN-ESM-001": [7, 14],
-  "SIN-IMP-001": [9, 0],    // Temperley sin stock
+  "SIN-IMP-001": [9, 0],    // Donato Álvarez sin stock
   "SIN-BARN-001": [22, 17],
   "PET-LAT-001": [15, 9],
   "PET-ESM-001": [28, 22],
   "PET-ANT-001": [11, 7],
-  "PET-LAT-002": [0, 6],    // Lomas sin stock — para demo
+  "PET-LAT-002": [0, 6],    // 893 y 851 sin stock — para demo
   "COL-LAT-001": [19, 8],
   "COL-LAT-002": [13, 4],
   "COL-ESM-001": [25, 18],
   "COL-IMP-001": [6, 12],
-  "COL-BARN-001": [0, 3],   // Lomas sin stock
+  "COL-BARN-001": [0, 3],   // 893 y 851 sin stock
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -235,12 +235,21 @@ const STOCK_MAP: Record<string, [number, number]> = {
 // ─────────────────────────────────────────────────────────────────────────────
 const main = async () => {
   console.log("── Seeding branches…");
-  const [branchLomas, branchTemp] = await Promise.all([
-    ensureBranchByNameOrLegacy("Lomas de Zamora", "Sucursal 1", "Av. Hipólito Yrigoyen 1234, Lomas de Zamora"),
-    ensureBranchByNameOrLegacy("Temperley", "Sucursal 2", "Av. Hipólito Yrigoyen 5678, Temperley"),
+  // The real branches, from the shop's own card. The name is the short label
+  // staff say out loud and that has to fit the narrow branch selector; the
+  // full postal address lives in `location`, which is what that field is for.
+  // Legacy names are the placeholders these rows used to carry, so a re-seed
+  // renames them in place instead of creating duplicates.
+  const [branch893, branchDonato] = await Promise.all([
+    ensureBranchByNameOrLegacy("893 y 851", "Lomas de Zamora", "Calle 893 y 851 N° 2198"),
+    ensureBranchByNameOrLegacy(
+      "Donato Álvarez",
+      "Temperley",
+      "Ferrocarril Provincial N° 4548 (Donato Álvarez)",
+    ),
   ]);
-  console.log(`   ✓ ${branchLomas.name} (id: ${branchLomas.id})`);
-  console.log(`   ✓ ${branchTemp.name} (id: ${branchTemp.id})`);
+  console.log(`   ✓ ${branch893.name} (id: ${branch893.id})`);
+  console.log(`   ✓ ${branchDonato.name} (id: ${branchDonato.id})`);
 
   console.log("── Seeding users…");
   const password = getSeedPassword();
@@ -251,35 +260,35 @@ const main = async () => {
       name: "Administrador General",
       email: "admin@clubpintura.local",
       role: "ADMIN",
-      branchIds: [branchLomas.id, branchTemp.id],
+      branchIds: [branch893.id, branchDonato.id],
       passwordHash,
     }),
     ensureUser({
-      name: "Encargado Lomas de Zamora",
-      email: "encargado.lomas@clubpintura.local",
+      name: "Encargado 893 y 851",
+      email: "encargado.893@clubpintura.local",
       role: "ENCARGADO",
-      branchIds: [branchLomas.id],
+      branchIds: [branch893.id],
       passwordHash,
     }),
     ensureUser({
-      name: "Encargado Temperley",
-      email: "encargado.temperley@clubpintura.local",
+      name: "Encargado Donato Álvarez",
+      email: "encargado.donato@clubpintura.local",
       role: "ENCARGADO",
-      branchIds: [branchTemp.id],
+      branchIds: [branchDonato.id],
       passwordHash,
     }),
     ensureUser({
-      name: "Empleado Lomas de Zamora",
-      email: "empleado.lomas@clubpintura.local",
+      name: "Empleado 893 y 851",
+      email: "empleado.893@clubpintura.local",
       role: "EMPLOYEE",
-      branchIds: [branchLomas.id],
+      branchIds: [branch893.id],
       passwordHash,
     }),
     ensureUser({
-      name: "Empleado Temperley",
-      email: "empleado.temperley@clubpintura.local",
+      name: "Empleado Donato Álvarez",
+      email: "empleado.donato@clubpintura.local",
       role: "EMPLOYEE",
-      branchIds: [branchTemp.id],
+      branchIds: [branchDonato.id],
       passwordHash,
     }),
   ]);
@@ -325,14 +334,14 @@ const main = async () => {
     console.log(`   ✓ ${item.sku}  →  $${retailPrice.toLocaleString("es-AR")}`);
   }
 
-  console.log("── Seeding stock (Lomas de Zamora + Temperley)…");
+  console.log("── Seeding stock (893 y 851 + Donato Álvarez)…");
   let stockCount = 0;
-  for (const [sku, [lomasQty, tempQty]] of Object.entries(STOCK_MAP)) {
+  for (const [sku, [qty893, qtyDonato]] of Object.entries(STOCK_MAP)) {
     const pid = productIds[sku];
     if (!pid) continue;
     await Promise.all([
-      upsertStock(pid, branchLomas.id, lomasQty, 5, 2),
-      upsertStock(pid, branchTemp.id, tempQty, 5, 2),
+      upsertStock(pid, branch893.id, qty893, 5, 2),
+      upsertStock(pid, branchDonato.id, qtyDonato, 5, 2),
     ]);
     stockCount++;
   }
@@ -344,8 +353,8 @@ const main = async () => {
       entityType: "OperationalBaseline",
       metadata: {
         branches: [
-          { id: branchLomas.id, name: branchLomas.name },
-          { id: branchTemp.id, name: branchTemp.name },
+          { id: branch893.id, name: branch893.name },
+          { id: branchDonato.id, name: branchDonato.name },
         ],
         productCount: CATALOGUE.length,
         users: seededUsers,
@@ -358,8 +367,8 @@ const main = async () => {
 
   console.log("\n✅ Seed completed.\n");
   console.table([
-    { branch: branchLomas.name, id: branchLomas.id },
-    { branch: branchTemp.name, id: branchTemp.id },
+    { branch: branch893.name, id: branch893.id },
+    { branch: branchDonato.name, id: branchDonato.id },
   ]);
   console.table(seededUsers);
 

@@ -1298,6 +1298,12 @@ export const generateSaleReceiptPdf = async (
     doc.fontSize(8).text(`Comprobante: ${internalReceipt.receiptNumber}`);
     doc.text(`Fecha: ${formatReceiptDate(sale.createdAt)}`);
     doc.text(`Sucursal: ${sale.branch.name}`);
+    // The customer keeps this slip: the address tells them which shop to walk
+    // back into for a return. Data-driven, so editing it in Configuración
+    // updates every future ticket.
+    if (sale.branch.location?.trim()) {
+      doc.text(sale.branch.location.trim());
+    }
     doc.text(`Caja: ${sale.cashRegisterId ?? "Sin caja vinculada"}`);
     doc.text(`Vendedor: ${sale.user.name}`);
     doc.moveDown(0.8);
