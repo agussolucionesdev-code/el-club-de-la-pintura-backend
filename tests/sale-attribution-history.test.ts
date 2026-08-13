@@ -300,6 +300,35 @@ describe("Atribución de ventas e historial", () => {
       expect(idsSegunda.filter((id: number) => idsPrimera.includes(id))).toHaveLength(0);
     });
 
+    it("🔒 el resumen describe el FILTRO COMPLETO, no la página", async () => {
+      // Sin esto, la pantalla sólo puede sumar lo que tiene cargado. Con
+      // paginación, el encabezado diría "TOTAL: $X" cuando en realidad son las
+      // primeras 25 filas de 200 — un número que miente, y que alguien va a
+      // leer como lo vendido en el período.
+      const [chica, grande] = await Promise.all([
+        historial(adminToken, `?branchId=${branchId}&limit=2`),
+        historial(adminToken, `?branchId=${branchId}&limit=100`),
+      ]);
+
+      expect(chica.body.data).toHaveLength(2);
+      expect(grande.body.data.length).toBeGreaterThan(2);
+      // El resumen NO cambia con el tamaño de página.
+      expect(chica.body.summary).toEqual(grande.body.summary);
+      expect(chica.body.summary.count).toBe(grande.body.data.length);
+    });
+
+    it("el resumen sí cambia cuando cambia el FILTRO", async () => {
+      const [todo, sinInternas] = await Promise.all([
+        historial(adminToken, `?branchId=${branchId}&limit=100`),
+        historial(adminToken, `?branchId=${branchId}&limit=100&excludeInternal=true`),
+      ]);
+
+      expect(sinInternas.body.summary.count).toBeLessThan(todo.body.summary.count);
+      expect(sinInternas.body.summary.totalAmount).toBeLessThan(
+        todo.body.summary.totalAmount,
+      );
+    });
+
     it("filtra por vendedor", async () => {
       const res = await historial(adminToken, `?branchId=${branchId}&sellerId=${empleadoId}`);
       expect(res.body.data.length).toBeGreaterThan(0);

@@ -254,6 +254,21 @@ export const getSalesHistory = async (req: AuthRequest, res: Response) => {
     const pagina = hayMas ? filas.slice(0, take) : filas;
     const ultima = pagina[pagina.length - 1];
 
+    // ── Total del FILTRO COMPLETO, no de la página ──
+    //
+    // Sin esto, la pantalla sólo puede sumar lo que tiene cargado, y con
+    // paginación eso es una parte. El encabezado diría "TOTAL: $781.150" cuando
+    // en realidad son las primeras 25 filas de 200 — un número que miente, que
+    // es justo lo que este proyecto viene corrigiendo.
+    //
+    // Se calcula sin cursor a propósito: el resumen describe el filtro entero,
+    // y no debe cambiar a medida que alguien avanza páginas.
+    const resumen = await prisma.sale.aggregate({
+      where,
+      _sum: { totalAmount: true, balance: true },
+      _count: { _all: true },
+    });
+
     res.json({
       data: pagina.map((venta) => ({
         id: venta.id,
@@ -288,6 +303,15 @@ export const getSalesHistory = async (req: AuthRequest, res: Response) => {
         // vendió, se dedujo de quién tenía la sesión abierta.
         attributionLegacy: venta.attributionLegacy,
       })),
+      // Describe TODO lo que matchea el filtro, no lo que se ve en pantalla.
+      summary: {
+        // `Number()` explícito: `_sum` de un Decimal llega como Decimal y
+        // serializarlo directo da un objeto, no un número. Ya nos pasó en el
+        // dashboard de la Fase 2.
+        totalAmount: Number(resumen._sum.totalAmount ?? 0),
+        totalBalance: Number(resumen._sum.balance ?? 0),
+        count: resumen._count._all,
+      },
       pageInfo: {
         hasNextPage: hayMas,
         nextCursor: hayMas && ultima ? encodeCursor(ultima.createdAt, ultima.id) : null,
