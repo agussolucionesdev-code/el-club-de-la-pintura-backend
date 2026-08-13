@@ -1,3 +1,4 @@
+import { testTerminalFor } from "./helpers/terminal";
 import request from "supertest";
 import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
@@ -76,6 +77,7 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
 
     const cashRegister = await prisma.cashRegister.create({
       data: {
+        terminalId: await testTerminalFor(branchId),
         initialBalance: 100,
         branchId,
         userId: operatorId,
@@ -193,6 +195,9 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
     await prisma.cashRegister.deleteMany({ where: { id: cashRegisterId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.user.deleteMany({ where: { email: operatorCreds.email } });
+    // El helper crea una terminal por sucursal; hay que borrarla ANTES
+    // que la sucursal o la clave foránea lo impide.
+    await prisma.terminal.deleteMany({ where: { code: { startsWith: "TEST-" } } });
     await prisma.branch.deleteMany({
       where: { id: { in: [branchId, forbiddenBranchId] } },
     });
@@ -397,6 +402,7 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
   it("rechaza cierres con dinero contado invalido", async () => {
     const invalidRegister = await prisma.cashRegister.create({
       data: {
+        terminalId: await testTerminalFor(branchId),
         initialBalance: 100,
         branchId,
         userId: operatorId,
@@ -419,6 +425,7 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
   it("rechaza cierres cuando el conteo por denominaciones no coincide", async () => {
     const invalidRegister = await prisma.cashRegister.create({
       data: {
+        terminalId: await testTerminalFor(branchId),
         initialBalance: 100,
         branchId,
         userId: operatorId,

@@ -21,6 +21,7 @@ import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { parseLocalDate } from "../../utils/date.utils";
+import { decrementStockOrThrow, incrementStock } from "../../utils/stock.utils";
 
 class BranchAccessDeniedError extends Error {}
 
@@ -425,40 +426,33 @@ export const updateStock = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      let newQuantity = Number(quantity);
+      const locator = { productId: Number(productId), branchId: parsedBranchId };
 
-      if (currentStock) {
-        if (type === "ADD") {
-          newQuantity = currentStock.quantity + Number(quantity);
+      if (type === "SUBTRACT") {
+        if (!currentStock) {
+          throw new Error(
+            "Operacion rechazada: El producto no tiene stock registrado para descontar.",
+          );
         }
-        if (type === "SUBTRACT") {
-          if (currentStock.quantity < Number(quantity)) {
-            throw new Error(
-              "Operacion rechazada: Stock insuficiente para el descuento solicitado.",
-            );
-          }
-          newQuantity = currentStock.quantity - Number(quantity);
-        }
-      } else if (type === "SUBTRACT") {
-        throw new Error(
-          "Operacion rechazada: El producto no tiene stock registrado para descontar.",
-        );
+        // Atómico: valida y descuenta en una sentencia.
+        await decrementStockOrThrow(tx, locator, Number(quantity));
+      } else if (type === "ADD") {
+        // Relativo, no `currentStock.quantity + n`: dos reposiciones
+        // simultáneas se perdían una a la otra.
+        await incrementStock(tx, locator, Number(quantity));
+      } else {
+        // Ajuste absoluto ("el conteo físico dice N"). Acá el último que
+        // escribe gana A PROPÓSITO: es una corrección manual contra un conteo
+        // real, no una operación relativa que deba componerse con otras.
+        await tx.stock.upsert({
+          where: { productId_branchId: locator },
+          update: { quantity: Number(quantity) },
+          create: { ...locator, quantity: Number(quantity), minStock: 5 },
+        });
       }
 
-      const updatedStock = await tx.stock.upsert({
-        where: {
-          productId_branchId: {
-            productId: Number(productId),
-            branchId: parsedBranchId,
-          },
-        },
-        update: { quantity: newQuantity },
-        create: {
-          productId: Number(productId),
-          branchId: parsedBranchId,
-          quantity: newQuantity,
-          minStock: 5,
-        },
+      const updatedStock = await tx.stock.findUniqueOrThrow({
+        where: { productId_branchId: locator },
       });
 
       // Normalize to the canonical movement history type
@@ -559,31 +553,46 @@ export const transferStockBetweenBranches = async (
         },
       });
 
-      if (!sourceStock || sourceStock.quantity < parsedQuantity) {
+      if (!sourceStock) {
         throw new Error("Stock insuficiente en la sucursal de origen.");
       }
 
-      const updatedSource = await tx.stock.update({
-        where: { id: sourceStock.id },
-        data: { quantity: sourceStock.quantity - parsedQuantity },
-      });
+      // Descuento atómico: la comprobación de disponibilidad va en el WHERE.
+      // Antes se escribía `sourceStock.quantity - parsedQuantity`, un valor
+      // precalculado que dos transferencias simultáneas pisaban entre sí.
+      await decrementStockOrThrow(
+        tx,
+        { productId: parsedProductId, branchId: parsedFromBranchId },
+        parsedQuantity,
+      );
 
-      const updatedTarget = await tx.stock.upsert({
-        where: {
-          productId_branchId: {
-            productId: parsedProductId,
-            branchId: parsedToBranchId,
+      await incrementStock(
+        tx,
+        { productId: parsedProductId, branchId: parsedToBranchId },
+        parsedQuantity,
+        { minStock: sourceStock.minStock, criticalStock: sourceStock.criticalStock },
+      );
+
+      // Se releen para el comprobante y la respuesta: ya reflejan el resultado
+      // real del descuento atómico, no lo que creíamos antes de escribir.
+      const [updatedSource, updatedTarget] = await Promise.all([
+        tx.stock.findUniqueOrThrow({
+          where: {
+            productId_branchId: {
+              productId: parsedProductId,
+              branchId: parsedFromBranchId,
+            },
           },
-        },
-        update: { quantity: { increment: parsedQuantity } },
-        create: {
-          productId: parsedProductId,
-          branchId: parsedToBranchId,
-          quantity: parsedQuantity,
-          minStock: sourceStock.minStock,
-          criticalStock: sourceStock.criticalStock,
-        },
-      });
+        }),
+        tx.stock.findUniqueOrThrow({
+          where: {
+            productId_branchId: {
+              productId: parsedProductId,
+              branchId: parsedToBranchId,
+            },
+          },
+        }),
+      ]);
 
       const transferReason =
         reason ||

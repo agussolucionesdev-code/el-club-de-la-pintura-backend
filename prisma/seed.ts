@@ -51,21 +51,56 @@ const ensureBranchByNameOrLegacy = async (
 // ─────────────────────────────────────────────────────────────────────────────
 // USERS
 // ─────────────────────────────────────────────────────────────────────────────
+/**
+ * Busca por el email destino y, si no está, por el email HISTÓRICO antes de
+ * crear. Espejo de `ensureBranchByNameOrLegacy`.
+ *
+ * Sin esto, el seed duplicaba usuarios: el commit 1086e1c renombró cuatro
+ * emails (`*.lomas@` → `*.893@`, `*.temperley@` → `*.donato@`) y `ensureUser`
+ * sólo miraba el nombre nuevo. Cualquier base sembrada antes de ese commit
+ * quedaba con CUATRO cuentas fantasma: las viejas conservando todo su historial
+ * de ventas y turnos, y las nuevas vacías y con una contraseña distinta.
+ *
+ * Renombrar en lugar de duplicar preserva `Sale.userId`, `CashRegister.userId`,
+ * `Movement.userId` y los registros de liquidaciones.
+ */
 const ensureUser = async ({
   name,
   email,
+  legacyEmails = [],
   role,
   branchIds,
   passwordHash,
 }: {
   name: string;
   email: string;
+  /** Emails que esta misma persona tuvo antes de un renombre del seed. */
+  legacyEmails?: string[];
   role: "ADMIN" | "ENCARGADO" | "EMPLOYEE";
   branchIds: number[];
   passwordHash: string;
 }) => {
   const branches = branchIds.map((id) => ({ id }));
-  const existing = await prisma.user.findUnique({ where: { email } });
+
+  let existing = await prisma.user.findUnique({ where: { email } });
+
+  if (!existing) {
+    for (const legacyEmail of legacyEmails) {
+      const legacy = await prisma.user.findUnique({ where: { email: legacyEmail } });
+      if (!legacy) continue;
+
+      // Se renombra la cuenta existente. NO se toca la contraseña: quien ya
+      // estaba usando el sistema sigue entrando con la suya.
+      const renamed = await prisma.user.update({
+        where: { id: legacy.id },
+        data: { email, name, branches: { set: branches } },
+        select: { id: true, email: true, role: true },
+      });
+      console.log(`   ↻ Usuario renombrado: ${legacyEmail} → ${email} (historial preservado)`);
+      return renamed;
+    }
+  }
+
   if (existing) {
     if (process.env.SEED_OVERWRITE_USERS === "true") {
       return prisma.user.update({
@@ -128,16 +163,29 @@ const upsertProduct = async (data: {
   indoorOutdoor?: boolean;
   supplierId?: number;
 }) => {
+  // Por defecto NO se pisan los datos de un producto que ya existe.
+  //
+  // El `update` de antes sobrescribía nombre, marca, categoría y —sobre todo—
+  // PRECIOS en cada corrida. Un re-seed contra una base con datos vivos volvía
+  // los 25 SKU del catálogo a los valores hardcodeados de este archivo,
+  // borrando cualquier actualización de precios hecha desde la UI.
+  //
+  // `SEED_REFRESH_CATALOGUE=true` reactiva el comportamiento viejo, para cuando
+  // se quiere justamente eso en un entorno de desarrollo.
+  const refreshCatalogue = process.env.SEED_REFRESH_CATALOGUE === "true";
+
   return prisma.product.upsert({
     where: { sku: data.sku },
-    update: {
-      name: data.name,
-      brand: data.brand,
-      category: data.category,
-      retailPrice: data.retailPrice,
-      costPrice: data.costPrice,
-      supplierId: data.supplierId,
-    },
+    update: refreshCatalogue
+      ? {
+          name: data.name,
+          brand: data.brand,
+          category: data.category,
+          retailPrice: data.retailPrice,
+          costPrice: data.costPrice,
+          supplierId: data.supplierId,
+        }
+      : {}, // no-op: el producto existente queda intacto
     create: { ...data, images: [], isActive: true },
   });
 };
@@ -153,9 +201,17 @@ const upsertStock = async (
   minStock = 5,
   criticalStock = 2,
 ) => {
+  // Por defecto NO se pisa el stock de una fila existente.
+  //
+  // El `update: { quantity }` de antes reescribía las existencias reales con el
+  // número hardcodeado del seed en cada corrida. Contra una base con datos
+  // vivos eso destruye el inventario: el conteo físico del local se reemplaza
+  // por un valor de ejemplo, y no queda rastro de cuál era el bueno.
+  const refreshCatalogue = process.env.SEED_REFRESH_CATALOGUE === "true";
+
   return prisma.stock.upsert({
     where: { productId_branchId: { productId, branchId } },
-    update: { quantity },
+    update: refreshCatalogue ? { quantity } : {}, // no-op: el stock real manda
     create: { productId, branchId, quantity, minStock, criticalStock },
   });
 };
@@ -263,9 +319,14 @@ const main = async () => {
       branchIds: [branch893.id, branchDonato.id],
       passwordHash,
     }),
+    // `legacyEmails`: los emails que estas cuentas tuvieron antes del commit
+    // 1086e1c, cuando las sucursales de relleno ("Lomas de Zamora",
+    // "Temperley") se reemplazaron por las reales. Sin esto, un re-seed sobre
+    // una base anterior a ese commit creaba cuentas fantasma en vez de renombrar.
     ensureUser({
       name: "Encargado 893 y 851",
       email: "encargado.893@clubpintura.local",
+      legacyEmails: ["encargado.lomas@clubpintura.local"],
       role: "ENCARGADO",
       branchIds: [branch893.id],
       passwordHash,
@@ -273,6 +334,7 @@ const main = async () => {
     ensureUser({
       name: "Encargado Donato Álvarez",
       email: "encargado.donato@clubpintura.local",
+      legacyEmails: ["encargado.temperley@clubpintura.local"],
       role: "ENCARGADO",
       branchIds: [branchDonato.id],
       passwordHash,
@@ -280,6 +342,7 @@ const main = async () => {
     ensureUser({
       name: "Empleado 893 y 851",
       email: "empleado.893@clubpintura.local",
+      legacyEmails: ["empleado.lomas@clubpintura.local"],
       role: "EMPLOYEE",
       branchIds: [branch893.id],
       passwordHash,
@@ -287,6 +350,7 @@ const main = async () => {
     ensureUser({
       name: "Empleado Donato Álvarez",
       email: "empleado.donato@clubpintura.local",
+      legacyEmails: ["empleado.temperley@clubpintura.local"],
       role: "EMPLOYEE",
       branchIds: [branchDonato.id],
       passwordHash,

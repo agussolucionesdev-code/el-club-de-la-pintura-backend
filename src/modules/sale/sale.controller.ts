@@ -22,10 +22,30 @@ import { Payment } from "@prisma/client";
 import { logger } from '../../config/logger';
 import PDFDocument from "pdfkit";
 import * as ExcelJS from "exceljs";
-import prisma from "../../config/db";
+import prisma, { type PrismaTx } from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { readSettings } from "../settings/settings.controller";
+import {
+  decrementStockOrThrow,
+  isUniqueConstraintViolation,
+} from "../../utils/stock.utils";
+import {
+  IDEMPOTENCY_KEY_PATTERN,
+  userBranchScope,
+  withIdempotency,
+} from "../../utils/idempotency.utils";
+import {
+  assertTotalMatches,
+  priceSaleLines,
+  resolveCashChange,
+  toDecimal,
+  TotalMismatchError,
+} from "../../utils/pricing.utils";
+import {
+  resolveTerminalIfAvailable,
+  TerminalResolutionError,
+} from "../../utils/terminal.utils";
 
 class SaleBranchAccessError extends Error {}
 class SaleNotFoundError extends Error {}
@@ -619,6 +639,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
       paymentMethod,
       payments,
       totalAmount,
+      cashReceived,
       items,
       pickedUpBy,
       note,
@@ -634,6 +655,23 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         error: "No se pudo validar la identidad del vendedor.",
       });
     }
+
+    // Clave de idempotencia: cabecera estándar `Idempotency-Key`. Se valida el
+    // formato para no guardar basura como clave primaria.
+    const rawIdempotencyKey =
+      typeof req.headers["idempotency-key"] === "string"
+        ? req.headers["idempotency-key"].trim()
+        : "";
+
+    if (rawIdempotencyKey && !IDEMPOTENCY_KEY_PATTERN.test(rawIdempotencyKey)) {
+      return res.status(400).json({
+        error:
+          "La cabecera Idempotency-Key tiene un formato inválido " +
+          "(8 a 120 caracteres alfanuméricos, guiones o guiones bajos).",
+      });
+    }
+
+    const idempotencyKey = rawIdempotencyKey || null;
 
     const parsedBranchId = Number(branchId);
     ensureBranchAccess(parsedBranchId, authUser);
@@ -664,21 +702,8 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         }
       : { cardBrand: null, cardLast4: null, cardInstallments: null, cardSurchargePct: null, couponNumber: null };
 
-    const immediatePayments = parseImmediatePayments({
-      isCredit,
-      paymentMethod: normalizedPaymentMethod,
-      payments,
-      totalAmount: parsedTotalAmount,
-    });
-    // What lands on the customer's account: total minus any down payment.
-    const paidNow = roundMoney(
-      immediatePayments.reduce((sum, payment) => sum + payment.amount, 0),
-    );
-    const debtAmount = isCredit ? roundMoney(parsedTotalAmount - paidNow) : 0;
-    const salePaymentMethod = isCredit
-      ? "CREDIT_ACCOUNT"
-      : resolveSalePaymentMethod(normalizedPaymentMethod, immediatePayments);
-
+    // Validaciones de crédito que NO dependen del total. El chequeo de límite,
+    // que sí depende, pasó adentro de la transacción (ver `executeSale`).
     if (isCredit) {
       if (!customerId) {
         throw new Error(
@@ -690,32 +715,14 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           "Operacion rechazada: Debe especificar el nombre y DNI de la persona autorizada al retiro.",
         );
       }
-
-      // Credit limit check: if the customer has a creditLimit > 0, verify that
-      // their current outstanding balance + the DEBT of this sale (net of any
-      // down payment) does not exceed the limit.
-      const customer = await prisma.customer.findUnique({
-        where: { id: Number(customerId) },
-        select: { creditLimit: true, name: true },
-      });
-
-      if (customer && customer.creditLimit > 0) {
-        const currentDebt = await prisma.sale.aggregate({
-          where: { customerId: Number(customerId), status: { in: ["PENDING", "PARTIAL"] } },
-          _sum: { balance: true },
-        });
-        const outstanding = currentDebt._sum.balance ?? 0;
-        if (outstanding + debtAmount > customer.creditLimit) {
-          const available = Math.max(0, customer.creditLimit - outstanding);
-          throw new Error(
-            `Límite de crédito superado para ${customer.name}. Disponible: $${available.toLocaleString("es-AR")}. ` +
-            `Deuda actual: $${outstanding.toLocaleString("es-AR")}. Límite: $${customer.creditLimit.toLocaleString("es-AR")}.`,
-          );
-        }
-      }
     }
 
-    const result = await prisma.$transaction(async (tx) => {
+    // Sólo ADMIN y ENCARGADO pueden fijar un precio excepcional.
+    const canOverridePrice = authUser.role === "ADMIN" || authUser.role === "ENCARGADO";
+
+    // Todo el trabajo de la venta, listo para correr dentro de una transacción
+    // —propia o la que abre el envoltorio de idempotencia—.
+    const executeSale = async (tx: PrismaTx) => {
       const activeRegister = await tx.cashRegister.findUnique({
         where: { id: Number(cashRegisterId) },
       });
@@ -732,6 +739,107 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         );
       }
 
+      // ── 1. El precio lo pone la BASE, no el navegador ──
+      // Se resuelve DENTRO de la transacción: el precio que se valida es el
+      // mismo que se congela, sin ventana para que cambie en el medio.
+      const { lines, total: authoritativeTotal } = await priceSaleLines(
+        tx,
+        items.map((item: Record<string, unknown>) => ({
+          productId: Number(item.productId),
+          quantity: Number(item.quantity),
+          discountPct:
+            item.discountPct === undefined || item.discountPct === null
+              ? null
+              : Number(item.discountPct),
+          priceOverride:
+            item.priceOverride === undefined || item.priceOverride === null
+              ? null
+              : Number(item.priceOverride),
+        })),
+        { role: authUser.role, canOverridePrice },
+      );
+
+      // ── 2. ¿Coincide con lo que el operador vio en pantalla? ──
+      // Si no, se rechaza. Nunca se cobra en silencio un monto distinto al
+      // confirmado: el request se aborta entero, sin venta, sin stock, sin cobro.
+      assertTotalMatches(parsedTotalAmount, authoritativeTotal, lines);
+
+      const totalNumber = authoritativeTotal.toNumber();
+
+      // ── 3. Los pagos se validan contra el total AUTORITATIVO ──
+      // Antes se validaban contra el total del cliente, así que la comprobación
+      // se mordía la cola: pagos falsos cuadraban con un total falso.
+      const immediatePayments = parseImmediatePayments({
+        isCredit,
+        paymentMethod: normalizedPaymentMethod,
+        payments,
+        totalAmount: totalNumber,
+      });
+
+      const paidNow = roundMoney(
+        immediatePayments.reduce((sum, payment) => sum + payment.amount, 0),
+      );
+      const debtAmount = isCredit ? roundMoney(totalNumber - paidNow) : 0;
+      const salePaymentMethod = isCredit
+        ? "CREDIT_ACCOUNT"
+        : resolveSalePaymentMethod(normalizedPaymentMethod, immediatePayments);
+
+      // ── 4. Efectivo recibido y vuelto, contra el COMPONENTE en efectivo ──
+      const cashComponent = immediatePayments
+        .filter((payment) => payment.paymentMethod === "CASH")
+        .reduce((sum, payment) => sum.plus(toDecimal(payment.amount)), toDecimal(0));
+      const { cashReceived: cashIn, changeGiven } = resolveCashChange(
+        cashReceived,
+        cashComponent,
+      );
+
+      // ── 5. Límite de crédito, DENTRO de la transacción y con lock ──
+      // Estaba afuera: dos fiados simultáneos leían el mismo saldo y ambos
+      // pasaban, superando juntos un límite que ninguno superaba solo.
+      // `FOR UPDATE` serializa a los competidores sobre la fila del cliente.
+      if (isCredit && customerId) {
+        await tx.$queryRaw`SELECT id FROM "Customer" WHERE id = ${Number(customerId)} FOR UPDATE`;
+
+        const customer = await tx.customer.findUnique({
+          where: { id: Number(customerId) },
+          select: { creditLimit: true, name: true },
+        });
+
+        if (customer && customer.creditLimit > 0) {
+          const currentDebt = await tx.sale.aggregate({
+            where: { customerId: Number(customerId), status: { in: ["PENDING", "PARTIAL"] } },
+            _sum: { balance: true },
+          });
+          const outstanding = Number(currentDebt._sum.balance ?? 0);
+          if (outstanding + debtAmount > customer.creditLimit) {
+            const available = Math.max(0, customer.creditLimit - outstanding);
+            throw new Error(
+              `Límite de crédito superado para ${customer.name}. Disponible: $${available.toLocaleString("es-AR")}. ` +
+              `Deuda actual: $${outstanding.toLocaleString("es-AR")}. Límite: $${customer.creditLimit.toLocaleString("es-AR")}.`,
+            );
+          }
+        }
+      }
+
+      // ── 6. En qué computadora se hizo la venta ──
+      //
+      // DUAL-WRITE: la venta nace con su terminal cuando se puede resolver.
+      //
+      // Si la sucursal todavía no tiene ninguna, la venta se registra igual con
+      // `terminalId` en null — la columna es nullable justamente para eso, y en
+      // un mostrador no se puede dejar de vender porque falte una fila de
+      // configuración.
+      //
+      // Lo que SÍ se rechaza es la incoherencia: una terminal declarada que no
+      // existe, está desactivada, es de otra sucursal, o contradice la
+      // credencial de dispositivo. La cookie manda sobre el cuerpo.
+      const terminal = await resolveTerminalIfAvailable(
+        tx,
+        parsedBranchId,
+        req.body?.terminalId ? Number(req.body.terminalId) : null,
+        req.terminal,
+      );
+
       // A credit sale with a down payment starts PARTIAL: part is in the till,
       // the rest is receivable on the customer's account.
       const initialStatus = isCredit ? (paidNow > 0 ? "PARTIAL" : "PENDING") : "PAID";
@@ -739,8 +847,10 @@ export const createSale = async (req: AuthRequest, res: Response) => {
 
       const newSale = await tx.sale.create({
         data: {
-          totalAmount: parsedTotalAmount,
+          totalAmount: authoritativeTotal,
           paymentMethod: salePaymentMethod,
+          cashReceived: cashIn,
+          changeGiven,
           status: initialStatus,
           balance: initialBalance,
           pickedUpBy: isCredit ? pickedUpBy : null,
@@ -749,77 +859,76 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           customerId: customerId ? Number(customerId) : null,
           branchId: parsedBranchId,
           userId: authUser.id,
+          terminalId: terminal?.id ?? null,
           cashRegisterId: Number(cashRegisterId),
+          // Última barrera: aunque el IdempotencyRecord se perdiera, el índice
+          // único de esta columna sigue rechazando la venta duplicada.
+          idempotencyKey,
         },
       });
 
-      for (const item of items) {
-        const [currentStock, productRecord] = await Promise.all([
-          tx.stock.findUnique({
-            where: {
-              productId_branchId: {
-                productId: Number(item.productId),
-                branchId: parsedBranchId,
-              },
-            },
-          }),
-          tx.product.findUnique({
-            where: { id: Number(item.productId) },
-            select: { name: true, sku: true },
-          }),
-        ]);
-
-        const productLabel = productRecord
-          ? `${productRecord.name} (${productRecord.sku})`
-          : `producto ID ${item.productId}`;
-
-        if (!currentStock) {
-          throw new Error(
-            `Stock no encontrado para ${productLabel} en esta sucursal.`,
-          );
-        }
-
-        if (currentStock.quantity < Number(item.quantity)) {
-          throw new Error(
-            `Stock insuficiente para "${productLabel}": hay ${currentStock.quantity} ud. disponibles pero se pidieron ${item.quantity}.`,
-          );
-        }
-
-        await tx.stock.update({
-          where: { id: currentStock.id },
-          data: { quantity: currentStock.quantity - Number(item.quantity) },
-        });
+      // Se recorren las líneas YA RESUELTAS por el servidor, no las del
+      // payload: precios, costos y subtotales salen de la base.
+      for (const line of lines) {
+        // El descuento valida y escribe en una sola sentencia atómica: la
+        // condición viaja en el WHERE, no en un `if` de JavaScript. Sin esto,
+        // dos cajas vendiendo la última unidad leían `1`, ambas pasaban la
+        // validación y ambas escribían `0`. Ver src/utils/stock.utils.ts.
+        await decrementStockOrThrow(
+          tx,
+          { productId: line.productId, branchId: parsedBranchId },
+          line.quantity,
+        );
 
         await tx.saleItem.create({
           data: {
             saleId: newSale.id,
-            productId: Number(item.productId),
-            quantity: Number(item.quantity),
-            unitPrice: Number(item.unitPrice),
-            subtotal: Number(item.quantity) * Number(item.unitPrice),
-            unitCost: item.unitCost ? Number(item.unitCost) : 0,
-            // Optional discount transparency: list price + % applied per line.
-            listPrice:
-              item.listPrice !== undefined && item.listPrice !== null
-                ? Number(item.listPrice)
-                : null,
-            discountPct:
-              item.discountPct !== undefined && item.discountPct !== null
-                ? Number(item.discountPct)
-                : null,
+            productId: line.productId,
+            quantity: line.quantity,
+            unitPrice: line.unitPrice,
+            subtotal: line.subtotal,
+            // `null` = costo DESCONOCIDO. Antes se escribía `0`, que significa
+            // "no costó nada" y le inventa a la venta un margen del 100%.
+            unitCost: line.unitCost,
+            listPrice: line.listPrice,
+            discountPct: line.discountPct,
           },
         });
 
         await tx.movement.create({
           data: {
             type: "OUT",
-            quantity: Number(item.quantity),
+            quantity: line.quantity,
             reason: `Venta #${newSale.id} ${isCredit ? "(Cuenta Corriente)" : ""}`,
-            productId: Number(item.productId),
+            productId: line.productId,
             branchId: parsedBranchId,
             userId: authUser.id,
           },
         });
+
+        // Un precio excepcional se audita SIEMPRE: quién, sobre qué, cuánto se
+        // apartó de la lista y en qué venta. Sin esto, un override es
+        // indistinguible de un precio normal al revisar el histórico.
+        if (line.overridden) {
+          await tx.auditLog.create({
+            data: {
+              actorUserId: authUser.id,
+              branchId: parsedBranchId,
+              action: "SALE_PRICE_OVERRIDE",
+              entityType: "SaleItem",
+              entityId: String(newSale.id),
+              metadata: {
+                saleId: newSale.id,
+                productId: line.productId,
+                sku: line.sku,
+                productName: line.productName,
+                listPrice: line.listPrice.toFixed(4),
+                chargedPrice: line.unitPrice.toFixed(4),
+                quantity: line.quantity,
+              },
+            },
+          });
+        }
       }
 
       const createdPayments: { id: number; amount: number; paymentMethod: string }[] = [];
@@ -847,7 +956,7 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         createdBy: authUser.id,
         payload: {
           saleId: newSale.id,
-          totalAmount: parsedTotalAmount,
+          totalAmount: totalNumber,
           paymentMethod: salePaymentMethod,
           payments: createdPayments.map((payment) => ({
             id: payment.id,
@@ -859,26 +968,162 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           balance: initialBalance,
           customerId: customerId ? Number(customerId) : null,
           pickedUpBy: isCredit ? pickedUpBy : null,
-          items,
+          cashReceived: cashIn ? cashIn.toNumber() : null,
+          changeGiven: changeGiven ? changeGiven.toNumber() : null,
+          // El desglose que resolvió el SERVIDOR, no el que mandó el cliente.
+          items: lines.map((line) => ({
+            productId: line.productId,
+            sku: line.sku,
+            name: line.productName,
+            quantity: line.quantity,
+            listPrice: line.listPrice.toNumber(),
+            unitPrice: line.unitPrice.toNumber(),
+            subtotal: line.subtotal.toNumber(),
+            discountPct: line.discountPct ? line.discountPct.toNumber() : null,
+          })),
         },
       });
 
-      return { sale: newSale, receipt };
-    });
+      return { sale: newSale, receipt, salePaymentMethod, paidNow };
+    };
 
-    res.status(201).json({
-      message:
-        salePaymentMethod === "CREDIT_ACCOUNT"
-          ? paidNow > 0
-            ? "Venta a credito registrada con entrega inicial."
-            : "Venta a credito registrada."
-          : salePaymentMethod === "MIXED"
-            ? "Venta procesada con pagos multiples."
-          : "Venta procesada con éxito.",
-      data: result.sale,
-      receipt: result.receipt,
+    // El mensaje depende de cómo se resolvió el cobro, que ahora se decide
+    // dentro de la transacción (con el total autoritativo).
+    const successMessage = (method: string, paid: number) =>
+      method === "CREDIT_ACCOUNT"
+        ? paid > 0
+          ? "Venta a credito registrada con entrega inicial."
+          : "Venta a credito registrada."
+        : method === "MIXED"
+          ? "Venta procesada con pagos multiples."
+          : "Venta procesada con éxito.";
+
+    // ── Sin clave de idempotencia ──────────────────────────────────────────
+    // Se acepta durante una release para no romper clientes viejos, pero queda
+    // registrado: esta venta viaja SIN protección contra duplicados.
+    if (!idempotencyKey) {
+      logger.warn(
+        `[IDEMPOTENCIA] Venta sin Idempotency-Key (usuario ${authUser.id}, sucursal ${parsedBranchId}). ` +
+          "Un reintento de red podría duplicarla.",
+      );
+      const result = await prisma.$transaction(executeSale);
+      return res.status(201).json({
+        message: successMessage(result.salePaymentMethod, result.paidNow),
+        data: result.sale,
+        receipt: result.receipt,
+      });
+    }
+
+    const outcome = await withIdempotency(
+      {
+        key: idempotencyKey,
+        payload: req.body,
+        scope: userBranchScope(authUser.id, parsedBranchId),
+      },
+      async (tx) => {
+        const result = await executeSale(tx);
+        return {
+          value: result,
+          resultType: "sale",
+          resultId: String(result.sale.id),
+          httpStatus: 201,
+        };
+      },
+    );
+
+    if (outcome.kind === "conflict") {
+      return res.status(409).json({ error: outcome.message, code: outcome.code });
+    }
+
+    if (outcome.kind === "replayed") {
+      // Ya se había registrado: se devuelve LA MISMA venta, no una nueva.
+      const saleId = Number(outcome.resultId);
+      const [sale, receipt] = await Promise.all([
+        prisma.sale.findUnique({ where: { id: saleId } }),
+        prisma.internalReceipt.findFirst({
+          where: { saleId, receiptType: "SALE" },
+        }),
+      ]);
+      return res.status(200).json({
+        message: "Esta venta ya estaba registrada. Se devuelve el comprobante original.",
+        data: sale,
+        receipt,
+        replayed: true,
+      });
+    }
+
+    return res.status(201).json({
+      message: successMessage(outcome.value.salePaymentMethod, outcome.value.paidNow),
+      data: outcome.value.sale,
+      receipt: outcome.value.receipt,
     });
   } catch (error: unknown) {
+    // ── El total cambió entre que el operador lo vio y confirmó ──
+    //
+    // Se responde 409 con el desglose autoritativo para que el POS refresque el
+    // ticket y el operador REVISE Y CONFIRME el monto nuevo. Nunca se cobra en
+    // silencio un importe distinto al que estaba en pantalla.
+    //
+    // El request rechazado no dejó nada: la transacción se revirtió entera, así
+    // que no hay venta, ni stock descontado, ni pagos, ni comprobante.
+    // Terminal inexistente, desactivada, de otra sucursal, o distinta de la que
+    // esta computadora tiene enrolada. Es un problema con salida clara, no un
+    // fallo del servidor.
+    if (error instanceof TerminalResolutionError) {
+      return res.status(400).json({ error: error.message, code: "TERMINAL_MISMATCH" });
+    }
+
+    if (error instanceof TotalMismatchError) {
+      return res.status(409).json({
+        error: error.message,
+        code: "TOTAL_MISMATCH",
+        expectedTotal: error.expected.toNumber(),
+        authoritativeTotal: error.authoritative.toNumber(),
+        breakdown: error.breakdown.map((line) => ({
+          productId: line.productId,
+          sku: line.sku,
+          name: line.productName,
+          quantity: line.quantity,
+          listPrice: line.listPrice.toNumber(),
+          unitPrice: line.unitPrice.toNumber(),
+          subtotal: line.subtotal.toNumber(),
+          discountPct: line.discountPct ? line.discountPct.toNumber() : null,
+        })),
+      });
+    }
+
+    // Última barrera de idempotencia: la venta ya existía con esta misma clave,
+    // aunque su `IdempotencyRecord` ya no esté (purgado, borrado a mano, base
+    // restaurada). El índice único de `Sale.idempotencyKey` la frenó.
+    //
+    // Devolver la venta original es la respuesta CORRECTA, no un error: el
+    // cliente pidió "registrá esto una vez" y está registrado. Sin esto, el
+    // cajero veía un mensaje crudo de Prisma sobre restricciones únicas.
+    if (isUniqueConstraintViolation(error)) {
+      const key =
+        typeof req.headers["idempotency-key"] === "string"
+          ? req.headers["idempotency-key"].trim()
+          : "";
+
+      if (key) {
+        const existing = await prisma.sale.findUnique({
+          where: { idempotencyKey: key },
+        });
+        if (existing) {
+          const receipt = await prisma.internalReceipt.findFirst({
+            where: { saleId: existing.id, receiptType: "SALE" },
+          });
+          return res.status(200).json({
+            message:
+              "Esta venta ya estaba registrada. Se devuelve el comprobante original.",
+            data: existing,
+            receipt,
+            replayed: true,
+          });
+        }
+      }
+    }
+
     const errorMsg =
       error instanceof Error
         ? error.message
@@ -1238,6 +1483,9 @@ export const generateSaleReceiptPdf = async (
       include: {
         branch: true,
         cashRegister: true,
+        // Para imprimir en qué computadora se cobró. Nullable: las ventas
+        // anteriores a la Fase 3 no la tienen y el ticket cae al formato viejo.
+        terminal: { select: { code: true } },
         customer: true,
         user: { select: { name: true } },
         items: {
@@ -1304,7 +1552,16 @@ export const generateSaleReceiptPdf = async (
     if (sale.branch.location?.trim()) {
       doc.text(sale.branch.location.trim());
     }
-    doc.text(`Caja: ${sale.cashRegisterId ?? "Sin caja vinculada"}`);
+    // Terminal + turno juntos: ante un reclamo, dicen exactamente en qué
+    // computadora y en qué turno se cobró. Sin la terminal, "Caja: 203" sólo
+    // identifica el turno, no la máquina — y con dos puestos por sucursal eso
+    // ya no alcanza para rastrear un faltante hasta su cajón.
+    const etiquetaTerminal = sale.terminal?.code ?? null;
+    doc.text(
+      etiquetaTerminal
+        ? `Terminal: ${etiquetaTerminal} · Turno: ${sale.cashRegisterId ?? "—"}`
+        : `Caja: ${sale.cashRegisterId ?? "Sin caja vinculada"}`,
+    );
     doc.text(`Vendedor: ${sale.user.name}`);
     doc.moveDown(0.8);
     doc.text(`Ticket: #${sale.id}`);

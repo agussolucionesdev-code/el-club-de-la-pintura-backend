@@ -22,6 +22,8 @@ model Branch {
 
   users     User[] // M:N: Employees assigned to this branch
   stocks    Stock[]
+  /** Computadoras del mostrador asignadas a esta sucursal. */
+  terminals Terminal[]
   movements Movement[]
   sales     Sale[]
   payments  Payment[] // Track physical money entering this branch
@@ -65,6 +67,12 @@ model User {
   // NEW: Manual cash movements registered by this user
   cashMovements CashMovement[]
 
+  /** PIN para operar el POS. Lo tienen todos los que venden, incluido el dueño. */
+  posPin         PosPinCredential?
+  posActivations PosPinActivation[]
+  posSessions    PosOperatorSession[]
+  posDrafts      PosDraft[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -96,7 +104,11 @@ model AppSetting {
   alertAccountsMinDebt Int     @default(0) // badge only past this total debt ($)
   alertPayrollEnabled  Boolean @default(true)
 
-  updatedAt DateTime @updatedAt
+  // @default(now()) declara lo que la base YA tiene. No es cosmético: el DDL de
+  // arranque (app.ts, ensureAppSettingTable) hace
+  // `INSERT INTO "AppSetting" ("id") VALUES (1)` sin pasar updatedAt, y depende
+  // de ese default. Sin declararlo acá, el schema y la base quedaban en deriva.
+  updatedAt DateTime @updatedAt @default(now())
 }
 
 // Single-use discount codes for PER_SALE mode. Kept tiny on purpose: they
@@ -270,6 +282,20 @@ model CashRegister {
   status       String  @default("OPEN") // OPEN, CLOSED
   observations String? // Notas sobre faltantes o retiros
 
+  /**
+   * La computadora cuyo cajón se está arqueando. OBLIGATORIA.
+   *
+   * Pasó de nullable a requerida en el paso de CONTRACT, recién después de
+   * verificar que no quedara ni un turno sin terminal y que ninguno apuntara a
+   * una terminal de otra sucursal. `openShift` la resuelve siempre —y rechaza
+   * la apertura si no puede—, así que todo escritor la completa.
+   *
+   * Un turno sin terminal es un arqueo sin cajón: no se sabe de qué caja salió
+   * la plata. Por eso acá sí corresponde exigirla, a diferencia de `Sale`.
+   */
+  terminalId Int
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+
   userId Int // Empleado que abrió la caja
   user   User @relation(fields: [userId], references: [id])
 
@@ -375,7 +401,8 @@ model ExpenseBudget {
   amount    Decimal  @db.Decimal(14, 2)
   period    String   @default("MONTHLY")
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  // Declara el default que la migración 20260624120000 ya creó en la base.
+  updatedAt DateTime @updatedAt @default(now())
 
   @@unique([branchId, category])
 }
@@ -396,7 +423,8 @@ model RecurringExpense {
   active      Boolean  @default(true)
   createdById Int // plain ref
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  // Declara el default que la migración 20260624120000 ya creó en la base.
+  updatedAt   DateTime @updatedAt @default(now())
 
   @@index([branchId, active])
 }
@@ -440,6 +468,27 @@ model Sale {
   items    SaleItem[]
   payments Payment[] // Link partial or full payments to this ticket
   returns  Return[] // Partial or full returns against this sale
+
+  // Última barrera contra ventas duplicadas. El flujo normal lo resuelve
+  // `IdempotencyRecord`; esta columna existe para que, aunque ese registro se
+  // pierda o se purgue por error, la BASE siga rechazando el duplicado.
+  // Nullable: las ventas históricas y las que llegan sin clave no la tienen.
+  idempotencyKey String? @unique
+
+  // Efectivo entregado y vuelto dado. El POS los calculaba en pantalla y los
+  // DESCARTABA al confirmar: nunca llegaban al servidor, así que el arqueo no
+  // podía contrastar lo que el cajero dijo haber recibido.
+  // `null` = no registrado (ventas históricas, o cobros sin efectivo).
+  cashReceived Decimal? @db.Decimal(14, 2)
+  changeGiven  Decimal? @db.Decimal(14, 2)
+
+  /**
+   * En qué computadora se hizo la venta. Nullable durante el expand; las ventas
+   * históricas se backfillean a la terminal legado de su sucursal, marcadas
+   * como atribución inferida.
+   */
+  terminalId Int?
+  terminal   Terminal? @relation(fields: [terminalId], references: [id])
 
   createdAt DateTime @default(now())
 
@@ -499,7 +548,12 @@ model Payment {
 // ==========================================
 // RMA & RETURNS MODULE
 // ==========================================
+// Devolución de mercadería contra una venta.
 model Return {
+  /** Cómo se le devolvió la plata al cliente. Puede haber varias: una venta
+   *  con pago mixto se reintegra parte en efectivo y parte por reversa. */
+  settlements RefundSettlement[]
+
   id             Int      @id @default(autoincrement())
   saleId         Int
   sale           Sale     @relation(fields: [saleId], references: [id])
@@ -685,4 +739,367 @@ model BulkPriceJob {
 
   @@index([userId])
   @@index([status])
+}
+
+// ==========================================
+// IDEMPOTENCIA
+// ==========================================
+// Garantiza que una operación que mueve plata, stock o saldo se ejecute
+// EXACTAMENTE UNA VEZ, aunque el cliente reintente porque se le perdió la
+// respuesta.
+//
+// Una clave sola no alcanza: hay que distinguir "es el mismo pedido de antes"
+// de "alguien reusó la clave para otra cosa". Por eso van también la huella
+// canónica del payload y el alcance de propiedad.
+//
+// Primer enum del esquema, a propósito: acá un valor mal escrito corrompe
+// dinero, y el enum lo vuelve imposible en tiempo de compilación. Los modelos
+// viejos siguen con String + Zod; no se migran (ruido y riesgo sin beneficio).
+enum IdempotencyStatus {
+  IN_FLIGHT
+  COMPLETED
+  FAILED
+}
+
+// ==========================================
+// LIQUIDACIÓN DE REINTEGROS
+// ==========================================
+// Cómo se le devuelve la plata al cliente en una devolución.
+//
+// No todo reintegro es efectivo saliendo del cajón, y tratarlos a todos igual
+// descuadra el arqueo en las dos direcciones:
+//
+//   · Una devolución contra deuda IMPAGA no saca un peso de la caja — sólo baja
+//     lo que el cliente debe. Registrarla como salida de efectivo haría faltar
+//     plata que nunca salió.
+//   · Una devolución de una venta con tarjeta se reversa en el Posnet, fuera de
+//     este sistema. Sacarla del cajón le quitaría efectivo real al negocio.
+//
+// Antes no había NADA: una devolución de venta ya pagada restauraba stock y no
+// registraba ningún movimiento de dinero. El cajón esperaba más efectivo del
+// que tenía y nadie sabía por qué.
+// ==========================================
+// TERMINALES FÍSICAS
+// ==========================================
+// Una terminal es la COMPUTADORA del mostrador, con su cajón de dinero.
+//
+// Hasta ahora el turno de caja era "uno abierto por sucursal", porque no había
+// forma de nombrar la máquina. Con dos personas atendiendo en dos puestos de la
+// misma sucursal, eso obliga a compartir un único turno y el arqueo deja de
+// poder decir de qué cajón salió cada peso.
+//
+// La terminal pertenece a UNA sucursal por vez, y es la que ancla el turno.
+enum TerminalStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Terminal {
+  id       Int    @id @default(autoincrement())
+  /** Código estable que el personal dice en voz alta: "893-CAJA-01". */
+  code     String @unique
+  name     String
+  branchId Int
+  branch   Branch @relation(fields: [branchId], references: [id])
+
+  status TerminalStatus @default(ACTIVE)
+
+  /**
+   * Secreto de dispositivo, SIEMPRE hasheado — nunca el valor en claro.
+   *
+   * Se entrega al enrolar y viaja en una cookie HttpOnly. El navegador no puede
+   * inventarse un `deviceId`: sin este secreto no hay terminal.
+   */
+  deviceSecretHash String?
+  /**
+   * Se incrementa al revocar o re-enrolar. Invalida TODOS los secretos
+   * anteriores del lado del servidor, sin depender de que el navegador borre
+   * nada.
+   */
+  deviceSecretVersion Int @default(0)
+
+  lastSeenAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  cashRegisters CashRegister[]
+  sales         Sale[]
+  enrollments   TerminalEnrollment[]
+  /** Quién estuvo operando esta computadora, y cuándo. */
+  operatorSessions PosOperatorSession[]
+  /** Carritos en curso y tickets en espera, aislados por operador. */
+  drafts           PosDraft[]
+
+  @@index([branchId, status])
+}
+
+/**
+ * Token de un solo uso para enrolar una computadora.
+ *
+ * El admin lo emite y se muestra UNA vez; en la base va hasheado. Sin este
+ * paso, cualquiera que conozca un `terminalId` podría hacerse pasar por esa
+ * caja — que es exactamente lo que el enunciado prohíbe.
+ */
+model TerminalEnrollment {
+  id         Int      @id @default(autoincrement())
+  terminalId Int
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+
+  tokenHash  String   @unique
+  issuedById Int
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([terminalId])
+}
+
+// ==========================================
+// PIN DEL PUNTO DE VENTA
+// ==========================================
+// Cada persona que vende tiene su PIN — incluido el dueño. Sin eso, el cambio
+// rápido de operador no sirve: las ventas del dueño quedarían atribuidas a
+// quien abrió el navegador.
+model PosPinCredential {
+  userId Int  @id
+  user   User @relation(fields: [userId], references: [id])
+
+  /**
+   * Hash Argon2id CON PEPPER. El pepper vive fuera de la base, así que un
+   * volcado de esta tabla no permite verificar ni un solo PIN.
+   */
+  pinHash String
+
+  /**
+   * Forma REVERSIBLE, para que cada uno pueda ver su propio PIN.
+   *
+   * Es el riesgo que el negocio aceptó a conciencia: quien obtenga la clave AES
+   * y un volcado de la base recupera todos los PIN. Se mitiga con clave fuera
+   * de la base, separada del pepper y versionada para poder rotar.
+   *
+   * Nullable: si el sistema está en modo degradado (sin clave), el PIN se puede
+   * seguir VALIDANDO por el hash aunque no se pueda revelar.
+   */
+  pinCipher  Bytes?
+  pinNonce   Bytes?
+  pinTag     Bytes?
+  keyVersion Int?
+
+  isEnabled  Boolean @default(true)
+  /** El PIN vino de una activación: hay que cambiarlo al primer uso. */
+  mustChange Boolean @default(false)
+
+  lastChangedAt DateTime  @default(now())
+  lastRevealAt  DateTime?
+
+  /** Rate limit: fallos seguidos y hasta cuándo está bloqueado. */
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/**
+ * Credencial de activación de un solo uso.
+ *
+ * **NO es un PIN.** Un encargado que resetea el PIN de otra persona recibe
+ * esto, no el PIN final: así nunca puede entrar como esa persona, ni por un
+ * momento. Quien lo canjea define su propio PIN.
+ */
+model PosPinActivation {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  codeHash   String    @unique
+  issuedById Int
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ==========================================
+// SESIÓN DE OPERADOR
+// ==========================================
+// Quién está operando la terminal AHORA — que no es necesariamente quien abrió
+// el navegador.
+//
+// En un mostrador compartido, la sesión puede haberla iniciado el dueño y estar
+// atendiendo un empleado. Si autorizáramos por el token de sesión, el empleado
+// heredaría permisos de dueño. Este modelo separa las dos identidades.
+enum PosSessionStatus {
+  ACTIVE
+  LOCKED
+  CLOSED
+}
+
+/**
+ * Cómo se probó la identidad del operador.
+ *
+ * `LEGACY_JWT` es la transición: quien todavía no configuró su PIN igual
+ * necesita vender. **No es un bypass** — se crea una sesión REAL, se resuelven
+ * capacidades efectivas y se audita igual que cualquier otra. Sólo que el
+ * operador y el dueño del token son la misma persona por construcción, así que
+ * no hay identidad que probar aparte. Queda marcada para que el historial diga
+ * la verdad sobre cómo se identificó cada venta.
+ */
+enum PosSessionOrigin {
+  PIN
+  LEGACY_JWT
+}
+
+model PosOperatorSession {
+  id     Int  @id @default(autoincrement())
+  userId Int
+  user   User @relation(fields: [userId], references: [id])
+
+  terminalId Int
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+
+  branchId       Int
+  cashRegisterId Int?
+
+  status PosSessionStatus @default(ACTIVE)
+  origin PosSessionOrigin @default(PIN)
+
+  /** Quién tenía la sesión de cuenta abierta. Sólo para auditoría: nadie se
+   *  esconde detrás del PIN de otro. */
+  authenticatedActorId Int
+
+  startedAt      DateTime  @default(now())
+  lastActivityAt DateTime  @default(now())
+  lockedAt       DateTime?
+  endedAt        DateTime?
+
+  // ⚠️ Además existe un índice único PARCIAL que Prisma no sabe expresar:
+  //    pos_operator_session_one_active_per_terminal → UNIQUE(terminalId) WHERE status='ACTIVE'
+  // Vive en la migración. Una terminal tiene UN operador activo por vez; que
+  // haya dos sería no saber a quién atribuir la venta que entra ahora.
+  @@index([terminalId, status])
+  @@index([userId, status])
+}
+
+// ==========================================
+// BORRADORES DEL POS
+// ==========================================
+// El carrito deja de vivir sólo en la memoria del navegador.
+//
+// Hoy cambiar de operador exige cerrar sesión, y eso DESTRUYE el carrito. Con
+// el borrador en el servidor, A arma su ticket, entra B con su PIN, vende, y
+// cuando A vuelve encuentra lo suyo intacto. Ése es el punto entero de F10.
+
+enum PosDraftKind {
+  DRAFT // el carrito en curso: uno solo por operador y terminal
+  HELD // ticket puesto en espera (F7): puede haber varios
+}
+
+model PosDraft {
+  id Int @id @default(autoincrement())
+
+  terminalId Int
+  terminal   Terminal @relation(fields: [terminalId], references: [id])
+
+  operatorUserId Int
+  operator       User @relation(fields: [operatorUserId], references: [id])
+
+  branchId Int
+
+  kind  PosDraftKind @default(DRAFT)
+  /** Nombre que le puso el cajero al ticket en espera ("el de la escalera"). */
+  label String?
+
+  /**
+   * Snapshot del carrito: líneas, cliente, notas, descuentos, pagos tentativos.
+   *
+   * Va en JSON a propósito, y no contradice la regla de "nada de JSON para
+   * relaciones contables": un borrador NO es contabilidad. No movió stock, no
+   * generó asiento, no debe plata. Al cobrar, el servidor **vuelve a leer
+   * precio y costo de la base** (Fase 2) e ignora los números que traiga esto.
+   * Nunca decide dinero.
+   */
+  payload Json
+
+  /** Sólo para mostrar la lista de tickets en espera sin abrir cada payload. */
+  itemCount   Int     @default(0)
+  totalAmount Decimal @default(0) @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ⚠️ Índice único PARCIAL en la migración:
+  //    pos_draft_one_current_per_operator → UNIQUE(terminalId, operatorUserId) WHERE kind='DRAFT'
+  @@index([terminalId, operatorUserId, kind])
+  @@index([updatedAt])
+}
+
+enum RefundSettlementKind {
+  CASH // efectivo del cajón — EL ÚNICO que baja el esperado de caja
+  TRANSFER // transferencia bancaria
+  CARD_REVERSAL // reversa por Posnet: ocurre afuera, acá sólo se deja constancia
+  CUSTOMER_DEBT_CREDIT // baja la deuda de cuenta corriente
+  STAFF_LEDGER_CREDIT // baja la deuda del personal (se usa desde la Fase 7)
+  PENDING_REIMBURSEMENT // reconocido, se liquida después
+}
+
+model RefundSettlement {
+  id       Int    @id @default(autoincrement())
+  returnId Int
+  return   Return @relation(fields: [returnId], references: [id])
+
+  kind   RefundSettlementKind
+  amount Decimal              @db.Decimal(14, 2)
+
+  // Sólo para CASH: el turno del que sale la plata y el Payment negativo que
+  // lo hace visible en el arqueo.
+  cashRegisterId Int?
+  paymentId      Int?
+
+  // Nº de operación bancaria o de cupón, para poder conciliar después.
+  reference String?
+
+  createdById    Int
+  authorizedById Int?
+  reason         String?
+  createdAt      DateTime @default(now())
+
+  @@index([returnId])
+  @@index([kind])
+}
+
+model IdempotencyRecord {
+  key String @id // el Idempotency-Key que mandó el cliente
+
+  // SHA-256 del payload canónico. Misma clave + payload distinto = conflicto,
+  // no un replay: devolver el resultado viejo sería responder otra pregunta.
+  fingerprint String
+
+  // Versionado porque el alcance CAMBIA de forma entre fases:
+  //   1 = (userId, branchId)                        ← hoy, sin modelo Terminal
+  //   2 = (terminalId, operatorUserId, branchId)    ← desde la Fase 4
+  // Cada registro se compara con la regla de SU versión, así que los viejos
+  // siguen siendo interpretables sin migrar datos.
+  scopeVersion Int
+  scopeHash    String
+
+  status IdempotencyStatus
+
+  // Lease: quién es dueño del intento en curso y hasta cuándo. Sin esto, un
+  // proceso que muere deja la clave bloqueada para siempre.
+  attemptId   String
+  lockedUntil DateTime?
+
+  // Qué produjo la operación, para poder responder lo mismo en un reintento.
+  resultType  String?
+  resultId    String?
+  httpStatus  Int?
+  failureCode String?
+
+  createdAt   DateTime  @default(now())
+  completedAt DateTime?
+
+  @@index([status, lockedUntil])
+  @@index([createdAt])
 }

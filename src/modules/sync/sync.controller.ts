@@ -25,6 +25,7 @@ import { Payment, Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
+import { decrementStockOrThrow, InsufficientStockError } from "../../utils/stock.utils";
 
 interface IncomingSyncOperation {
   id?: string;
@@ -338,20 +339,24 @@ const replaySaleOperation = async (
       const quantity = Number(item.quantity);
       const unitPrice = Number(item.unitPrice);
 
-      const stock = await tx.stock.findUnique({
-        where: { productId_branchId: { productId, branchId } },
-      });
-
-      if (!stock || stock.quantity < quantity) {
-        throw new Error(
-          `Conflicto de inventario offline: stock insuficiente para producto ${productId}.`,
-        );
+      // Mismo descuento atómico que la venta online. Una operación offline que
+      // se replica mientras el mostrador vende en vivo compite por el mismo
+      // stock, así que necesita exactamente la misma guarda.
+      try {
+        await decrementStockOrThrow(tx, { productId, branchId }, quantity);
+      } catch (error) {
+        // SÓLO se reetiqueta la falta de stock, que es el conflicto offline que
+        // el cliente sabe interpretar. Cualquier otro error (cantidad inválida,
+        // fallo de base) se propaga tal cual: taparlo con un mensaje de stock
+        // mandaría al encargado a contar unidades por un problema que no tiene
+        // nada que ver.
+        if (error instanceof InsufficientStockError) {
+          throw new Error(
+            `Conflicto de inventario offline: stock insuficiente para producto ${productId}.`,
+          );
+        }
+        throw error;
       }
-
-      await tx.stock.update({
-        where: { id: stock.id },
-        data: { quantity: stock.quantity - quantity },
-      });
 
       await tx.saleItem.create({
         data: {

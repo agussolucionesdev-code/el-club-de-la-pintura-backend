@@ -1,3 +1,4 @@
+import { testTerminalFor } from "./helpers/terminal";
 import request from "supertest";
 import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
@@ -77,6 +78,7 @@ describe("Dashboard ERP por sucursal", () => {
 
     const cashRegister = await prisma.cashRegister.create({
       data: {
+        terminalId: await testTerminalFor(branchAId),
         initialBalance: 1000,
         status: "OPEN",
         userId: managerId,
@@ -156,6 +158,9 @@ describe("Dashboard ERP por sucursal", () => {
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.customer.deleteMany({ where: { id: customerId } });
     await prisma.user.deleteMany({ where: { email: managerCreds.email } });
+    // El helper crea una terminal por sucursal; hay que borrarla ANTES
+    // que la sucursal o la clave foránea lo impide.
+    await prisma.terminal.deleteMany({ where: { code: { startsWith: "TEST-" } } });
     await prisma.branch.deleteMany({ where: { id: { in: [branchAId, branchBId] } } });
     await prisma.$disconnect();
   });

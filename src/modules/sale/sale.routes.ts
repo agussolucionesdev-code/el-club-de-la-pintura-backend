@@ -41,6 +41,24 @@ router.get("/", getSales);
 router.get("/:id/receipt/pdf", generateSaleReceiptPdf);
 router.post("/:id/cancel", authorizeRoles("ADMIN", "ENCARGADO"), cancelSale);
 router.get("/:id", getSaleById);
-router.post("/", authorizeBranchAccess(), validate(createSaleSchema), createSale);
+// `assignParsed: true` — PRIMER módulo migrado al contrato corregido de Zod.
+//
+// Hasta ahora el middleware validaba y descartaba el resultado, así que las
+// claves no declaradas llegaban intactas al controlador. Por eso `createSale`
+// podía leer `item.unitCost`, un campo que este schema ni menciona.
+//
+// Con esto activado, el cuerpo que llega al controlador es EXACTAMENTE el que
+// el schema declara: un `unitCost` inyectado se descarta en el borde, no en la
+// lógica de negocio. Es defensa en profundidad sobre el arreglo de la Fase 2.
+//
+// Se habilita sólo acá, y no en los otros 14 módulos, porque 11 de ellos usan
+// `.default()` o `z.coerce` que hoy NO se aplican: activarlos de golpe cambiaría
+// su comportamiento sin verificación. Ver validate.middleware.ts.
+router.post(
+  "/",
+  authorizeBranchAccess(),
+  validate(createSaleSchema, { assignParsed: true }),
+  createSale,
+);
 
 export default router;

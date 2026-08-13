@@ -1,3 +1,4 @@
+import { testTerminalFor } from "./helpers/terminal";
 import request from "supertest";
 import bcrypt from "bcrypt";
 import { IncomingMessage } from "http";
@@ -109,6 +110,7 @@ describe("Anulacion operativa de ventas", () => {
     const [cashRegisterA, cashRegisterB] = await Promise.all([
       prisma.cashRegister.create({
         data: {
+          terminalId: await testTerminalFor(branchAId),
           initialBalance: 1000,
           status: "OPEN",
           userId: managerId,
@@ -117,6 +119,7 @@ describe("Anulacion operativa de ventas", () => {
       }),
       prisma.cashRegister.create({
         data: {
+          terminalId: await testTerminalFor(branchBId),
           initialBalance: 1000,
           status: "OPEN",
           userId: managerId,
@@ -225,6 +228,9 @@ describe("Anulacion operativa de ventas", () => {
     await prisma.user.deleteMany({
       where: { id: { in: [managerId, employeeId] } },
     });
+    // El helper crea una terminal por sucursal; hay que borrarla ANTES
+    // que la sucursal o la clave foránea lo impide.
+    await prisma.terminal.deleteMany({ where: { code: { startsWith: "TEST-" } } });
     await prisma.branch.deleteMany({
       where: { id: { in: [branchAId, branchBId] } },
     });

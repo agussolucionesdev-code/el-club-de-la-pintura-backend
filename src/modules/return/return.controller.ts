@@ -14,7 +14,13 @@ import { logger } from "../../config/logger";
 import prisma, { PrismaTx } from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
-import { Prisma } from "@prisma/client";
+import { Prisma, RefundSettlementKind } from "@prisma/client";
+import { toDecimal } from "../../utils/pricing.utils";
+import {
+  affectsCashRegister,
+  assertCashAvailable,
+  planRefundSettlements,
+} from "../../utils/refund.utils";
 
 interface ReturnItem {
   saleItemId: number;
@@ -175,19 +181,75 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
         });
       }
 
-      // ── 5. Reduce customer credit balance if the sale is on account ───────────
-      const isCreditSale =
-        sale.paymentMethod === "CREDIT_ACCOUNT" ||
-        sale.status === "PENDING" ||
-        sale.status === "PARTIAL";
+      // ── 5. Cómo se le devuelve la plata al cliente ────────────────────────────
+      //
+      // Antes acá sólo se bajaba el saldo de una venta a cuenta corriente. Para
+      // una venta YA PAGADA no pasaba nada: el stock volvía pero el dinero no se
+      // movía en ningún lado, y el cajón quedaba esperando efectivo que ya no
+      // estaba. Ahora cada devolución declara EXPLÍCITAMENTE por dónde vuelve.
+      const plan = planRefundSettlements(
+        toDecimal(totalRefund),
+        toDecimal(sale.balance),
+        sale.payments,
+      );
 
-      if (isCreditSale && sale.customerId) {
-        const newBalance = Math.max(0, Number(sale.balance) - totalRefund);
+      // El efectivo tiene que estar de verdad en el cajón. Sin este chequeo una
+      // devolución grande dejaría la caja en negativo, un estado imposible.
+      const enEfectivo = plan
+        .filter((item) => affectsCashRegister(item.kind))
+        .reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+
+      if (enEfectivo.greaterThan(0)) {
+        if (!sale.cashRegisterId) {
+          throw new Error(
+            "No se puede reintegrar en efectivo: la venta no está asociada a ningún turno de caja.",
+          );
+        }
+        const turno = await tx.cashRegister.findUnique({
+          where: { id: sale.cashRegisterId },
+          select: { status: true, initialBalance: true },
+        });
+        if (!turno || turno.status !== "OPEN") {
+          throw new Error(
+            "Para reintegrar en efectivo tiene que haber un turno de caja abierto.",
+          );
+        }
+
+        const [pagos, gastos] = await Promise.all([
+          tx.payment.findMany({
+            where: { cashRegisterId: sale.cashRegisterId },
+            select: { amount: true, paymentMethod: true },
+          }),
+          tx.expense.findMany({
+            where: { cashRegisterId: sale.cashRegisterId, voidedAt: null },
+            select: { amount: true },
+          }),
+        ]);
+
+        const efectivoDisponible = pagos
+          .filter((p) => p.paymentMethod.toUpperCase() === "CASH")
+          .reduce((sum, p) => sum.plus(toDecimal(p.amount)), toDecimal(turno.initialBalance))
+          .minus(gastos.reduce((sum, g) => sum.plus(toDecimal(g.amount)), new Prisma.Decimal(0)));
+
+        assertCashAvailable(plan, efectivoDisponible);
+      }
+
+      // La porción que se cancela contra deuda impaga baja el saldo. No mueve
+      // un peso: el cliente simplemente debe menos.
+      const contraDeuda = plan
+        .filter((item) => item.kind === RefundSettlementKind.CUSTOMER_DEBT_CREDIT)
+        .reduce((sum, item) => sum.plus(item.amount), new Prisma.Decimal(0));
+
+      if (contraDeuda.greaterThan(0)) {
+        const nuevoSaldo = Prisma.Decimal.max(
+          new Prisma.Decimal(0),
+          toDecimal(sale.balance).minus(contraDeuda),
+        );
         await tx.sale.update({
           where: { id: saleId },
           data: {
-            balance: newBalance,
-            status: newBalance === 0 ? "PAID" : "PARTIAL",
+            balance: nuevoSaldo,
+            status: nuevoSaldo.isZero() ? "PAID" : "PARTIAL",
           },
         });
       }
@@ -205,6 +267,44 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
         },
       });
 
+      // ── 6-bis. Persistir CÓMO se devolvió la plata ────────────────────────────
+      const liquidaciones: { id: number; kind: RefundSettlementKind }[] = [];
+      for (const item of plan) {
+        let paymentId: number | null = null;
+
+        // SÓLO el efectivo genera un Payment negativo, que es lo que lo hace
+        // visible en el arqueo. Una reversa de tarjeta o un crédito contra
+        // deuda no sacan un peso del cajón, así que no deben tocarlo.
+        if (affectsCashRegister(item.kind)) {
+          const devolucion = await tx.payment.create({
+            data: {
+              amount: item.amount.negated(),
+              paymentMethod: "CASH",
+              saleId,
+              userId: authUser.id,
+              branchId: sale.branchId,
+              cashRegisterId: sale.cashRegisterId,
+            },
+          });
+          paymentId = devolucion.id;
+        }
+
+        liquidaciones.push(
+          await tx.refundSettlement.create({
+            data: {
+              returnId: returnRecord.id,
+              kind: item.kind,
+              amount: item.amount,
+              cashRegisterId: affectsCashRegister(item.kind) ? sale.cashRegisterId : null,
+              paymentId,
+              reference: item.reference ?? null,
+              createdById: authUser.id,
+              reason: cleanReason,
+            },
+          }),
+        );
+      }
+
       // ── 7. Internal receipt ───────────────────────────────────────────────────
       await createInternalReceipt(tx, {
         receiptType: "SALE_REFUND",
@@ -220,10 +320,17 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
           totalRefund,
           items: returnLineItems,
           customer: sale.customer?.name ?? "Consumidor Final",
+          // El comprobante dice por dónde volvió la plata. Sin esto, quien lo
+          // lee no puede distinguir un reintegro en efectivo de una reversa de
+          // tarjeta o de una baja de deuda.
+          liquidacion: plan.map((item) => ({
+            via: item.kind,
+            monto: item.amount.toNumber(),
+          })),
         },
       });
 
-      return { returnRecord, totalRefund };
+      return { returnRecord, totalRefund, settlements: liquidaciones };
     });
 
     res.status(201).json({

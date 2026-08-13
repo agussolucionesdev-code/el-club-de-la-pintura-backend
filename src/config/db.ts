@@ -21,6 +21,9 @@ const prisma = baseClient.$extends({
     sale: {
       totalAmount: { needs: { totalAmount: true }, compute: (s) => Number(s.totalAmount) },
       balance:     { needs: { balance: true },     compute: (s) => Number(s.balance)     },
+      // `null` se preserva: significa "no registrado", no "cero pesos".
+      cashReceived: { needs: { cashReceived: true }, compute: (s) => s.cashReceived !== null ? Number(s.cashReceived) : null },
+      changeGiven:  { needs: { changeGiven: true },  compute: (s) => s.changeGiven  !== null ? Number(s.changeGiven)  : null },
     },
     saleItem: {
       unitPrice: { needs: { unitPrice: true }, compute: (s) => Number(s.unitPrice) },

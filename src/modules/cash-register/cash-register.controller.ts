@@ -18,6 +18,8 @@ import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { localDayRange } from "../../utils/date.utils";
+import { isUniqueConstraintViolation } from "../../utils/stock.utils";
+import { resolveTerminal, TerminalResolutionError } from "../../utils/terminal.utils";
 
 interface CashRegisterShift {
   initialBalance: number;
@@ -295,25 +297,66 @@ export const openShift = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    // DUAL-WRITE: el turno nace con su terminal desde ahora. Lo que entre
+    // mientras el backfill completa lo viejo ya viene con terminal asignada.
+    // La terminal NO se toma del cuerpo del request: se deriva y, si el cliente
+    // declara una que no corresponde, se rechaza en vez de aceptarla.
+    const terminal = await resolveTerminal(
+      prisma,
+      parsedBranchId,
+      req.body?.terminalId ? Number(req.body.terminalId) : null,
+      // La credencial de dispositivo manda sobre cualquier cosa que declare el
+      // cuerpo del request.
+      req.terminal,
+    );
+
+    // El chequeo previo es POR TERMINAL, no por sucursal.
+    //
+    // Antes miraba `branchId`, que era correcto cuando había un solo puesto por
+    // local. Dejarlo así habría anulado toda esta fase: la segunda caja de una
+    // sucursal nunca habría podido abrir turno, aunque el índice de la base ya
+    // se lo permitiera.
+    //
+    // Sirve SÓLO para dar un mensaje entendible en el caso normal. Quien
+    // garantiza la regla es el índice único parcial
+    // `cash_register_one_open_per_terminal`: entre este `findFirst` y el
+    // `create` hay una ventana donde otra apertura simultánea puede colarse, y
+    // ahí la base es la única que puede decir que no.
     const existingOpen = await prisma.cashRegister.findFirst({
-      where: { branchId: parsedBranchId, status: "OPEN" },
+      where: { terminalId: terminal.id, status: "OPEN" },
     });
 
     if (existingOpen) {
       return res.status(400).json({
         error:
-          "Atencion: Ya existe un turno abierto en esta sucursal. Debe cerrarlo antes de iniciar uno nuevo.",
+          `Atencion: Ya existe un turno abierto en la terminal "${terminal.code}". ` +
+          "Debe cerrarlo antes de iniciar uno nuevo.",
       });
     }
 
-    const newShift = await prisma.cashRegister.create({
-      data: {
-        initialBalance: Number(initialBalance),
-        userId: authUser.id,
-        branchId: parsedBranchId,
-        status: "OPEN",
-      },
-    });
+    let newShift;
+    try {
+      newShift = await prisma.cashRegister.create({
+        data: {
+          initialBalance: Number(initialBalance),
+          userId: authUser.id,
+          branchId: parsedBranchId,
+          terminalId: terminal.id,
+          status: "OPEN",
+        },
+      });
+    } catch (error: unknown) {
+      // P2002 = violación de índice único. Perdimos la carrera contra otra
+      // apertura: la respuesta es la misma que la del chequeo previo, para que
+      // el operador vea un mensaje entendible y no un 500.
+      if (isUniqueConstraintViolation(error)) {
+        return res.status(400).json({
+          error:
+            "Atencion: Ya existe un turno abierto en esta sucursal. Debe cerrarlo antes de iniciar uno nuevo.",
+        });
+      }
+      throw error;
+    }
 
     res.status(201).json({
       message:
@@ -321,6 +364,11 @@ export const openShift = async (req: AuthRequest, res: Response) => {
       data: newShift,
     });
   } catch (error: unknown) {
+    // Una terminal inexistente, desactivada o de otra sucursal es un problema
+    // de negocio con una salida clara, no un fallo del servidor.
+    if (error instanceof TerminalResolutionError) {
+      return res.status(400).json({ error: error.message });
+    }
     logger.error("Error critico al abrir caja:", error);
     res.status(500).json({
       error:

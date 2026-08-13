@@ -1,16 +1,38 @@
 import { z } from "zod";
 
-// Sale item sub-schema declaration
+/**
+ * Línea de venta.
+ *
+ * El cliente declara QUÉ quiere vender y CON QUÉ autorización. Los precios los
+ * resuelve el servidor contra la base (`src/utils/pricing.utils.ts`).
+ *
+ * `unitPrice`, `subtotal` y `listPrice` siguen aceptándose por compatibilidad
+ * con la app desplegada, pero **el servidor los ignora**: sólo el `totalAmount`
+ * del cliente se usa, y únicamente para contrastar contra el total autoritativo
+ * y rechazar la venta si difieren.
+ */
 const saleItemSchema = z.object({
   productId: z.number().int().positive("Identificador de producto inválido."),
-  quantity: z.number().positive("La cantidad debe ser mayor a cero."),
-  unitPrice: z
+  // Entero: no existe media lata de pintura. Antes `.positive()` aceptaba 2.5.
+  quantity: z
     .number()
-    .nonnegative("El precio unitario no puede ser negativo."),
-  subtotal: z.number().nonnegative(),
-  // Optional discount transparency for the printed ticket.
-  listPrice: z.number().nonnegative().optional().nullable(),
+    .int("La cantidad debe ser un número entero de unidades.")
+    .positive("La cantidad debe ser mayor a cero."),
+
+  // Descuento de línea. El tope por rol se aplica en el servidor.
   discountPct: z.number().min(0).max(100).optional().nullable(),
+
+  // Precio excepcional. Exige la capacidad correspondiente y queda auditado.
+  priceOverride: z
+    .number()
+    .nonnegative("El precio excepcional no puede ser negativo.")
+    .optional()
+    .nullable(),
+
+  // ── Compatibilidad: aceptados y descartados ──
+  unitPrice: z.number().nonnegative().optional(),
+  subtotal: z.number().nonnegative().optional(),
+  listPrice: z.number().nonnegative().optional().nullable(),
 });
 
 // All accepted payment method identifiers (CREDIT_ACCOUNT enables the store-credit / fiado flow)
@@ -37,7 +59,28 @@ export const createSaleSchema = z.object({
     items: z
       .array(saleItemSchema)
       .min(1, "La venta debe contener al menos un producto."),
+    // El total que el operador VIO en pantalla. No define lo que se cobra: se
+    // contrasta contra el total autoritativo y, si no coinciden, la venta se
+    // rechaza con 409 para que el cajero revise el ticket actualizado.
     totalAmount: z.number().positive("El monto total debe ser mayor a cero."),
+
+    // Efectivo entregado por el cliente. Se valida contra el COMPONENTE en
+    // efectivo de la venta, no contra el total (importa en pagos mixtos).
+    cashReceived: z.number().nonnegative().optional().nullable(),
+
+    /**
+     * Terminal declarada por el cliente.
+     *
+     * Se ACEPTA en el contrato pero **no se cree**: si la computadora tiene
+     * credencial de dispositivo, esa gana, y si lo declarado la contradice la
+     * venta se rechaza con `TERMINAL_MISMATCH`.
+     *
+     * Podría no declararse en absoluto —el `assignParsed` de este módulo lo
+     * borraría y la credencial mandaría igual—, pero entonces un cliente
+     * desincronizado creería haber declarado algo y el servidor lo ignoraría en
+     * silencio. Preferimos aceptarlo y contradecirlo en voz alta.
+     */
+    terminalId: z.coerce.number().int().positive().optional().nullable(),
 
     paymentMethod: z.enum(PAYMENT_METHODS, {
       message: "Método de pago no reconocido por el sistema.",

@@ -30,6 +30,8 @@ import customerRoutes from "./modules/customer/customer.routes";
 import paymentRoutes from "./modules/payment/payment.routes";
 import supplierRoutes from "./modules/supplier/supplier.routes";
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
+import terminalRoutes from "./modules/terminal/terminal.routes";
+import { resolveTerminalFromCookie } from "./middlewares/terminal.middleware";
 import expenseRoutes from "./modules/expense/expense.routes";
 import dashboardRoutes from "./modules/dashboard/dashboard.routes";
 import syncRoutes from "./modules/sync/sync.routes";
@@ -91,6 +93,13 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 app.use(serializeDecimals);
+
+// Resuelve QUÉ TERMINAL es esta computadora antes de cualquier ruta.
+// Va después de `cookieParser` porque lee la credencial de dispositivo, y no
+// corta el request: deja `req.terminal` en null si no hay, y cada ruta decide
+// si la exige. Así la terminal se PRUEBA con un secreto que emitió el servidor
+// en vez de aceptarse como un dato más del cuerpo.
+app.use(resolveTerminalFromCookie);
 app.use("/api", globalRateLimiter);
 
 // ============================================================================
@@ -149,6 +158,7 @@ app.use("/api/customers", customerRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/suppliers", supplierRoutes);
 app.use("/api/cash-registers", cashRegisterRoutes);
+app.use("/api/terminals", terminalRoutes);
 app.use("/api/expenses", expenseRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/sync", syncRoutes);
