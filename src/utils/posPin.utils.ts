@@ -124,12 +124,27 @@ export const verifyPin = async (storedHash: string, pin: string): Promise<boolea
 
 // ── Autorrevelado ──────────────────────────────────────────────────────────
 
+/**
+ * Los tres pedazos van como `Uint8Array` y no como `Buffer` porque es lo que
+ * espera una columna `Bytes` de Prisma 7. `Buffer` extiende `Uint8Array`, pero
+ * su `ArrayBuffer` puede ser compartido y el tipo generado no lo acepta.
+ * Convertir acá —en el borde— evita repartir casts por los controladores.
+ */
 export type EncryptedPin = {
-  cipher: Buffer;
-  nonce: Buffer;
-  tag: Buffer;
+  cipher: Uint8Array<ArrayBuffer>;
+  nonce: Uint8Array<ArrayBuffer>;
+  tag: Uint8Array<ArrayBuffer>;
   keyVersion: number;
 };
+
+/**
+ * Copia a un `Uint8Array` con `ArrayBuffer` propio.
+ *
+ * El parámetro de tipo importa: Prisma exige `Uint8Array<ArrayBuffer>` y
+ * rechaza `Uint8Array<ArrayBufferLike>`, porque este último podría estar
+ * respaldado por un `SharedArrayBuffer`. La copia lo garantiza.
+ */
+const aBytes = (buf: Buffer): Uint8Array<ArrayBuffer> => new Uint8Array(buf);
 
 /**
  * Cifra el PIN para que su dueño pueda verlo después.
@@ -149,7 +164,12 @@ export const encryptPin = (pin: string): EncryptedPin => {
   const cipherIv = createCipheriv("aes-256-gcm", key, nonce);
   const cipher = Buffer.concat([cipherIv.update(pin, "utf8"), cipherIv.final()]);
 
-  return { cipher, nonce, tag: cipherIv.getAuthTag(), keyVersion: currentKeyVersion() };
+  return {
+    cipher: aBytes(cipher),
+    nonce: aBytes(nonce),
+    tag: aBytes(cipherIv.getAuthTag()),
+    keyVersion: currentKeyVersion(),
+  };
 };
 
 /**
@@ -173,9 +193,12 @@ export const decryptPin = (guardado: EncryptedPin): string => {
     );
   }
 
-  const decipher = createDecipheriv("aes-256-gcm", key, guardado.nonce);
-  decipher.setAuthTag(guardado.tag);
-  return Buffer.concat([decipher.update(guardado.cipher), decipher.final()]).toString("utf8");
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(guardado.nonce));
+  decipher.setAuthTag(Buffer.from(guardado.tag));
+  return Buffer.concat([
+    decipher.update(Buffer.from(guardado.cipher)),
+    decipher.final(),
+  ]).toString("utf8");
 };
 
 // ── Generación ─────────────────────────────────────────────────────────────

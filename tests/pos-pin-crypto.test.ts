@@ -46,12 +46,15 @@ const conEntorno = async (
   }
 };
 
-/** Copia el buffer con el primer byte invertido: simula una fila manipulada. */
-const conPrimerByteAlterado = (buf: Buffer): Buffer => {
-  const copia = Buffer.from(buf);
-  copia.writeUInt8(copia.readUInt8(0) ^ 0xff, 0);
+/** Copia con el primer byte invertido: simula una fila manipulada en la base. */
+const conPrimerByteAlterado = (bytes: Uint8Array): Uint8Array<ArrayBuffer> => {
+  const copia = new Uint8Array(bytes);
+  copia[0] = (copia[0] ?? 0) ^ 0xff;
   return copia;
 };
+
+/** Los bytes cifrados se guardan como `Uint8Array` (lo que pide Prisma). */
+const comoBuffer = (bytes: Uint8Array): Buffer => Buffer.from(bytes);
 
 const PEPPER = "pepper-de-prueba-suficientemente-largo";
 const CLAVE = Buffer.alloc(32, 7).toString("hex"); // 32 bytes → AES-256
@@ -138,14 +141,14 @@ describe("PIN del POS: criptografía", () => {
       const b = encryptPin("482913");
       // Reusar un nonce con la misma clave rompe AES-GCM por completo y filtra
       // el texto plano. Tiene que ser aleatorio por operación.
-      expect(a.nonce.equals(b.nonce)).toBe(false);
-      expect(a.cipher.equals(b.cipher)).toBe(false);
+      expect(comoBuffer(a.nonce).equals(comoBuffer(b.nonce))).toBe(false);
+      expect(comoBuffer(a.cipher).equals(comoBuffer(b.cipher))).toBe(false);
     });
 
     it("el texto cifrado no contiene el PIN", () => {
       const guardado = encryptPin("482913");
-      expect(guardado.cipher.toString("utf8")).not.toContain("482913");
-      expect(guardado.cipher.toString("hex")).not.toContain("482913");
+      expect(comoBuffer(guardado.cipher).toString("utf8")).not.toContain("482913");
+      expect(comoBuffer(guardado.cipher).toString("hex")).not.toContain("482913");
     });
 
     it("🔒 manipular el texto cifrado hace fallar el descifrado", () => {

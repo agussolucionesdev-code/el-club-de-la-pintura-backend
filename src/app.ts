@@ -31,6 +31,7 @@ import paymentRoutes from "./modules/payment/payment.routes";
 import supplierRoutes from "./modules/supplier/supplier.routes";
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
 import terminalRoutes from "./modules/terminal/terminal.routes";
+import posAuthRoutes from "./modules/pos-auth/pos-auth.routes";
 import { resolveTerminalFromCookie } from "./middlewares/terminal.middleware";
 import expenseRoutes from "./modules/expense/expense.routes";
 import dashboardRoutes from "./modules/dashboard/dashboard.routes";
@@ -148,6 +149,12 @@ app.get("/api/health", (_req: Request, res: Response) => {
 // ============================================================================
 // 4. BUSINESS ROUTES (REST API)
 // ============================================================================
+// Va PRIMERO porque declara rutas que viven en la raíz de /api y que caerían
+// dentro de otros routers si se montara después: `/api/me/pos-pin`,
+// `/api/users/:id/pos-pin/reset` y `/api/pos/...`. Sólo responde a esos
+// caminos; el resto sigue de largo hacia los routers de abajo.
+app.use("/api", posAuthRoutes);
+
 app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/users", userRoutes);
