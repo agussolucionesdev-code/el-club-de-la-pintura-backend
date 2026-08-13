@@ -16,6 +16,10 @@ import {
   generateDiscountCode,
   validateDiscountCode,
 } from "./sale.controller";
+import {
+  getSalesHistory,
+  getSalesHistoryFilters,
+} from "./saleHistory.controller";
 
 const router = Router();
 
@@ -36,6 +40,10 @@ router.get(
 router.get("/discount-code", authorizeRoles("ADMIN", "ENCARGADO"), getDiscountCode);
 router.post("/discount-code/generate", authorizeRoles("ADMIN", "ENCARGADO"), generateDiscountCode);
 router.post("/discount-code/validate", validateDiscountCode);
+
+// Antes de "/:id" para que el path literal no lo trague la ruta con parámetro.
+router.get("/history", getSalesHistory);
+router.get("/history/filters", getSalesHistoryFilters);
 
 router.get("/", getSales);
 router.get("/:id/receipt/pdf", generateSaleReceiptPdf);

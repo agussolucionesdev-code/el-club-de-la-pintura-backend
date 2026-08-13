@@ -55,7 +55,12 @@ model User {
   branches Branch[] // M:N: Branches this user can operate in
 
   movements Movement[]
+  /** Atribución legado: se conserva intacta por compatibilidad hacia atrás. */
   sales     Sale[]
+  /** Ventas donde esta persona fue la VENDEDORA (de acá sale la comisión). */
+  salesAsSeller  Sale[] @relation("SaleSeller")
+  /** Ventas donde esta persona fue la CAJERA (de acá sale el arqueo). */
+  salesAsCashier Sale[] @relation("SaleCashier")
   payments  Payment[] // Track which employee collected the money
 
   // Track shifts opened by this user
@@ -490,6 +495,69 @@ model Sale {
   terminalId Int?
   terminal   Terminal? @relation(fields: [terminalId], references: [id])
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ATRIBUCIÓN
+  // ══════════════════════════════════════════════════════════════════════
+  //
+  // Hasta la Fase 5 existía UN SOLO campo de usuario (`userId`), que se
+  // llenaba con el dueño del token. Eso no alcanza para nada de lo que el
+  // negocio necesita saber:
+  //
+  //   · Quién VENDIÓ decide la comisión.
+  //   · Quién COBRÓ decide de quién es el faltante en el arqueo.
+  //
+  // En un mostrador compartido pueden ser personas distintas, y con un solo
+  // campo no había forma de distinguirlas. Ninguno de los dos se acepta del
+  // navegador: salen del contexto de operador que resuelve el servidor.
+
+  // `onDelete: Restrict` explícito, y no el `SetNull` que Prisma pondría por
+  // defecto en una relación opcional. Con SetNull, borrar un usuario dejaría
+  // huérfanas todas sus ventas: el historial diría que nadie las vendió y la
+  // comisión ya liquidada quedaría sin dueño. Un empleado que se va no borra lo
+  // que hizo. Es la misma regla que ya rige `userId`.
+
+  /** Quien recibe el crédito de la venta y, en la Fase 8, la comisión. */
+  sellerId Int?
+  seller   User? @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+
+  /** Quien recibió o registró el cobro. */
+  cashierId Int?
+  cashier   User? @relation("SaleCashier", fields: [cashierId], references: [id], onDelete: Restrict)
+
+  /** Con qué sesión de operador se hizo. Nulo en las ventas históricas. */
+  operatorSessionId Int?
+
+  /**
+   * Nombres CONGELADOS al momento de vender.
+   *
+   * Sin esto, renombrar a alguien —o corregirle una falta de ortografía—
+   * reescribiría el historial de todas sus ventas pasadas. Un comprobante
+   * emitido no cambia porque después cambie una fila de usuarios.
+   */
+  sellerNameSnapshot  String?
+  cashierNameSnapshot String?
+
+  /**
+   * `true` = la atribución fue **inferida**, no observada.
+   *
+   * Las ventas anteriores a esta fase sólo tienen `userId`. El backfill copia
+   * ese valor a vendedor y cajero porque es la mejor aproximación disponible,
+   * pero **no es un hecho registrado**: nadie observó quién cobró. Esta bandera
+   * existe para que el historial y los incentivos puedan decir la verdad sobre
+   * la diferencia en vez de presentar una suposición como un dato.
+   */
+  attributionLegacy Boolean @default(false)
+
+  /**
+   * Qué CLASE de operación es.
+   *
+   * Hoy el consumo del personal es una venta ordinaria a un `Customer` de tipo
+   * INTERNAL, así que se cuela en la facturación y en el ranking de vendedores.
+   * Marcarlo acá permite excluirlo de los reportes ya mismo, sin esperar al
+   * modelo completo de la Fase 7.
+   */
+  kind String @default("SALE") // SALE | INTERNAL_CONSUMPTION
+
   createdAt DateTime @default(now())
 
   @@index([branchId, createdAt])
@@ -497,6 +565,15 @@ model Sale {
   @@index([userId])
   @@index([customerId])
   @@index([status])
+  // Índices del historial. `Sale` tiene 41 filas en producción (medido, no
+  // supuesto), así que van como índices normales dentro de la migración: la
+  // regla de §4.9 reserva `CONCURRENTLY` para tablas grandes, y ésta no lo es
+  // ni de cerca.
+  @@index([sellerId, createdAt])
+  @@index([cashierId, createdAt])
+  @@index([terminalId, createdAt])
+  @@index([kind, createdAt])
+  @@index([createdAt])
 }
 
 // Record individual billing rows with frozen historical costs

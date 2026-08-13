@@ -50,7 +50,22 @@ const SALE_STATUS = ["PAID", "PENDING", "PARTIAL"] as const;
 export const createSaleSchema = z.object({
   body: z.object({
     branchId: z.number().int().positive("La sucursal es obligatoria."),
-    userId: z.number().int().positive("El usuario es obligatorio.").optional(),
+
+    /**
+     * Identidad declarada por el cliente. Se acepta en el contrato pero **el
+     * servidor no le cree**: la atribución sale del contexto de operador.
+     *
+     * Se sigue aceptando —en vez de sacarla del schema y dejar que
+     * `assignParsed` la borre— por la misma razón que `terminalId`: si el
+     * cliente cree que declaró algo y el servidor lo descarta en silencio,
+     * nadie se entera del desfasaje. Preferimos aceptarlo y **contradecirlo en
+     * voz alta** con un 409 `IDENTITY_MISMATCH`.
+     *
+     * De estos campos dependen la comisión y el arqueo. No es un detalle.
+     */
+    userId: z.number().int().positive().optional(),
+    sellerId: z.number().int().positive().optional().nullable(),
+    cashierId: z.number().int().positive().optional().nullable(),
     customerId: z.number().int().positive().optional().nullable(),
     cashRegisterId: z
       .number()

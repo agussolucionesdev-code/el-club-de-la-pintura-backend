@@ -46,6 +46,13 @@ import {
   resolveTerminalIfAvailable,
   TerminalResolutionError,
 } from "../../utils/terminal.utils";
+import {
+  IdentityMismatchError,
+  resolveSaleAttribution,
+  resolveSaleKind,
+} from "../../utils/attribution.utils";
+import { PosContextError, resolvePosContext } from "../../core/pos-context";
+import { capabilitiesForRole } from "../../core/capabilities";
 
 class SaleBranchAccessError extends Error {}
 class SaleNotFoundError extends Error {}
@@ -675,6 +682,19 @@ export const createSale = async (req: AuthRequest, res: Response) => {
 
     const parsedBranchId = Number(branchId);
     ensureBranchAccess(parsedBranchId, authUser);
+
+    // ── Quién está operando esta caja ──
+    //
+    // Se resuelve FUERA de la transacción porque puede crear la sesión legado
+    // de quien todavía no configuró su PIN, y eso no debe quedar atado al
+    // commit de la venta: si la venta falla por stock, la sesión de operador
+    // sigue siendo válida y el cajero no tiene que identificarse de nuevo.
+    //
+    // No bloquea: si la computadora no está enrolada como terminal, la venta
+    // procede igual y se marca como atribución inferida. Frenar una venta en el
+    // mostrador por una fila de configuración faltante es inaceptable.
+    const resolved = await resolvePosContext(req);
+    const posContext = resolved instanceof PosContextError ? null : resolved;
     const parsedTotalAmount = Number(totalAmount) > 0 ? Number(totalAmount) : 0.01;
     const normalizedPaymentMethod = normalizePaymentMethod(paymentMethod);
     const isCredit = normalizedPaymentMethod === "CREDIT_ACCOUNT";
@@ -840,6 +860,33 @@ export const createSale = async (req: AuthRequest, res: Response) => {
         req.terminal,
       );
 
+      // ── ATRIBUCIÓN: quién vendió y quién cobró ──
+      //
+      // Sale del contexto del servidor, nunca del cuerpo. Si el cuerpo declara
+      // una identidad distinta se rechaza con 409 en vez de sobrescribirla en
+      // silencio: un cliente desincronizado tiene que enterarse, porque de esto
+      // dependen la comisión y el arqueo.
+      const attribution = await resolveSaleAttribution(tx, {
+        posContext: posContext ?? null,
+        authUser,
+        declared: {
+          userId: req.body?.userId ?? null,
+          sellerId: req.body?.sellerId ?? null,
+          cashierId: req.body?.cashierId ?? null,
+          // `branchId` y `cashRegisterId` NO se contrastan acá: el propio
+          // controlador ya los tomó del cuerpo como entrada legítima y los
+          // validó contra la caja abierta y el acceso del usuario. Volver a
+          // compararlos contra sí mismos no probaría nada.
+        },
+        resolvedBranchId: parsedBranchId,
+        resolvedCashRegisterId: Number(cashRegisterId),
+      });
+
+      const saleKind = await resolveSaleKind(
+        tx,
+        customerId ? Number(customerId) : null,
+      );
+
       // A credit sale with a down payment starts PARTIAL: part is in the till,
       // the rest is receivable on the customer's account.
       const initialStatus = isCredit ? (paidNow > 0 ? "PARTIAL" : "PENDING") : "PAID";
@@ -858,7 +905,17 @@ export const createSale = async (req: AuthRequest, res: Response) => {
           ...cardData,
           customerId: customerId ? Number(customerId) : null,
           branchId: parsedBranchId,
-          userId: authUser.id,
+          // `userId` se conserva por compatibilidad hacia atrás: lo leen
+          // reportes y consultas que todavía no migraron. Las filas nuevas lo
+          // llenan con el VENDEDOR, que es lo que ese campo siempre quiso decir.
+          userId: attribution.sellerId,
+          sellerId: attribution.sellerId,
+          cashierId: attribution.cashierId,
+          operatorSessionId: attribution.operatorSessionId,
+          sellerNameSnapshot: attribution.sellerNameSnapshot,
+          cashierNameSnapshot: attribution.cashierNameSnapshot,
+          attributionLegacy: attribution.attributionLegacy,
+          kind: saleKind,
           terminalId: terminal?.id ?? null,
           cashRegisterId: Number(cashRegisterId),
           // Última barrera: aunque el IdempotencyRecord se perdiera, el índice
@@ -902,7 +959,8 @@ export const createSale = async (req: AuthRequest, res: Response) => {
             reason: `Venta #${newSale.id} ${isCredit ? "(Cuenta Corriente)" : ""}`,
             productId: line.productId,
             branchId: parsedBranchId,
-            userId: authUser.id,
+            // El movimiento de stock lo genera quien vendió.
+            userId: attribution.sellerId,
           },
         });
 
@@ -938,7 +996,9 @@ export const createSale = async (req: AuthRequest, res: Response) => {
             amount: payment.amount,
             paymentMethod: payment.paymentMethod,
             saleId: newSale.id,
-            userId: authUser.id,
+            // El CAJERO, no el dueño del token: de este campo sale de quién es
+            // el faltante cuando el arqueo no cierra.
+            userId: attribution.cashierId,
             branchId: parsedBranchId,
             cashRegisterId: Number(cashRegisterId),
           },
@@ -1071,6 +1131,14 @@ export const createSale = async (req: AuthRequest, res: Response) => {
     // fallo del servidor.
     if (error instanceof TerminalResolutionError) {
       return res.status(400).json({ error: error.message, code: "TERMINAL_MISMATCH" });
+    }
+
+    // El cuerpo declaró una identidad que contradice la que resolvió el
+    // servidor. Se rechaza en vez de sobrescribir en silencio: de la atribución
+    // dependen la comisión y el arqueo, así que un cliente desincronizado tiene
+    // que enterarse ahora y no a fin de mes.
+    if (error instanceof IdentityMismatchError) {
+      return res.status(409).json({ error: error.message, code: error.code });
     }
 
     if (error instanceof TotalMismatchError) {
@@ -1442,9 +1510,35 @@ export const getSaleById = async (req: AuthRequest, res: Response) => {
 
     ensureBranchAccess(sale.branchId, authUser);
 
+    // ── El costo se OMITE del payload, no se esconde en la pantalla ──
+    //
+    // Ocultarlo con CSS o con un `if` en el componente no es control de acceso:
+    // el dato viaja igual y está a un clic de las herramientas de desarrollo.
+    // Un vendedor no tiene por qué poder ver el margen del negocio, así que la
+    // clave directamente no sale del servidor.
+    const puedeVerCostos = capabilitiesForRole(authUser.role).has("costs:view");
+
+    const data = {
+      ...sale,
+      items: sale.items.map((item) =>
+        puedeVerCostos ? item : { ...item, unitCost: undefined },
+      ),
+      // El snapshot manda sobre la relación: renombrar a alguien no reescribe
+      // los comprobantes que ya emitió.
+      seller: {
+        id: sale.sellerId ?? sale.userId,
+        name: sale.sellerNameSnapshot ?? sale.user?.name ?? "—",
+      },
+      cashier: {
+        id: sale.cashierId ?? sale.userId,
+        name: sale.cashierNameSnapshot ?? sale.user?.name ?? "—",
+      },
+      isConsumidorFinal: sale.customerId === null,
+    };
+
     res
       .status(200)
-      .json({ message: "Detalle de ticket recuperado.", data: sale });
+      .json({ message: "Detalle de ticket recuperado.", data });
   } catch (error: unknown) {
     const errorMsg =
       error instanceof Error ? error.message : "Error desconocido.";

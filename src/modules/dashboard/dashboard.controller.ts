@@ -206,6 +206,11 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
           createdAt: true,
           userId: true,
           user: { select: { name: true } },
+          // Atribución real. `sellerId` puede ser null en filas anteriores al
+          // backfill, y por eso se conserva `userId` como respaldo.
+          sellerId: true,
+          sellerNameSnapshot: true,
+          kind: true,
         },
       }),
       prisma.sale.findMany({
@@ -370,19 +375,33 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([date, { total, count }]) => ({ date, total, count }));
 
-    // Group sales by seller (Sale.userId is non-nullable).
+    // ── Ranking de vendedores ──
+    //
+    // Dos correcciones respecto de la versión anterior:
+    //
+    // 1. Cuenta por `sellerId` (quién VENDIÓ), no por el dueño del token. Con
+    //    respaldo en `userId` para las ventas anteriores al backfill.
+    // 2. **Excluye el consumo interno.** Hoy el consumo del personal es una
+    //    venta ordinaria a un cliente de tipo INTERNAL, así que inflaba el
+    //    ranking de quien la registrara: alguien podía "liderar" el mes a fuerza
+    //    de retirar mercadería para sí mismo.
     const sellerMap = new Map<
       number,
       { userId: number; userName: string; total: number; count: number }
     >();
     for (const sale of trendSales) {
-      const existing = sellerMap.get(sale.userId) ?? {
-        userId: sale.userId,
-        userName: sale.user.name,
+      if (sale.kind === "INTERNAL_CONSUMPTION") continue;
+
+      const sellerId = sale.sellerId ?? sale.userId;
+      const sellerName = sale.sellerNameSnapshot ?? sale.user.name;
+
+      const existing = sellerMap.get(sellerId) ?? {
+        userId: sellerId,
+        userName: sellerName,
         total: 0,
         count: 0,
       };
-      sellerMap.set(sale.userId, {
+      sellerMap.set(sellerId, {
         ...existing,
         total: existing.total + Number(sale.totalAmount),
         count: existing.count + 1,

@@ -91,6 +91,13 @@ describe("Enrolamiento de terminal", () => {
     await prisma.cashRegister.deleteMany({
       where: { branchId: { in: [branchId, otraSucursalId] } },
     });
+    // Desde la Fase 5, cualquier request de POS resuelve el contexto de
+    // operador y puede crear una sesión atada a la terminal. Esa fila tiene FK
+    // RESTRICT —a propósito: borrar una terminal no debe borrar el registro de
+    // quién operó en ella— así que hay que limpiarla antes.
+    await prisma.posOperatorSession.deleteMany({
+      where: { terminalId: { in: [terminalId, terminalAjenaId] } },
+    });
     await prisma.terminal.deleteMany({ where: { id: { in: [terminalId, terminalAjenaId] } } });
     await prisma.user.deleteMany({ where: { email: { in: [emailAdmin, emailEmpleado] } } });
     await prisma.branch.deleteMany({ where: { id: { in: [branchId, otraSucursalId] } } });
