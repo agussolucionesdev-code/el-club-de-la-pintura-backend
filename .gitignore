@@ -1,4 +1,7 @@
 node_modules/
 dist/
 .env
+# Credenciales de la base de tests (rama de Neon dedicada). Nunca se commitea.
+.env.test
+.env.test.local
 /src/generated/prisma

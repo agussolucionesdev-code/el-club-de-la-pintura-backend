@@ -9,4 +9,8 @@ module.exports = {
   // The real .env value is NOT loaded by Jest — tests must be hermetic.
   testEnvironmentOptions: {},
   setupFiles: ["<rootDir>/tests/helpers/setup.ts"],
+  // Corre UNA vez antes del primer archivo de test: se conecta de verdad y
+  // verifica con SELECT current_database() que la base sea la de tests. Aborta
+  // la corrida entera antes de que nada escriba si el destino no se confirma.
+  globalSetup: "<rootDir>/tests/helpers/globalSetup.ts",
 };

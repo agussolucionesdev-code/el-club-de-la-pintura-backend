@@ -3,12 +3,74 @@
 import "dotenv/config";
 import { defineConfig } from "prisma/config";
 
+/**
+ * ── Candado contra migrar producción sin querer ────────────────────────────
+ *
+ * Esto no es paranoia teórica: pasó. Un `npx prisma migrate deploy` escrito sin
+ * pensar en qué base estaba apuntando aplicó once migraciones —incluida una que
+ * pone una columna en NOT NULL— contra la base REAL, con 19.325 productos
+ * adentro y sin punto de recuperación. No se perdió nada de casualidad, no por
+ * diseño.
+ *
+ * La causa de raíz es esta línea: `DATABASE_URL` del `.env` de desarrollo
+ * apunta a producción, así que **cualquier** comando de Prisma tipeado sin
+ * argumentos le pega a la base real.
+ *
+ * El candado: desde una máquina de desarrollo (NODE_ENV distinto de
+ * "production") sólo se deja pasar una base cuyo nombre termine en `_test`.
+ * Para tocar producción a propósito hay que decirlo con todas las letras:
+ *
+ *   CONFIRM_PROD_MIGRATION=<nombre exacto de la base> npx prisma migrate deploy
+ *
+ * Render corre con `NODE_ENV=production`, así que su `migrate deploy` de
+ * arranque no se ve afectado. El CI apunta a una base `_test`, tampoco.
+ */
+/**
+ * Comandos que no abren ninguna conexión: generan tipos, formatean o validan el
+ * esquema. Frenarlos sería puro estorbo — `npm run build` corre `generate`.
+ */
+const OFFLINE_COMMANDS = new Set(["generate", "format", "validate", "version", "debug"]);
+
+const guardedUrl = (): string | undefined => {
+  const url = process.env["DATABASE_URL"];
+  if (!url) return url;
+
+  // En el servidor de verdad no hay nada que proteger: es su propia base.
+  if (process.env["NODE_ENV"] === "production") return url;
+
+  if (process.argv.some((arg) => OFFLINE_COMMANDS.has(arg))) return url;
+
+  let dbName: string;
+  try {
+    dbName = decodeURIComponent(new URL(url).pathname.replace(/^\//u, ""));
+  } catch {
+    // Cadena ilegible: que falle Prisma con su propio mensaje, no acá.
+    return url;
+  }
+
+  if (dbName.endsWith("_test")) return url;
+
+  // Autorización explícita: hay que escribir el nombre de la base, no un "sí".
+  // Un flag genérico se pega en el historial del shell y se reusa sin leerlo.
+  if (process.env["CONFIRM_PROD_MIGRATION"] === dbName) return url;
+
+  throw new Error(
+    `\n\n  ⛔ DATABASE_URL apunta a "${dbName}", que NO es una base de tests.\n\n` +
+      `  Desde una máquina de desarrollo, Prisma sólo opera contra bases *_test.\n` +
+      `  Si de verdad querés tocar "${dbName}", primero sacá un punto de\n` +
+      `  recuperación (branch de Neon) y después corré:\n\n` +
+      `      CONFIRM_PROD_MIGRATION=${dbName} npx prisma <comando>\n\n` +
+      `  Para trabajar contra la base de tests:\n\n` +
+      `      npm run db:migrate:test\n\n`,
+  );
+};
+
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },
   datasource: {
-    url: process.env["DATABASE_URL"],
+    url: guardedUrl(),
   },
 });

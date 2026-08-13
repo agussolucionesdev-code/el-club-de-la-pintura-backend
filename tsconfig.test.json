@@ -1,0 +1,16 @@
+{
+  // El tsconfig principal excluye `tests/` porque su rootDir es `src/` y sólo
+  // le importa lo que se compila a `dist/`. Efecto secundario: el typecheck
+  // nunca miraba la suite, y un error de tipos en un test recién aparecía al
+  // correr Jest — o sea, sólo con una base de datos disponible.
+  //
+  // Este archivo typechequea los tests sin emitir nada.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "types": ["jest", "node"]
+  },
+  "include": ["tests/**/*", "src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

@@ -48,10 +48,38 @@ jobs:
         run: npx prisma generate
 
       - name: Typecheck (build)
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
-      - name: Sync schema to test database
-        run: npx prisma db push
+      # El tsconfig principal excluye `tests/`, así que hasta ahora el typecheck
+      # nunca miró la suite: un error de tipos en un test recién aparecía al
+      # correr Jest, es decir, sólo con una base disponible.
+      - name: Typecheck (tests)
+        run: npm run typecheck:tests
+
+      # `migrate deploy`, no `db push`. `db push` sincroniza el esquema saltándose
+      # los archivos de migración, así que una migración rota pasaba el CI en
+      # verde y recién explotaba al desplegar. Este paso corre exactamente lo
+      # mismo que produccion.
+      - name: Apply migrations to test database
+        run: npx prisma migrate deploy
+
+      # Contraste de deriva: si el esquema que dejan las migraciones no coincide
+      # con schema.prisma, `migrate diff` devuelve exit code 2 y el CI falla.
+      #
+      # Este chequeo no es teórico: al levantar la base de tests apareció que la
+      # tabla `Return` entera y `Branch.isActive` existían en producción (creadas
+      # con `db push`) pero NO en ninguna migración. Una base creada desde cero
+      # quedaba con el módulo de devoluciones roto. Lo cerró la migración
+      # 20260811220000_reconcile_return_table_and_branch_isactive.
+      #
+      # `--from-url` fue removido en Prisma 7: se usa `--from-config-datasource`,
+      # que toma la URL de prisma.config.ts (o sea, DATABASE_URL).
+      - name: Verify migrations match the schema
+        run: |
+          npx prisma migrate diff \
+            --from-config-datasource \
+            --to-schema prisma/schema.prisma \
+            --exit-code
 
       - name: Run integration tests
         run: npm test

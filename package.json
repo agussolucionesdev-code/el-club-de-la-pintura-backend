@@ -4,12 +4,19 @@
   "main": "index.js",
   "scripts": {
     "dev": "nodemon src/app.ts",
+    "dev:test": "node scripts/dev-against-test-db.js",
     "build": "npx prisma generate && tsc",
     "start": "node dist/app.js",
     "test": "jest --detectOpenHandles --runInBand",
+    "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.test.json",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:status": "prisma migrate status",
+    "db:migrate": "prisma migrate deploy",
+    "db:migrate:test": "node scripts/prisma-against-test-db.js migrate deploy",
+    "db:status:test": "node scripts/prisma-against-test-db.js migrate status",
+    "db:drift:test": "node scripts/prisma-against-test-db.js migrate diff --from-config-datasource --to-schema prisma/schema.prisma --exit-code",
     "db:seed": "ts-node prisma/seed.ts"
   },
   "engines": {
@@ -20,6 +27,7 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^7.5.0",
     "@types/cookie-parser": "^1.4.10",
