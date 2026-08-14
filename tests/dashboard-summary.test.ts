@@ -106,6 +106,8 @@ describe("Dashboard ERP por sucursal", () => {
         customerId,
         branchId: branchAId,
         userId: managerId,
+        sellerId: managerId,
+        cashierId: managerId,
         cashRegisterId,
         items: {
           create: [

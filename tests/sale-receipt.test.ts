@@ -131,6 +131,8 @@ describe("Tickets internos de venta por sucursal", () => {
         customerId: customerBId,
         branchId: branchBId,
         userId: managerId,
+        sellerId: managerId,
+        cashierId: managerId,
         cashRegisterId: cashRegisterBId,
         items: {
           create: [

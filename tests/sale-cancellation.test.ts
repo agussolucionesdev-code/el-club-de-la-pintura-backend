@@ -141,6 +141,8 @@ describe("Anulacion operativa de ventas", () => {
           pickedUpBy: "Robot Sur",
           branchId: branchBId,
           userId: managerId,
+          sellerId: managerId,
+          cashierId: managerId,
           cashRegisterId: cashRegisterBId,
           items: {
             create: [
@@ -164,6 +166,8 @@ describe("Anulacion operativa de ventas", () => {
           customerId,
           branchId: branchAId,
           userId: managerId,
+          sellerId: managerId,
+          cashierId: managerId,
           cashRegisterId: cashRegisterAId,
           items: {
             create: [

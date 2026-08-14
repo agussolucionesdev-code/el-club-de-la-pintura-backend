@@ -320,6 +320,23 @@ const replaySaleOperation = async (
       paymentMethod,
       immediatePayments,
     );
+    // ── ATRIBUCIÓN DE UNA VENTA OFFLINE ──
+    //
+    // Lo destapó el paso de contract de la Fase 5: este camino creaba ventas
+    // sin vendedor ni cajero. Habrían quedado fuera del historial por vendedor
+    // y, en la Fase 8, fuera de toda comisión — sin que nadie lo notara hasta
+    // que a alguien no le cerrara la liquidación.
+    //
+    // Se atribuye a quien sincroniza, que es lo único que el servidor puede
+    // afirmar: la operación llegó firmada por su sesión. **Va marcada como
+    // inferida**, porque de una venta hecha sin conexión nadie observó quién
+    // estaba parado en la caja. La Fase 9 introduce el lease firmado que sí lo
+    // prueba; hasta entonces, decirlo es más honesto que suponerlo.
+    const operador = await tx.user.findUnique({
+      where: { id: authUser.id },
+      select: { name: true },
+    });
+
     const sale = await tx.sale.create({
       data: {
         totalAmount,
@@ -330,6 +347,11 @@ const replaySaleOperation = async (
         customerId,
         branchId,
         userId: authUser.id,
+        sellerId: authUser.id,
+        cashierId: authUser.id,
+        sellerNameSnapshot: operador?.name ?? null,
+        cashierNameSnapshot: operador?.name ?? null,
+        attributionLegacy: true,
         cashRegisterId,
       },
     });

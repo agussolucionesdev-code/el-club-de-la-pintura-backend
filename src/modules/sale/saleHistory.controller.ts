@@ -165,16 +165,10 @@ export const getSalesHistory = async (req: AuthRequest, res: Response) => {
       ...(parseIntOrNull(q.cashRegisterId)
         ? { cashRegisterId: parseIntOrNull(q.cashRegisterId)! }
         : {}),
-      // La atribución se lee de `sellerId`, con respaldo en `userId` para las
-      // ventas anteriores al backfill que pudieran haber quedado sin migrar.
-      ...(parseIntOrNull(q.sellerId)
-        ? {
-            OR: [
-              { sellerId: parseIntOrNull(q.sellerId)! },
-              { sellerId: null, userId: parseIntOrNull(q.sellerId)! },
-            ],
-          }
-        : {}),
+      // `sellerId` es obligatorio desde el paso de contract, así que ya no hace
+      // falta el respaldo en `userId`: el backfill garantizó que toda venta
+      // tiene vendedor, y la base ahora lo impone.
+      ...(parseIntOrNull(q.sellerId) ? { sellerId: parseIntOrNull(q.sellerId)! } : {}),
       ...(parseIntOrNull(q.cashierId) ? { cashierId: parseIntOrNull(q.cashierId)! } : {}),
       ...(parseIntOrNull(q.customerId) ? { customerId: parseIntOrNull(q.customerId)! } : {}),
       // Consumidor Final es, literalmente, una venta sin cliente asociado.

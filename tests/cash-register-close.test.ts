@@ -94,6 +94,8 @@ describe("Caja ERP: cierre con arqueo automatico", () => {
         balance: 0,
         branchId,
         userId: operatorId,
+        sellerId: operatorId,
+        cashierId: operatorId,
         cashRegisterId,
       },
     });

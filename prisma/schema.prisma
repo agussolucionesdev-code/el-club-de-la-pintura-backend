@@ -516,13 +516,17 @@ model Sale {
   // comisión ya liquidada quedaría sin dueño. Un empleado que se va no borra lo
   // que hizo. Es la misma regla que ya rige `userId`.
 
+  // OBLIGATORIAS desde el paso de contract (migración 20260814080000). Una
+  // venta sin vendedor ni cajero no es una venta a medias: es una venta que
+  // nadie puede cobrar como suya ni justificar en el arqueo.
+
   /** Quien recibe el crédito de la venta y, en la Fase 8, la comisión. */
-  sellerId Int?
-  seller   User? @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: Restrict)
+  sellerId Int
+  seller   User @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: Restrict)
 
   /** Quien recibió o registró el cobro. */
-  cashierId Int?
-  cashier   User? @relation("SaleCashier", fields: [cashierId], references: [id], onDelete: Restrict)
+  cashierId Int
+  cashier   User @relation("SaleCashier", fields: [cashierId], references: [id], onDelete: Restrict)
 
   /** Con qué sesión de operador se hizo. Nulo en las ventas históricas. */
   operatorSessionId Int?
