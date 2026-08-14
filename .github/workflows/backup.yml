@@ -1,0 +1,119 @@
+name: Respaldo diario de la base
+
+# ── Por qué existe este archivo ─────────────────────────────────────────────
+#
+# Neon en el plan actual **no tiene respaldos automáticos**. Hoy, un borrado por
+# error contra la base real no tiene vuelta atrás. Y no es hipotético: durante
+# el desarrollo se aplicaron once migraciones a producción por accidente y no
+# se perdió nada de casualidad, no por diseño.
+#
+# Esto corre en GitHub Actions, que para un repositorio privado da 2.000 minutos
+# gratis por mes. Un dump de esta base tarda menos de un minuto. **Costo: cero.**
+#
+# ── Lo que este respaldo SÍ y NO cubre ──────────────────────────────────────
+#
+#   SÍ: un dump completo y consistente, una vez por día, guardado 90 días.
+#   NO: recuperar algo borrado hace tres horas. Para eso está el otro mecanismo
+#       —una branch de Neon antes de cada operación riesgosa— que documenta
+#       DESPLIEGUE-fases-0-a-3.md y que hay que tomar A MANO antes de migrar.
+#
+# Los dos se complementan: éste es la red de abajo, la branch es el arnés.
+
+on:
+  schedule:
+    # 06:10 UTC = 03:10 en Argentina. De madrugada, con el negocio cerrado: un
+    # dump toma un snapshot consistente igual, pero así ni siquiera compite por
+    # conexiones con alguien que esté vendiendo.
+    - cron: "10 6 * * *"
+  # Y a mano, cuando haga falta uno antes de tocar algo.
+  workflow_dispatch:
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Instalar el cliente de PostgreSQL 16
+        # La versión importa: `pg_dump` se niega a volcar una base de versión
+        # MAYOR que la suya. Neon corre 16, así que 16 o más nuevo.
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/postgresql.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-16
+
+      - name: Volcar la base
+        env:
+          # Secreto del repositorio. Nunca se imprime: `pg_dump` la lee del
+          # entorno y los pasos de abajo sólo miran el ARCHIVO resultante.
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::Falta el secreto PRODUCTION_DATABASE_URL."
+            exit 1
+          fi
+
+          FECHA=$(date -u +%Y-%m-%d)
+          ARCHIVO="respaldo-${FECHA}.sql.gz"
+
+          # --no-owner y --no-privileges para que el dump se pueda restaurar en
+          # cualquier base, no sólo en una con los mismos roles que Neon.
+          pg_dump "$DATABASE_URL" \
+            --no-owner --no-privileges --clean --if-exists \
+            | gzip -9 > "$ARCHIVO"
+
+          echo "ARCHIVO=$ARCHIVO" >> "$GITHUB_ENV"
+
+      - name: Verificar que el respaldo sirve
+        # Un respaldo que nadie probó no es un respaldo: es un archivo. Esto
+        # comprueba que descomprime, que tiene las tablas que tiene que tener y
+        # que no quedó truncado a la mitad.
+        run: |
+          set -euo pipefail
+
+          TAMANO=$(stat -c%s "$ARCHIVO")
+          echo "Tamaño: $TAMANO bytes"
+          if [ "$TAMANO" -lt 10000 ]; then
+            echo "::error::El respaldo pesa $TAMANO bytes. Algo salió mal."
+            exit 1
+          fi
+
+          # Descomprime entero o falla: detecta un gzip cortado.
+          gzip -t "$ARCHIVO"
+
+          FALTANTES=""
+          for TABLA in Sale SaleItem Product Customer User Payment CashRegister StaffLedgerEntry; do
+            if ! zgrep -q "CREATE TABLE public.\"$TABLA\"" "$ARCHIVO"; then
+              FALTANTES="$FALTANTES $TABLA"
+            fi
+          done
+          if [ -n "$FALTANTES" ]; then
+            echo "::error::Al respaldo le faltan tablas:$FALTANTES"
+            exit 1
+          fi
+
+          # El pie que `pg_dump` escribe al terminar. Si no está, se cortó.
+          if ! zgrep -q "PostgreSQL database dump complete" "$ARCHIVO"; then
+            echo "::error::El dump quedó incompleto."
+            exit 1
+          fi
+
+          VENTAS=$(zgrep -c "^COPY public.\"Sale\"" "$ARCHIVO" || true)
+          echo "✓ Respaldo verificado: descomprime, tiene las tablas y está completo."
+
+      - name: Guardar
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVO }}
+          path: ${{ env.ARCHIVO }}
+          # 90 días es el máximo de la retención gratuita. Para guardar más
+          # tiempo hay que bajarlo y archivarlo en otro lado —una vez por mes
+          # alcanza— porque los artefactos se borran solos al vencer.
+          retention-days: 90
+          compression-level: 0 # ya viene comprimido
+
+      - name: Avisar si falló
+        if: failure()
+        run: |
+          echo "::error::EL RESPALDO DE HOY FALLÓ. Revisalo: sin respaldo, un borrado por error no tiene vuelta atrás."
