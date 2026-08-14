@@ -49,7 +49,19 @@ export type Capability =
   | "stock:view_all_branches"
   | "stock:transfer_request"
   | "terminals:manage"
-  | "pin:reset_other";
+  | "pin:reset_other"
+  // ── Fase 7: el libro del personal ──
+  //
+  // Separadas a propósito. Ver el saldo PROPIO no se parece en nada a
+  // condonarle una deuda a otro: la primera es transparencia, la segunda mueve
+  // plata. Un solo permiso "staff" habría metido las dos en la misma bolsa.
+  | "staff:consume" //      llevarse mercadería a cuenta
+  | "staff:view_own" //     ver el saldo propio
+  | "staff:view_branch" //  ver el de su sucursal
+  | "staff:view_all" //     ver el de todos
+  | "staff:approve" //      autorizar consumo por encima del tope, o precio excepcional
+  | "staff:adjust" //       ajustes, condonaciones y reversiones de traslado
+  | "staff:transfer_legacy"; //  vincular y trasladar cuentas viejas
 
 const ADMIN_CAPABILITIES: Capability[] = [
   "dashboard:view",
@@ -74,6 +86,13 @@ const ADMIN_CAPABILITIES: Capability[] = [
   "stock:transfer_request",
   "terminals:manage",
   "pin:reset_other",
+  "staff:consume",
+  "staff:view_own",
+  "staff:view_branch",
+  "staff:view_all",
+  "staff:approve",
+  "staff:adjust",
+  "staff:transfer_legacy",
 ];
 
 const ENCARGADO_CAPABILITIES: Capability[] = [
@@ -97,6 +116,10 @@ const ENCARGADO_CAPABILITIES: Capability[] = [
   "stock:view_all_branches",
   "stock:transfer_request",
   "pin:reset_other",
+  "staff:consume",
+  "staff:view_own",
+  "staff:view_branch",
+  "staff:approve",
 ];
 
 const EMPLOYEE_CAPABILITIES: Capability[] = [
@@ -110,6 +133,8 @@ const EMPLOYEE_CAPABILITIES: Capability[] = [
   // cliente "en la otra está". Pedir la transferencia MUEVE MERCADERÍA, y por
   // eso es una capacidad separada que el empleado no tiene.
   "stock:view_all_branches",
+  "staff:consume",
+  "staff:view_own",
 ];
 
 const BY_ROLE: Record<string, Capability[]> = {

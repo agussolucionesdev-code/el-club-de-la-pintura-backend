@@ -32,6 +32,7 @@ import supplierRoutes from "./modules/supplier/supplier.routes";
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
 import terminalRoutes from "./modules/terminal/terminal.routes";
 import posAuthRoutes from "./modules/pos-auth/pos-auth.routes";
+import staffRoutes from "./modules/staff/staff.routes";
 import { resolveTerminalFromCookie } from "./middlewares/terminal.middleware";
 import expenseRoutes from "./modules/expense/expense.routes";
 import dashboardRoutes from "./modules/dashboard/dashboard.routes";
@@ -154,6 +155,10 @@ app.get("/api/health", (_req: Request, res: Response) => {
 // `/api/users/:id/pos-pin/reset` y `/api/pos/...`. Sólo responde a esos
 // caminos; el resto sigue de largo hacia los routers de abajo.
 app.use("/api", posAuthRoutes);
+// Monta en /api porque su contrato usa rutas de la raíz (/staff-accounts,
+// /internal-consumptions). Autentica con router.use dentro del propio router,
+// que sí es seguro acá: todas sus rutas exigen sesión.
+app.use("/api", staffRoutes);
 
 app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);
