@@ -119,3 +119,22 @@ export const listStaffLedgerSchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional(),
   }),
 });
+
+// ── Traslado legado ────────────────────────────────────────────────────────
+
+export const proposeLegacyLinkSchema = z.object({
+  body: z.object({
+    legacyCustomerId: z.coerce.number().int().positive(),
+    userId: z.coerce.number().int().positive("Elegí a quién pertenece esta cuenta."),
+    reason: motivo,
+  }),
+});
+
+export const confirmLegacyTransferSchema = z.object({
+  params: z.object({ id: z.coerce.number().int().positive() }),
+  body: z.object({
+    // Trasladar la deuda de una persona exige decir por qué, sin excepción:
+    // es la única forma de que la decisión se pueda revisar después.
+    reason: motivo,
+  }),
+});

@@ -148,6 +148,30 @@ export const registerAccountPayment = async (
       if (targetSale.status === "PAID" || targetSale.balance <= 0) {
         throw new Error("Esta cuenta ya se encuentra saldada.");
       }
+
+      // ── Deuda ya trasladada al libro del personal ──
+      //
+      // Estas ventas conservan `status` y `balance` a propósito: no se
+      // falsifica el histórico. Pero eso deja una trampa abierta — la venta
+      // sigue *pareciendo* cobrable por la vía de cuenta corriente, cuando su
+      // deuda ya vive en el libro de una persona. Cobrarla acá sería cobrar dos
+      // veces lo mismo, y encima dejaría el libro sin acreditar.
+      //
+      // Se cobra por el libro del personal, que es donde vive la deuda ahora.
+      const trasladadoVivo =
+        Number(targetSale.transferredToStaffLedger) -
+        Number(targetSale.transferReversed);
+
+      if (trasladadoVivo > 0) {
+        const disponible = Number(targetSale.balance) - trasladadoVivo;
+        if (paymentAmount > disponible) {
+          throw new Error(
+            `De esta operación, $${trasladadoVivo.toLocaleString("es-AR")} ya se ` +
+              "trasladaron al libro del personal. Esa parte se cobra desde la cuenta " +
+              `del empleado, no acá. Por esta vía sólo quedan $${Math.max(disponible, 0).toLocaleString("es-AR")}.`,
+          );
+        }
+      }
       if (targetSale.branchId !== activeRegister.branchId) {
         throw new Error(
           "La caja abierta no pertenece a la misma sucursal de la cuenta.",
