@@ -78,6 +78,9 @@ model User {
   posSessions    PosOperatorSession[]
   posDrafts      PosDraft[]
 
+  /** Su cuenta en el libro del personal. La tiene sólo quien consumió alguna vez. */
+  staffAccount StaffAccount?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -561,6 +564,19 @@ model Sale {
    * modelo completo de la Fase 7.
    */
   kind String @default("SALE") // SALE | INTERNAL_CONSUMPTION
+
+  // ── Traslado al libro del personal (Fase 7) ──
+  //
+  // ACUMULADOS sobre todos los ciclos. El activo es la diferencia. Un ciclo
+  // totalmente revertido aporta lo mismo a los dos, así que no altera el activo.
+  //
+  // `status` y `balance` NO se tocan: siguen diciendo lo que la venta fue.
+  // La cuenta corriente vigente se calcula como
+  //   GREATEST(balance - (transferredToStaffLedger - transferReversed), 0)
+  // así que la venta sale de Cuentas Corrientes porque su parte quedó cubierta,
+  // **no porque digamos que se pagó**.
+  transferredToStaffLedger Decimal @default(0) @db.Decimal(14, 2)
+  transferReversed         Decimal @default(0) @db.Decimal(14, 2)
 
   createdAt DateTime @default(now())
 
@@ -1183,4 +1199,337 @@ model IdempotencyRecord {
 
   @@index([status, lockedUntil])
   @@index([createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FASE 7 — EL LIBRO DEL PERSONAL
+// ══════════════════════════════════════════════════════════════════════════
+//
+// ── El problema ─────────────────────────────────────────────────────────────
+//
+// Hoy, cuando un empleado se lleva mercadería, se registra como una VENTA
+// ordinaria a un `Customer` de tipo INTERNAL, creado escribiendo un nombre a
+// mano. Eso trae tres consecuencias que nadie eligió:
+//
+//   1. La cuenta se puede duplicar: la misma persona con dos nombres tipeados
+//      distinto son dos cuentas, y ningún saldo cierra.
+//   2. Entra en la facturación, en el margen y en el ranking de vendedores.
+//   3. No hay vínculo con el `User` real, así que nadie puede ver su propio
+//      saldo ni descontárselo del sueldo sin hacerlo a mano.
+//
+// ── La regla que ordena todo este bloque ────────────────────────────────────
+//
+// **El libro es INMUTABLE.** Nada se edita ni se borra: todo se corrige con un
+// asiento compensatorio que apunta al original. Un saldo que se puede editar no
+// es un saldo, es una opinión — y acá se está hablando de plata que alguien le
+// debe a su empleador.
+
+model StaffAccount {
+  id     Int  @id @default(autoincrement())
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id])
+
+  /**
+   * Tope opcional. `null` = sin límite.
+   *
+   * No frena la operación por sí solo: avisa. Que un empleado no pueda llevarse
+   * un pincel un viernes a la tarde porque pasó el tope por $200 es peor
+   * remedio que la enfermedad; para eso está la autorización explícita.
+   */
+  creditLimit Decimal? @db.Decimal(14, 2)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries      StaffLedgerEntry[]
+  legacyLinks  StaffAccountLegacyLink[]
+  settlements  StaffPaymentSettlement[]
+  consumptions InternalConsumption[]
+}
+
+/**
+ * Tipo de asiento. El signo lo decide el TIPO, no quien lo carga.
+ */
+enum StaffLedgerEntryType {
+  OPENING_BALANCE //   débito · saldo trasladado desde una cuenta legado
+  CONSUMPTION //       débito · se llevó mercadería
+  ADJUSTMENT_DEBIT //  débito · corrección a favor de la empresa, con motivo
+  PAYMENT //           crédito · pagó (efectivo, transferencia, etc.)
+  PAYROLL_DEDUCTION // crédito · se le descontó del sueldo
+  RETURN_CREDIT //     crédito · devolvió mercadería
+  TRANSFER_REVERSAL // crédito · se revirtió un traslado
+  ADJUSTMENT_CREDIT // crédito · condonación o corrección, con motivo
+}
+
+model StaffLedgerEntry {
+  id             Int          @id @default(autoincrement())
+  staffAccountId Int
+  staffAccount   StaffAccount @relation(fields: [staffAccountId], references: [id])
+
+  type StaffLedgerEntryType
+
+  /**
+   * Débito y crédito separados, y **nunca los dos a la vez**.
+   *
+   * Un solo campo con signo invita a errores de signo que después nadie
+   * encuentra: un `-500` mal tipeado como `500` cambia el saldo en $1.000 y
+   * parece un asiento normal. Con dos columnas, un asiento mal armado es
+   * visiblemente absurdo.
+   */
+  debit  Decimal @default(0) @db.Decimal(14, 2)
+  credit Decimal @default(0) @db.Decimal(14, 2)
+
+  /** Qué originó el asiento. Sin FK: apunta a tablas distintas según el tipo. */
+  sourceType String? // InternalConsumption | Sale | Return | StaffPaymentSettlement | PayrollRecord
+  sourceId   Int?
+
+  /**
+   * A qué asiento corrige. **El original NUNCA se edita ni se borra.**
+   * Revertir es agregar, no deshacer.
+   */
+  reversalOfId Int?
+  reversalOf   StaffLedgerEntry?  @relation("LedgerReversal", fields: [reversalOfId], references: [id])
+  reversals    StaffLedgerEntry[] @relation("LedgerReversal")
+
+  reason         String
+  createdById    Int
+  authorizedById Int?
+
+  /** Detalle inmutable de apoyo (desglose por venta de un traslado, etc.). */
+  metadata Json?
+
+  createdAt DateTime @default(now())
+
+  // ⚠️ Idempotencia: toda mutación de plata lleva su clave. Aunque el
+  // `IdempotencyRecord` se perdiera, la base sigue rechazando el duplicado.
+  idempotencyKey String? @unique
+
+  @@index([staffAccountId, createdAt])
+  @@index([sourceType, sourceId])
+}
+
+// ── CONSUMO INTERNO ─────────────────────────────────────────────────────────
+//
+// Dos cosas que hoy son indistinguibles y no tienen nada que ver entre sí:
+// que un empleado se lleve un pincel para su casa, y que la empresa gaste un
+// rollo de cinta para pintar su propio local. La primera genera deuda de una
+// persona; la segunda es un costo del negocio y **no la debe nadie**.
+
+enum InternalConsumptionKind {
+  EMPLOYEE_PERSONAL // el empleado se lo lleva → DEBE
+  COMPANY_USE //       lo usa la empresa → costo, sin deudor
+}
+
+/**
+ * De dónde salió el precio. Se congela en cada operación.
+ *
+ * Sin esto, "¿por qué este pincel se le cargó a $3.000 y aquél a $4.200?" no
+ * tiene respuesta seis meses después. El origen del precio nunca queda
+ * implícito.
+ */
+enum InternalPricePolicy {
+  RETAIL //         precio de lista
+  COST //           al costo
+  COST_PLUS //      costo + un %
+  STAFF_DISCOUNT // lista - un %
+  EXPLICIT //       precio autorizado a mano; exige motivo y autorizador
+}
+
+model InternalConsumption {
+  id   Int                     @id @default(autoincrement())
+  kind InternalConsumptionKind
+
+  branchId       Int
+  terminalId     Int?
+  cashRegisterId Int?
+
+  /** Sólo para EMPLOYEE_PERSONAL. En COMPANY_USE no hay deudor: es `null`. */
+  staffAccountId Int?
+  staffAccount   StaffAccount? @relation(fields: [staffAccountId], references: [id])
+
+  /** Obligatorio en COMPANY_USE: para qué se usó ("pintar el depósito"). */
+  purpose String?
+
+  pricePolicy     InternalPricePolicy @default(RETAIL)
+  /** El % del COST_PLUS o del STAFF_DISCOUNT. Congelado acá. */
+  pricePolicyRate Decimal?            @db.Decimal(7, 4)
+
+  totalAmount Decimal @db.Decimal(14, 2)
+  /** Costo de la mercadería. Es lo que le cuesta al negocio, sepa o no venderlo. */
+  totalCost   Decimal @db.Decimal(14, 2)
+
+  createdById    Int
+  authorizedById Int?
+  reason         String?
+
+  idempotencyKey String? @unique
+  createdAt      DateTime @default(now())
+
+  items InternalConsumptionItem[]
+
+  @@index([staffAccountId, createdAt])
+  @@index([branchId, createdAt])
+  @@index([kind, createdAt])
+}
+
+model InternalConsumptionItem {
+  id            Int                 @id @default(autoincrement())
+  consumptionId Int
+  consumption   InternalConsumption @relation(fields: [consumptionId], references: [id], onDelete: Cascade)
+
+  productId Int
+  quantity  Int
+
+  /** Snapshots congelados, igual que en una venta. */
+  listPrice Decimal  @db.Decimal(14, 4)
+  unitPrice Decimal  @db.Decimal(14, 4)
+  /** `null` = costo desconocido. **Nunca 0 por defecto** (regla de la Fase 2). */
+  unitCost  Decimal? @db.Decimal(14, 4)
+  subtotal  Decimal  @db.Decimal(14, 2)
+
+  @@index([consumptionId])
+  @@index([productId])
+}
+
+// ── CÓMO PAGA EL PERSONAL ───────────────────────────────────────────────────
+
+enum StaffPaymentMethod {
+  CASH //              efectivo · ÚNICO que toca la caja física
+  TRANSFER //          transferencia
+  PAYROLL_DEDUCTION // se le descuenta del sueldo
+  MERCHANDISE_RETURN //devolvió mercadería
+  WRITE_OFF //         se le condona; exige autorizador y motivo
+}
+
+model StaffPaymentSettlement {
+  id             Int          @id @default(autoincrement())
+  staffAccountId Int
+  staffAccount   StaffAccount @relation(fields: [staffAccountId], references: [id])
+
+  method StaffPaymentMethod
+  amount Decimal            @db.Decimal(14, 2)
+
+  /**
+   * Sólo para CASH. Un `CashMovement` genérico habría perdido el método de
+   * pago y la causalidad contable: al cerrar la caja nadie podría distinguir
+   * "Fulano pagó lo que debía" de "entró plata de algún lado".
+   */
+  cashRegisterId Int?
+  branchId       Int?
+  /** Nº de operación bancaria, para poder conciliar después. */
+  reference      String?
+  /** Recibo al que se imputó, cuando es descuento de haberes. */
+  payrollRecordId Int?
+
+  createdById    Int
+  authorizedById Int?
+  reason         String?
+
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@index([staffAccountId, createdAt])
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// TRASLADO DE CUENTAS INTERNAS LEGADO
+// ══════════════════════════════════════════════════════════════════════════
+//
+// ── Dos errores míos que este modelo corrige ────────────────────────────────
+//
+// **1. No se falsifica el histórico.** Mi primera propuesta ponía `status =
+// "PAID"` y `balance = 0` en las ventas legado. Eso declara COBRADA una
+// operación que nunca se cobró. El estado, el saldo, los pagos y las
+// devoluciones originales quedan intactos: lo que se registra es cuánto se
+// TRASLADÓ, y la cuenta corriente sólo cuenta la porción no trasladada. La
+// operación se muestra "Trasladada al libro del personal", nunca "Pagada".
+//
+// **2. Un traslado revertido se puede volver a hacer.** La segunda versión
+// tenía `saleId @unique` y a la vez decía que tras una reversión total la venta
+// podía re-trasladarse. Las dos cosas no pueden ser ciertas: la base habría
+// rechazado el segundo registro. Con `cycleNumber`, un ciclo cerrado queda
+// archivado e inmutable, y el índice parcial garantiza que nunca haya dos
+// ciclos vivos a la vez.
+
+enum LegacyLinkStatus {
+  PROPOSED //  alguien propuso el vínculo; todavía no se trasladó nada
+  CONFIRMED // confirmado y trasladado
+  REJECTED //  se decidió que esa cuenta legado no es de esta persona
+}
+
+model StaffAccountLegacyLink {
+  id             Int          @id @default(autoincrement())
+  staffAccountId Int
+  staffAccount   StaffAccount @relation(fields: [staffAccountId], references: [id])
+
+  /**
+   * Relación 1:N, no 1:1.
+   *
+   * El sistema viejo permitía crear cuentas INTERNAL escribiendo cualquier
+   * nombre, así que la MISMA persona puede tener varias ("Juan", "Juan P.",
+   * "juan perez"). Una cuenta de personal recibe varias legado; cada legado se
+   * vincula a lo sumo una vez.
+   *
+   * **El vínculo nunca se infiere por nombre.** La pantalla de reconciliación
+   * lista cada cuenta con su saldo y alguien elige explícitamente.
+   */
+  legacyCustomerId Int              @unique
+  status           LegacyLinkStatus @default(PROPOSED)
+
+  transferredTotal Decimal? @db.Decimal(14, 2)
+  reason           String
+  proposedById     Int
+  confirmedById    Int?
+  confirmedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  transfers LegacySaleTransfer[]
+
+  // ⚠️ Índice único PARCIAL en la migración: un solo vínculo CONFIRMED por
+  // cuenta legado a la vez (puede tener varios históricos).
+  @@index([staffAccountId])
+}
+
+enum TransferStatus {
+  ACTIVE
+  PARTIALLY_REVERSED
+  FULLY_REVERSED
+}
+
+model LegacySaleTransfer {
+  id           Int                    @id @default(autoincrement())
+  legacyLinkId Int
+  legacyLink   StaffAccountLegacyLink @relation(fields: [legacyLinkId], references: [id])
+
+  saleId Int
+
+  /**
+   * 1, 2, 3… Un traslado por ciclo.
+   *
+   * Un ciclo FULLY_REVERSED queda cerrado e inmutable y **deja de ocupar** el
+   * índice de ciclo vivo, así que la venta puede volver a trasladarse creando
+   * el ciclo siguiente. El historial conserva todos.
+   */
+  cycleNumber Int
+
+  /** Se PRESERVAN. No se tocan nunca: son el histórico real de la venta. */
+  originalStatus  String
+  originalBalance Decimal @db.Decimal(14, 2)
+
+  /** Trasladado en ESTE ciclo. Inmutable. */
+  transferredAmount Decimal        @db.Decimal(14, 2)
+  /** Revertido de ESTE ciclo. Sólo crece, y nunca supera al trasladado. */
+  reversedAmount    Decimal        @default(0) @db.Decimal(14, 2)
+  status            TransferStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // ⚠️ Además hay un índice único PARCIAL en la migración:
+  //    UNIQUE(saleId) WHERE status IN ('ACTIVE','PARTIALLY_REVERSED')
+  // — un solo ciclo VIVO por venta.
+  @@unique([saleId, cycleNumber])
+  @@index([legacyLinkId])
 }
