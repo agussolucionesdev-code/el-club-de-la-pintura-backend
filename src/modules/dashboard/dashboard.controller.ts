@@ -129,9 +129,22 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     const createdAt = buildDashboardDateFilter(from, to);
     const branchWhere =
       branchFilter === undefined ? {} : { branchId: branchFilter };
+    /**
+     * ⚠️ El consumo interno NO es facturación.
+     *
+     * Medido contra los datos reales del negocio: de $2.318.242,50 que este
+     * tablero mostraba como facturado, **$86.800 eran consumo interno** —
+     * mercadería que se llevó el personal, por la que nunca entró un peso. Y
+     * el 54,6% de lo que decía "a cobrar" tampoco era de clientes.
+     *
+     * Se excluye en el filtro que alimenta TODOS los KPI, y no en cada lugar
+     * donde se muestra un total: un filtro que hay que acordarse de repetir es
+     * un filtro que tarde o temprano se olvida en alguno.
+     */
     const saleWhere: Prisma.SaleWhereInput = {
       ...branchWhere,
       status: ACTIVE_SALE_STATUS_FILTER,
+      kind: { not: "INTERNAL_CONSUMPTION" },
       ...(createdAt ? { createdAt } : {}),
     };
     const paymentWhere: Prisma.PaymentWhereInput = {
@@ -1080,9 +1093,22 @@ export const exportScopedFinancialReportToExcel = async (
     const createdAt = buildDashboardDateFilter(from, to);
     const branchWhere =
       branchFilter === undefined ? {} : { branchId: branchFilter };
+    /**
+     * ⚠️ El consumo interno NO es facturación.
+     *
+     * Medido contra los datos reales del negocio: de $2.318.242,50 que este
+     * tablero mostraba como facturado, **$86.800 eran consumo interno** —
+     * mercadería que se llevó el personal, por la que nunca entró un peso. Y
+     * el 54,6% de lo que decía "a cobrar" tampoco era de clientes.
+     *
+     * Se excluye en el filtro que alimenta TODOS los KPI, y no en cada lugar
+     * donde se muestra un total: un filtro que hay que acordarse de repetir es
+     * un filtro que tarde o temprano se olvida en alguno.
+     */
     const saleWhere: Prisma.SaleWhereInput = {
       ...branchWhere,
       status: ACTIVE_SALE_STATUS_FILTER,
+      kind: { not: "INTERNAL_CONSUMPTION" },
       ...(createdAt ? { createdAt } : {}),
     };
     const paymentWhere: Prisma.PaymentWhereInput = {

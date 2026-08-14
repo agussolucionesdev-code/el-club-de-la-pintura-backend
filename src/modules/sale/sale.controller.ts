@@ -1235,8 +1235,25 @@ export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
             status: { in: pendingStatuses },
           };
 
+    /**
+     * ⚠️ El consumo interno NO es una cuenta por cobrar de un cliente.
+     *
+     * Medido contra los datos reales: de $61.500 que este radar mostraba como
+     * "a cobrar", **$33.600 eran consumo del personal** — el 54,6%. Más de la
+     * mitad de la cartera no era de clientes. Quien mirara ese número para
+     * decidir algo estaba viendo el doble de lo real.
+     *
+     * Esa deuda existe y hay que cobrarla, pero se cobra por el libro del
+     * personal, no llamando por teléfono a un cliente que no existe.
+     *
+     * Se excluye por `kind` y no por `customer.type`: `kind` es un hecho
+     * registrado en la venta, mientras que el tipo del cliente se puede cambiar
+     * después y reescribiría el pasado.
+     */
+    const excluirConsumoInterno = { kind: { not: "INTERNAL_CONSUMPTION" } };
+
     const pendingSales = await prisma.sale.findMany({
-      where: whereClause,
+      where: { ...whereClause, ...excluirConsumoInterno },
       include: {
         customer: { select: { id: true, name: true, type: true, phone: true } },
         user: { select: { name: true } },
@@ -1292,7 +1309,11 @@ export const exportPendingAccountsExcel = async (
         : { branchId, status: { in: pendingStatuses } };
 
     const pendingSales = await prisma.sale.findMany({
-      where: whereClause,
+      // El Excel tiene que decir lo mismo que la pantalla. Un export que
+      // incluya el consumo interno mientras el radar lo excluye es peor que no
+      // tener export: alguien lo manda por mail y discute con un número que el
+      // sistema ya no sostiene.
+      where: { ...whereClause, kind: { not: "INTERNAL_CONSUMPTION" } },
       include: {
         customer: { select: { name: true, type: true, phone: true } },
         user: { select: { name: true } },
