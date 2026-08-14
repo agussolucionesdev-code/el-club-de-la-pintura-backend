@@ -14,6 +14,8 @@
 
 import { Prisma } from "@prisma/client";
 
+import type { PrismaTx } from "../config/db";
+
 const D = (v: Prisma.Decimal.Value): Prisma.Decimal => new Prisma.Decimal(v);
 export const ZERO = D(0);
 
@@ -271,4 +273,89 @@ export const resolveInternalPrice = ({
       }
       return D(explicitPrice);
   }
+};
+
+// ── Crédito en el libro por una devolución ─────────────────────────────────
+
+/**
+ * Acredita en el libro del personal la parte de una devolución que corresponde
+ * a mercadería ya trasladada.
+ *
+ * Vive acá y no en el controlador de devoluciones porque toca los ciclos de
+ * traslado, y la aritmética de ciclos ya está probada en este módulo. El
+ * controlador sólo decide CUÁNTO; esto decide CÓMO se registra.
+ *
+ * **No edita nada**: incrementa el revertido del ciclo vivo, incrementa el
+ * acumulado de la venta y agrega un asiento compensatorio que apunta al de
+ * apertura. El asiento original queda intacto, como todo en este libro.
+ */
+export const acreditarDevolucionEnLibro = async (
+  tx: PrismaTx,
+  {
+    saleId,
+    monto,
+    createdById,
+    reason,
+  }: { saleId: number; monto: Prisma.Decimal; createdById: number; reason: string },
+): Promise<void> => {
+  // El ciclo VIVO de esta venta. Hay a lo sumo uno —lo garantiza el índice
+  // único parcial de la base— así que `findFirst` es determinístico.
+  const ciclo = await tx.legacySaleTransfer.findFirst({
+    where: { saleId, status: { in: ["ACTIVE", "PARTIALLY_REVERSED"] } },
+  });
+
+  if (!ciclo) {
+    throw new LedgerInvariantError(
+      `La venta ${saleId} tiene monto trasladado pero no se encontró su ciclo vivo. ` +
+        "No se acredita a ciegas: alguien tiene que revisar por qué.",
+    );
+  }
+
+  const nuevoRevertido = D(ciclo.reversedAmount).plus(monto);
+
+  // Lanza si se pasa de lo trasladado: sería devolverle a alguien plata que
+  // nunca se le cargó.
+  const estado = resolveCycleStatus({
+    transferredAmount: ciclo.transferredAmount,
+    reversedAmount: nuevoRevertido,
+  });
+
+  await tx.legacySaleTransfer.update({
+    where: { id: ciclo.id },
+    data: { reversedAmount: nuevoRevertido, status: estado },
+  });
+
+  await tx.sale.update({
+    where: { id: saleId },
+    data: { transferReversed: { increment: monto } },
+  });
+
+  const apertura = await tx.staffLedgerEntry.findFirst({
+    where: {
+      type: "OPENING_BALANCE",
+      sourceType: "StaffAccountLegacyLink",
+      sourceId: ciclo.legacyLinkId,
+    },
+  });
+
+  if (!apertura) {
+    throw new LedgerInvariantError(
+      "No se encontró el asiento de apertura del traslado. No se acredita a ciegas.",
+    );
+  }
+
+  await tx.staffLedgerEntry.create({
+    data: {
+      staffAccountId: apertura.staffAccountId,
+      type: "TRANSFER_REVERSAL",
+      debit: 0,
+      credit: monto,
+      sourceType: "Return",
+      sourceId: saleId,
+      // Apunta al asiento que corrige. El original NO se toca.
+      reversalOfId: apertura.id,
+      reason,
+      createdById,
+    },
+  });
 };

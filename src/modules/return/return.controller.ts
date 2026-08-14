@@ -21,6 +21,10 @@ import {
   assertCashAvailable,
   planRefundSettlements,
 } from "../../utils/refund.utils";
+import {
+  acreditarDevolucionEnLibro,
+  planReturnAllocation,
+} from "../../utils/staffLedger.utils";
 
 interface ReturnItem {
   saleItemId: number;
@@ -82,7 +86,7 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
 
     const cleanReason = String(reason).trim().slice(0, 500);
 
-    const result = await prisma.$transaction(async (tx: PrismaTx | Prisma.TransactionClient) => {
+    const result = await prisma.$transaction(async (tx: PrismaTx) => {
       // ── 1. Load the original sale with items, payments, and customer ──────────
       const sale = await tx.sale.findUnique({
         where: { id: saleId },
@@ -187,8 +191,38 @@ export const createReturn = async (req: AuthRequest, res: Response) => {
       // una venta YA PAGADA no pasaba nada: el stock volvía pero el dinero no se
       // movía en ningún lado, y el cajón quedaba esperando efectivo que ya no
       // estaba. Ahora cada devolución declara EXPLÍCITAMENTE por dónde vuelve.
+      // ══════════════════════════════════════════════════════════════════
+      // PRIMERO: ¿parte de esto se le había cargado a un empleado?
+      // ══════════════════════════════════════════════════════════════════
+      //
+      // Si la venta fue trasladada al libro del personal, la deuda ya no vive
+      // en la cuenta corriente: vive en la cuenta de una persona. Devolver la
+      // mercadería tiene que descargarla a ELLA.
+      //
+      // ── El bug que esto evita ─────────────────────────────────────────
+      //
+      // Sin esta asignación, `balance` bajaba con la devolución pero el monto
+      // trasladado quedaba fijo. La resta daba una cuenta por cobrar NEGATIVA:
+      // el sistema creía que el cliente tenía saldo a favor por mercadería que
+      // en realidad se le había cargado a un empleado.
+      //
+      // Va ANTES de `planRefundSettlements` porque el plan de reintegro sólo
+      // debe cubrir la porción del CLIENTE. Calcularlo sobre el total y
+      // descontar después dejaría plata contada dos veces.
+      const asignacion = planReturnAllocation(sale, toDecimal(totalRefund));
+
+      if (asignacion.toStaffLedger.greaterThan(0)) {
+        await acreditarDevolucionEnLibro(tx, {
+          saleId,
+          monto: asignacion.toStaffLedger,
+          createdById: authUser.id,
+          reason: `Devolución sobre la venta #${saleId}`,
+        });
+      }
+
       const plan = planRefundSettlements(
-        toDecimal(totalRefund),
+        // Sólo la porción que le corresponde al cliente.
+        asignacion.toCustomerAccount,
         toDecimal(sale.balance),
         sale.payments,
       );
