@@ -32,6 +32,7 @@ import supplierRoutes from "./modules/supplier/supplier.routes";
 import cashRegisterRoutes from "./modules/cash-register/cash-register.routes";
 import terminalRoutes from "./modules/terminal/terminal.routes";
 import posAuthRoutes from "./modules/pos-auth/pos-auth.routes";
+import incentiveRoutes from "./modules/incentive/incentive.routes";
 import staffRoutes from "./modules/staff/staff.routes";
 import { resolveTerminalFromCookie } from "./middlewares/terminal.middleware";
 import expenseRoutes from "./modules/expense/expense.routes";
@@ -159,6 +160,7 @@ app.use("/api", posAuthRoutes);
 // /internal-consumptions). Autentica con router.use dentro del propio router,
 // que sí es seguro acá: todas sus rutas exigen sesión.
 app.use("/api", staffRoutes);
+app.use("/api", incentiveRoutes);
 
 app.use("/api/branches", branchRoutes);
 app.use("/api/products", productRoutes);

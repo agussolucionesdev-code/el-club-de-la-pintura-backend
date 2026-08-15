@@ -22,7 +22,9 @@ model Branch {
 
   users     User[] // M:N: Employees assigned to this branch
   stocks    Stock[]
-  /** Computadoras del mostrador asignadas a esta sucursal. */
+  /**
+   * Computadoras del mostrador asignadas a esta sucursal.
+   */
   terminals Terminal[]
   movements Movement[]
   sales     Sale[]
@@ -54,14 +56,20 @@ model User {
 
   branches Branch[] // M:N: Branches this user can operate in
 
-  movements Movement[]
-  /** Atribución legado: se conserva intacta por compatibilidad hacia atrás. */
-  sales     Sale[]
-  /** Ventas donde esta persona fue la VENDEDORA (de acá sale la comisión). */
-  salesAsSeller  Sale[] @relation("SaleSeller")
-  /** Ventas donde esta persona fue la CAJERA (de acá sale el arqueo). */
-  salesAsCashier Sale[] @relation("SaleCashier")
-  payments  Payment[] // Track which employee collected the money
+  movements      Movement[]
+  /**
+   * Atribución legado: se conserva intacta por compatibilidad hacia atrás.
+   */
+  sales          Sale[]
+  /**
+   * Ventas donde esta persona fue la VENDEDORA (de acá sale la comisión).
+   */
+  salesAsSeller  Sale[]     @relation("SaleSeller")
+  /**
+   * Ventas donde esta persona fue la CAJERA (de acá sale el arqueo).
+   */
+  salesAsCashier Sale[]     @relation("SaleCashier")
+  payments       Payment[] // Track which employee collected the money
 
   // Track shifts opened by this user
   cashRegisters CashRegister[]
@@ -72,13 +80,17 @@ model User {
   // NEW: Manual cash movements registered by this user
   cashMovements CashMovement[]
 
-  /** PIN para operar el POS. Lo tienen todos los que venden, incluido el dueño. */
+  /**
+   * PIN para operar el POS. Lo tienen todos los que venden, incluido el dueño.
+   */
   posPin         PosPinCredential?
   posActivations PosPinActivation[]
   posSessions    PosOperatorSession[]
   posDrafts      PosDraft[]
 
-  /** Su cuenta en el libro del personal. La tiene sólo quien consumió alguna vez. */
+  /**
+   * Su cuenta en el libro del personal. La tiene sólo quien consumió alguna vez.
+   */
   staffAccount StaffAccount?
 
   createdAt DateTime @default(now())
@@ -116,7 +128,7 @@ model AppSetting {
   // arranque (app.ts, ensureAppSettingTable) hace
   // `INSERT INTO "AppSetting" ("id") VALUES (1)` sin pasar updatedAt, y depende
   // de ese default. Sin declararlo acá, el schema y la base quedaban en deriva.
-  updatedAt DateTime @updatedAt @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 // Single-use discount codes for PER_SALE mode. Kept tiny on purpose: they
@@ -292,12 +304,10 @@ model CashRegister {
 
   /**
    * La computadora cuyo cajón se está arqueando. OBLIGATORIA.
-   *
    * Pasó de nullable a requerida en el paso de CONTRACT, recién después de
    * verificar que no quedara ni un turno sin terminal y que ninguno apuntara a
    * una terminal de otra sucursal. `openShift` la resuelve siempre —y rechaza
    * la apertura si no puede—, así que todo escritor la completa.
-   *
    * Un turno sin terminal es un arqueo sin cajón: no se sabe de qué caja salió
    * la plata. Por eso acá sí corresponde exigirla, a diferencia de `Sale`.
    */
@@ -410,7 +420,7 @@ model ExpenseBudget {
   period    String   @default("MONTHLY")
   createdAt DateTime @default(now())
   // Declara el default que la migración 20260624120000 ya creó en la base.
-  updatedAt DateTime @updatedAt @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
 
   @@unique([branchId, category])
 }
@@ -432,7 +442,7 @@ model RecurringExpense {
   createdById Int // plain ref
   createdAt   DateTime @default(now())
   // Declara el default que la migración 20260624120000 ya creó en la base.
-  updatedAt   DateTime @updatedAt @default(now())
+  updatedAt   DateTime @default(now()) @updatedAt
 
   @@index([branchId, active])
 }
@@ -523,20 +533,25 @@ model Sale {
   // venta sin vendedor ni cajero no es una venta a medias: es una venta que
   // nadie puede cobrar como suya ni justificar en el arqueo.
 
-  /** Quien recibe el crédito de la venta y, en la Fase 8, la comisión. */
+  /**
+   * Quien recibe el crédito de la venta y, en la Fase 8, la comisión.
+   */
   sellerId Int
   seller   User @relation("SaleSeller", fields: [sellerId], references: [id], onDelete: Restrict)
 
-  /** Quien recibió o registró el cobro. */
+  /**
+   * Quien recibió o registró el cobro.
+   */
   cashierId Int
   cashier   User @relation("SaleCashier", fields: [cashierId], references: [id], onDelete: Restrict)
 
-  /** Con qué sesión de operador se hizo. Nulo en las ventas históricas. */
+  /**
+   * Con qué sesión de operador se hizo. Nulo en las ventas históricas.
+   */
   operatorSessionId Int?
 
   /**
    * Nombres CONGELADOS al momento de vender.
-   *
    * Sin esto, renombrar a alguien —o corregirle una falta de ortografía—
    * reescribiría el historial de todas sus ventas pasadas. Un comprobante
    * emitido no cambia porque después cambie una fila de usuarios.
@@ -546,7 +561,6 @@ model Sale {
 
   /**
    * `true` = la atribución fue **inferida**, no observada.
-   *
    * Las ventas anteriores a esta fase sólo tienen `userId`. El backfill copia
    * ese valor a vendedor y cajero porque es la mejor aproximación disponible,
    * pero **no es un hecho registrado**: nadie observó quién cobró. Esta bandera
@@ -557,7 +571,6 @@ model Sale {
 
   /**
    * Qué CLASE de operación es.
-   *
    * Hoy el consumo del personal es una venta ordinaria a un `Customer` de tipo
    * INTERNAL, así que se cuela en la facturación y en el ranking de vendedores.
    * Marcarlo acá permite excluirlo de los reportes ya mismo, sin esperar al
@@ -598,13 +611,13 @@ model Sale {
 
 // Record individual billing rows with frozen historical costs
 model SaleItem {
-  id        Int      @id @default(autoincrement())
-  quantity  Int
-  unitPrice Decimal  @db.Decimal(14, 4) // Final price actually charged (post-discount)
-  subtotal  Decimal  @db.Decimal(14, 2)
-  unitCost  Decimal? @db.Decimal(14, 4) // Frozen cost snapshot
+  id          Int      @id @default(autoincrement())
+  quantity    Int
+  unitPrice   Decimal  @db.Decimal(14, 4) // Final price actually charged (post-discount)
+  subtotal    Decimal  @db.Decimal(14, 2)
+  unitCost    Decimal? @db.Decimal(14, 4) // Frozen cost snapshot
   listPrice   Decimal? @db.Decimal(14, 4) // Original list price before any discount
-  discountPct Decimal? @db.Decimal(7, 4)  // Discount % applied to this line (0-100)
+  discountPct Decimal? @db.Decimal(7, 4) // Discount % applied to this line (0-100)
 
   saleId Int
   sale   Sale @relation(fields: [saleId], references: [id])
@@ -647,8 +660,10 @@ model Payment {
 // ==========================================
 // Devolución de mercadería contra una venta.
 model Return {
-  /** Cómo se le devolvió la plata al cliente. Puede haber varias: una venta
-   *  con pago mixto se reintegra parte en efectivo y parte por reversa. */
+  /**
+   * Cómo se le devolvió la plata al cliente. Puede haber varias: una venta
+   * con pago mixto se reintegra parte en efectivo y parte por reversa.
+   */
   settlements RefundSettlement[]
 
   id             Int      @id @default(autoincrement())
@@ -821,17 +836,17 @@ model PayrollRecord {
 // Previously stored in-memory only (Map<string, JobState>) which lost state
 // on any restart or crash.
 model BulkPriceJob {
-  id           String   @id @default(uuid())
+  id           String    @id @default(uuid())
   userId       Int
   filename     String
-  status       String   @default("PENDING") // PENDING | PROCESSING | DONE | ERROR
-  processed    Int      @default(0)
-  total        Int      @default(0)
-  successCount Int      @default(0)
-  errorCount   Int      @default(0)
-  errors       Json?    // Array of { row, sku, message } for failed rows (capped at 200)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  status       String    @default("PENDING") // PENDING | PROCESSING | DONE | ERROR
+  processed    Int       @default(0)
+  total        Int       @default(0)
+  successCount Int       @default(0)
+  errorCount   Int       @default(0)
+  errors       Json? // Array of { row, sku, message } for failed rows (capped at 200)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
   finishedAt   DateTime?
 
   @@index([userId])
@@ -893,7 +908,9 @@ enum TerminalStatus {
 
 model Terminal {
   id       Int    @id @default(autoincrement())
-  /** Código estable que el personal dice en voz alta: "893-CAJA-01". */
+  /**
+   * Código estable que el personal dice en voz alta: "893-CAJA-01".
+   */
   code     String @unique
   name     String
   branchId Int
@@ -903,28 +920,31 @@ model Terminal {
 
   /**
    * Secreto de dispositivo, SIEMPRE hasheado — nunca el valor en claro.
-   *
    * Se entrega al enrolar y viaja en una cookie HttpOnly. El navegador no puede
    * inventarse un `deviceId`: sin este secreto no hay terminal.
    */
-  deviceSecretHash String?
+  deviceSecretHash    String?
   /**
    * Se incrementa al revocar o re-enrolar. Invalida TODOS los secretos
    * anteriores del lado del servidor, sin depender de que el navegador borre
    * nada.
    */
-  deviceSecretVersion Int @default(0)
+  deviceSecretVersion Int     @default(0)
 
   lastSeenAt DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
 
-  cashRegisters CashRegister[]
-  sales         Sale[]
-  enrollments   TerminalEnrollment[]
-  /** Quién estuvo operando esta computadora, y cuándo. */
+  cashRegisters    CashRegister[]
+  sales            Sale[]
+  enrollments      TerminalEnrollment[]
+  /**
+   * Quién estuvo operando esta computadora, y cuándo.
+   */
   operatorSessions PosOperatorSession[]
-  /** Carritos en curso y tickets en espera, aislados por operador. */
+  /**
+   * Carritos en curso y tickets en espera, aislados por operador.
+   */
   drafts           PosDraft[]
 
   @@index([branchId, status])
@@ -932,7 +952,6 @@ model Terminal {
 
 /**
  * Token de un solo uso para enrolar una computadora.
- *
  * El admin lo emite y se muestra UNA vez; en la base va hasheado. Sin este
  * paso, cualquiera que conozca un `terminalId` podría hacerse pasar por esa
  * caja — que es exactamente lo que el enunciado prohíbe.
@@ -942,11 +961,11 @@ model TerminalEnrollment {
   terminalId Int
   terminal   Terminal @relation(fields: [terminalId], references: [id])
 
-  tokenHash  String   @unique
+  tokenHash  String    @unique
   issuedById Int
   expiresAt  DateTime
   consumedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   @@index([terminalId])
 }
@@ -969,11 +988,9 @@ model PosPinCredential {
 
   /**
    * Forma REVERSIBLE, para que cada uno pueda ver su propio PIN.
-   *
    * Es el riesgo que el negocio aceptó a conciencia: quien obtenga la clave AES
    * y un volcado de la base recupera todos los PIN. Se mitiga con clave fuera
    * de la base, separada del pepper y versionada para poder rotar.
-   *
    * Nullable: si el sistema está en modo degradado (sin clave), el PIN se puede
    * seguir VALIDANDO por el hash aunque no se pueda revelar.
    */
@@ -983,13 +1000,17 @@ model PosPinCredential {
   keyVersion Int?
 
   isEnabled  Boolean @default(true)
-  /** El PIN vino de una activación: hay que cambiarlo al primer uso. */
+  /**
+   * El PIN vino de una activación: hay que cambiarlo al primer uso.
+   */
   mustChange Boolean @default(false)
 
   lastChangedAt DateTime  @default(now())
   lastRevealAt  DateTime?
 
-  /** Rate limit: fallos seguidos y hasta cuándo está bloqueado. */
+  /**
+   * Rate limit: fallos seguidos y hasta cuándo está bloqueado.
+   */
   failedAttempts Int       @default(0)
   lockedUntil    DateTime?
 
@@ -999,7 +1020,6 @@ model PosPinCredential {
 
 /**
  * Credencial de activación de un solo uso.
- *
  * **NO es un PIN.** Un encargado que resetea el PIN de otra persona recibe
  * esto, no el PIN final: así nunca puede entrar como esa persona, ni por un
  * momento. Quien lo canjea define su propio PIN.
@@ -1035,7 +1055,6 @@ enum PosSessionStatus {
 
 /**
  * Cómo se probó la identidad del operador.
- *
  * `LEGACY_JWT` es la transición: quien todavía no configuró su PIN igual
  * necesita vender. **No es un bypass** — se crea una sesión REAL, se resuelven
  * capacidades efectivas y se audita igual que cualquier otra. Sólo que el
@@ -1062,8 +1081,10 @@ model PosOperatorSession {
   status PosSessionStatus @default(ACTIVE)
   origin PosSessionOrigin @default(PIN)
 
-  /** Quién tenía la sesión de cuenta abierta. Sólo para auditoría: nadie se
-   *  esconde detrás del PIN de otro. */
+  /**
+   * Quién tenía la sesión de cuenta abierta. Sólo para auditoría: nadie se
+   * esconde detrás del PIN de otro.
+   */
   authenticatedActorId Int
 
   startedAt      DateTime  @default(now())
@@ -1105,12 +1126,13 @@ model PosDraft {
   branchId Int
 
   kind  PosDraftKind @default(DRAFT)
-  /** Nombre que le puso el cajero al ticket en espera ("el de la escalera"). */
+  /**
+   * Nombre que le puso el cajero al ticket en espera ("el de la escalera").
+   */
   label String?
 
   /**
    * Snapshot del carrito: líneas, cliente, notas, descuentos, pagos tentativos.
-   *
    * Va en JSON a propósito, y no contradice la regla de "nada de JSON para
    * relaciones contables": un borrador NO es contabilidad. No movió stock, no
    * generó asiento, no debe plata. Al cobrar, el servidor **vuelve a leer
@@ -1119,7 +1141,9 @@ model PosDraft {
    */
   payload Json
 
-  /** Sólo para mostrar la lista de tickets en espera sin abrir cada payload. */
+  /**
+   * Sólo para mostrar la lista de tickets en espera sin abrir cada payload.
+   */
   itemCount   Int     @default(0)
   totalAmount Decimal @default(0) @db.Decimal(14, 2)
 
@@ -1231,7 +1255,6 @@ model StaffAccount {
 
   /**
    * Tope opcional. `null` = sin límite.
-   *
    * No frena la operación por sí solo: avisa. Que un empleado no pueda llevarse
    * un pincel un viernes a la tarde porque pasó el tope por $200 es peor
    * remedio que la enfermedad; para eso está la autorización explícita.
@@ -1271,7 +1294,6 @@ model StaffLedgerEntry {
 
   /**
    * Débito y crédito separados, y **nunca los dos a la vez**.
-   *
    * Un solo campo con signo invita a errores de signo que después nadie
    * encuentra: un `-500` mal tipeado como `500` cambia el saldo en $1.000 y
    * parece un asiento normal. Con dos columnas, un asiento mal armado es
@@ -1280,7 +1302,9 @@ model StaffLedgerEntry {
   debit  Decimal @default(0) @db.Decimal(14, 2)
   credit Decimal @default(0) @db.Decimal(14, 2)
 
-  /** Qué originó el asiento. Sin FK: apunta a tablas distintas según el tipo. */
+  /**
+   * Qué originó el asiento. Sin FK: apunta a tablas distintas según el tipo.
+   */
   sourceType String? // InternalConsumption | Sale | Return | StaffPaymentSettlement | PayrollRecord
   sourceId   Int?
 
@@ -1296,7 +1320,9 @@ model StaffLedgerEntry {
   createdById    Int
   authorizedById Int?
 
-  /** Detalle inmutable de apoyo (desglose por venta de un traslado, etc.). */
+  /**
+   * Detalle inmutable de apoyo (desglose por venta de un traslado, etc.).
+   */
   metadata Json?
 
   createdAt DateTime @default(now())
@@ -1323,7 +1349,6 @@ enum InternalConsumptionKind {
 
 /**
  * De dónde salió el precio. Se congela en cada operación.
- *
  * Sin esto, "¿por qué este pincel se le cargó a $3.000 y aquél a $4.200?" no
  * tiene respuesta seis meses después. El origen del precio nunca queda
  * implícito.
@@ -1344,26 +1369,34 @@ model InternalConsumption {
   terminalId     Int?
   cashRegisterId Int?
 
-  /** Sólo para EMPLOYEE_PERSONAL. En COMPANY_USE no hay deudor: es `null`. */
+  /**
+   * Sólo para EMPLOYEE_PERSONAL. En COMPANY_USE no hay deudor: es `null`.
+   */
   staffAccountId Int?
   staffAccount   StaffAccount? @relation(fields: [staffAccountId], references: [id])
 
-  /** Obligatorio en COMPANY_USE: para qué se usó ("pintar el depósito"). */
+  /**
+   * Obligatorio en COMPANY_USE: para qué se usó ("pintar el depósito").
+   */
   purpose String?
 
   pricePolicy     InternalPricePolicy @default(RETAIL)
-  /** El % del COST_PLUS o del STAFF_DISCOUNT. Congelado acá. */
+  /**
+   * El % del COST_PLUS o del STAFF_DISCOUNT. Congelado acá.
+   */
   pricePolicyRate Decimal?            @db.Decimal(7, 4)
 
   totalAmount Decimal @db.Decimal(14, 2)
-  /** Costo de la mercadería. Es lo que le cuesta al negocio, sepa o no venderlo. */
+  /**
+   * Costo de la mercadería. Es lo que le cuesta al negocio, sepa o no venderlo.
+   */
   totalCost   Decimal @db.Decimal(14, 2)
 
   createdById    Int
   authorizedById Int?
   reason         String?
 
-  idempotencyKey String? @unique
+  idempotencyKey String?  @unique
   createdAt      DateTime @default(now())
 
   items InternalConsumptionItem[]
@@ -1381,10 +1414,14 @@ model InternalConsumptionItem {
   productId Int
   quantity  Int
 
-  /** Snapshots congelados, igual que en una venta. */
+  /**
+   * Snapshots congelados, igual que en una venta.
+   */
   listPrice Decimal  @db.Decimal(14, 4)
   unitPrice Decimal  @db.Decimal(14, 4)
-  /** `null` = costo desconocido. **Nunca 0 por defecto** (regla de la Fase 2). */
+  /**
+   * `null` = costo desconocido. **Nunca 0 por defecto** (regla de la Fase 2).
+   */
   unitCost  Decimal? @db.Decimal(14, 4)
   subtotal  Decimal  @db.Decimal(14, 2)
 
@@ -1415,11 +1452,15 @@ model StaffPaymentSettlement {
    * pago y la causalidad contable: al cerrar la caja nadie podría distinguir
    * "Fulano pagó lo que debía" de "entró plata de algún lado".
    */
-  cashRegisterId Int?
-  branchId       Int?
-  /** Nº de operación bancaria, para poder conciliar después. */
-  reference      String?
-  /** Recibo al que se imputó, cuando es descuento de haberes. */
+  cashRegisterId  Int?
+  branchId        Int?
+  /**
+   * Nº de operación bancaria, para poder conciliar después.
+   */
+  reference       String?
+  /**
+   * Recibo al que se imputó, cuando es descuento de haberes.
+   */
   payrollRecordId Int?
 
   createdById    Int
@@ -1465,19 +1506,17 @@ model StaffAccountLegacyLink {
 
   /**
    * Relación 1:N, no 1:1.
-   *
    * El sistema viejo permitía crear cuentas INTERNAL escribiendo cualquier
    * nombre, así que la MISMA persona puede tener varias ("Juan", "Juan P.",
    * "juan perez"). Una cuenta de personal recibe varias legado; cada legado se
    * vincula a lo sumo una vez.
-   *
    * **El vínculo nunca se infiere por nombre.** La pantalla de reconciliación
    * lista cada cuenta con su saldo y alguien elige explícitamente.
    */
   legacyCustomerId Int              @unique
   status           LegacyLinkStatus @default(PROPOSED)
 
-  transferredTotal Decimal? @db.Decimal(14, 2)
+  transferredTotal Decimal?  @db.Decimal(14, 2)
   reason           String
   proposedById     Int
   confirmedById    Int?
@@ -1507,20 +1546,25 @@ model LegacySaleTransfer {
 
   /**
    * 1, 2, 3… Un traslado por ciclo.
-   *
    * Un ciclo FULLY_REVERSED queda cerrado e inmutable y **deja de ocupar** el
    * índice de ciclo vivo, así que la venta puede volver a trasladarse creando
    * el ciclo siguiente. El historial conserva todos.
    */
   cycleNumber Int
 
-  /** Se PRESERVAN. No se tocan nunca: son el histórico real de la venta. */
+  /**
+   * Se PRESERVAN. No se tocan nunca: son el histórico real de la venta.
+   */
   originalStatus  String
   originalBalance Decimal @db.Decimal(14, 2)
 
-  /** Trasladado en ESTE ciclo. Inmutable. */
+  /**
+   * Trasladado en ESTE ciclo. Inmutable.
+   */
   transferredAmount Decimal        @db.Decimal(14, 2)
-  /** Revertido de ESTE ciclo. Sólo crece, y nunca supera al trasladado. */
+  /**
+   * Revertido de ESTE ciclo. Sólo crece, y nunca supera al trasladado.
+   */
   reversedAmount    Decimal        @default(0) @db.Decimal(14, 2)
   status            TransferStatus @default(ACTIVE)
 
@@ -1532,4 +1576,252 @@ model LegacySaleTransfer {
   // — un solo ciclo VIVO por venta.
   @@unique([saleId, cycleNumber])
   @@index([legacyLinkId])
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// FASE 8 — INCENTIVOS
+// ══════════════════════════════════════════════════════════════════════════
+//
+// ── Lo que hay hoy ──────────────────────────────────────────────────────────
+//
+// `PayrollRecord.bonuses` es un campo que alguien llena a mano, y
+// `Employee.salaryType = "COMMISSION"` es SÓLO UNA ETIQUETA: no calcula nada.
+// La comisión se estima de memoria mirando un ranking que hasta la Fase 5
+// contaba mal —incluía consumo interno— y se escribe en un recibo.
+//
+// ── La decisión que ordena todo este bloque ─────────────────────────────────
+//
+// La pregunta que el negocio todavía no tiene resuelta es CUÁNDO se gana la
+// comisión: al concretar la venta, o cuando el cliente paga. No es un detalle
+// de implementación — cambia quién asume el riesgo de un fiado incobrable.
+//
+// Con "al vender", el vendedor cobra a fin de mes por plata que quizás nunca
+// entre. Con "al cobrar", una venta bien hecha a 60 días demora su comisión.
+//
+// Por eso la regla es un DATO, no código. El asiento nace PROVISIONAL o
+// ELIGIBLE según la política del plan, y las tres posturas posibles son la
+// misma máquina con un interruptor distinto. El día que cambien de opinión se
+// cambia un ajuste, no una migración.
+
+enum IncentiveCadence {
+  WEEKLY
+  BIWEEKLY
+  MONTHLY
+}
+
+/// Cuándo se gana la comisión.
+///
+/// MIXED es el valor por defecto y el único que no hace pagar comisión sobre
+/// plata que no entró: lo cobrado al instante (efectivo, tarjeta, transferencia)
+/// es elegible en el acto, y sólo la cuenta corriente queda provisional hasta
+/// que el cliente pague.
+enum IncentiveEligibilityPolicy {
+  ON_SALE // al concretar la venta, cobrada o no
+  ON_COLLECTION // recién cuando entra la plata
+  MIXED // lo cobrado ya; la cuenta corriente, al cobrarse
+}
+
+/// Cómo se calcula el monto. Las tres formas que se usan en el rubro.
+enum IncentiveRuleKind {
+  PERCENT_OF_SALES // un % de lo vendido
+  TIERED_PERCENT // % que sube por escalones de facturación
+  FIXED_ON_TARGET // monto fijo por llegar a la meta
+}
+
+model IncentivePlan {
+  id   Int    @id @default(autoincrement())
+  name String
+
+  cadence           IncentiveCadence           @default(MONTHLY)
+  eligibilityPolicy IncentiveEligibilityPolicy @default(MIXED)
+
+  /// Margen mínimo para que una venta compute, en porcentaje.
+  ///
+  /// Recién es posible desde la Fase 2, que arregló `unitCost`. Una operación
+  /// con costo DESCONOCIDO no computa para esta regla y se reporta aparte con
+  /// su monto: asumir margen cero la excluiría en silencio, y asumir margen
+  /// pleno la incluiría sin fundamento. Las dos falsean el resultado, en
+  /// direcciones opuestas.
+  minMarginPct Decimal? @db.Decimal(7, 4)
+
+  isActive Boolean @default(true)
+
+  /// Versionado por vigencia: cambiar las reglas NO reescribe lo ya liquidado.
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+
+  createdById Int
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  rules   IncentiveRule[]
+  periods IncentivePeriod[]
+
+  @@index([isActive, effectiveFrom])
+}
+
+model IncentiveRule {
+  id     Int           @id @default(autoincrement())
+  planId Int
+  plan   IncentivePlan @relation(fields: [planId], references: [id], onDelete: Cascade)
+
+  kind IncentiveRuleKind
+
+  /// Para PERCENT_OF_SALES y TIERED_PERCENT.
+  percent Decimal? @db.Decimal(7, 4)
+
+  /// Escalón: desde y hasta cuánto vendido aplica este porcentaje.
+  fromAmount Decimal? @db.Decimal(14, 2)
+  toAmount   Decimal? @db.Decimal(14, 2)
+
+  /// Para FIXED_ON_TARGET: cuánto se paga y a partir de qué meta.
+  fixedAmount  Decimal? @db.Decimal(14, 2)
+  targetAmount Decimal? @db.Decimal(14, 2)
+
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([planId, effectiveFrom])
+}
+
+enum IncentivePeriodStatus {
+  DRAFT // abierto, se van acumulando asientos
+  CALCULATED // se corrió el cálculo
+  REVIEWED // alguien lo miró
+  APPROVED // aprobado para pagar
+  LOCKED // cerrado: no se recalcula nunca más
+  PAID // liquidado en el recibo
+}
+
+model IncentivePeriod {
+  id     Int           @id @default(autoincrement())
+  planId Int
+  plan   IncentivePlan @relation(fields: [planId], references: [id])
+
+  /// Clave legible: "2026-08", "2026-W33". Es lo que se dice en voz alta.
+  key      String
+  startsAt DateTime
+  endsAt   DateTime
+
+  status IncentivePeriodStatus @default(DRAFT)
+
+  calculatedAt DateTime?
+  approvedById Int?
+  approvedAt   DateTime?
+  lockedAt     DateTime?
+  paidAt       DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entries     IncentiveLedgerEntry[]
+  targets     SalesTarget[]
+  settlements IncentiveSettlement[]
+
+  @@unique([planId, key])
+  @@index([status])
+  @@index([startsAt, endsAt])
+}
+
+model SalesTarget {
+  id       Int             @id @default(autoincrement())
+  periodId Int
+  period   IncentivePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  userId   Int
+  branchId Int?
+
+  targetAmount Decimal @db.Decimal(14, 2)
+
+  createdAt DateTime @default(now())
+
+  // Una meta por persona y período: dos metas simultáneas harían que el
+  // cumplimiento dependa de cuál se lea primero.
+  @@unique([periodId, userId])
+}
+
+/// Estado del asiento de incentivo.
+///
+/// PROVISIONAL es el corazón del diseño: la venta se hizo pero la plata no
+/// entró. No se paga todavía; cuando el cliente paga, pasa a ELIGIBLE sola.
+enum IncentiveEntryStatus {
+  PROVISIONAL
+  ELIGIBLE
+  REVERSED
+}
+
+model IncentiveLedgerEntry {
+  id       Int             @id @default(autoincrement())
+  periodId Int
+  period   IncentivePeriod @relation(fields: [periodId], references: [id], onDelete: Cascade)
+
+  userId Int
+  saleId Int?
+
+  status IncentiveEntryStatus @default(PROVISIONAL)
+
+  /// Lo vendido que da origen a la comisión.
+  baseAmount Decimal @db.Decimal(14, 2)
+
+  /// Lo que se gana por esa base, según la regla aplicada.
+  commissionAmount Decimal @db.Decimal(14, 2)
+
+  /// La regla EXACTA que se aplicó, congelada.
+  ///
+  /// Sin esto, cambiar un porcentaje reescribiría el pasado: alguien miraría su
+  /// liquidación de marzo y vería un número que no es el que le pagaron. Un
+  /// período aprobado no se recalcula aunque las reglas cambien.
+  ruleSnapshot Json
+
+  /// `false` cuando el costo del producto era desconocido.
+  ///
+  /// Esas operaciones no computan para una regla de margen mínimo y se reportan
+  /// aparte con su monto, para que el dueño vea cuánta venta quedó fuera y por
+  /// qué. La verdad incómoda antes que un número redondo mal fundado.
+  marginKnown Boolean @default(true)
+
+  eligibleAt DateTime?
+
+  /// Reversión por devolución o anulación. El original NUNCA se edita.
+  reversalOfId Int?
+  reversalOf   IncentiveLedgerEntry?  @relation("IncentiveReversal", fields: [reversalOfId], references: [id])
+  reversals    IncentiveLedgerEntry[] @relation("IncentiveReversal")
+
+  reason    String?
+  createdAt DateTime @default(now())
+
+  /// Toda mutación de plata lleva su clave. La base rechaza el duplicado.
+  idempotencyKey String? @unique
+
+  @@index([periodId, userId, status])
+  @@index([saleId])
+  @@index([userId, status])
+}
+
+model IncentiveSettlement {
+  id       Int             @id @default(autoincrement())
+  periodId Int
+  period   IncentivePeriod @relation(fields: [periodId], references: [id])
+
+  userId      Int
+  totalAmount Decimal @db.Decimal(14, 2)
+
+  /// El recibo al que se imputó.
+  ///
+  /// @unique a propósito: una liquidación alimenta UN recibo, y un recibo
+  /// recibe UNA liquidación. Sin esto, re-aprobar sumaría el bono dos veces al
+  /// sueldo de alguien.
+  payrollRecordId Int? @unique
+
+  approvedById Int
+  approvedAt   DateTime  @default(now())
+  paidAt       DateTime?
+
+  idempotencyKey String?  @unique
+  createdAt      DateTime @default(now())
+
+  @@unique([periodId, userId])
+  @@index([userId])
 }

@@ -61,7 +61,19 @@ export type Capability =
   | "staff:view_all" //     ver el de todos
   | "staff:approve" //      autorizar consumo por encima del tope, o precio excepcional
   | "staff:adjust" //       ajustes, condonaciones y reversiones de traslado
-  | "staff:transfer_legacy"; //  vincular y trasladar cuentas viejas
+  | "staff:transfer_legacy" //  vincular y trasladar cuentas viejas
+  // ── Fase 8: incentivos ──
+  //
+  // Mismo criterio que arriba. Ver la comisión PROPIA es transparencia — el
+  // vendedor tiene derecho a saber cuánto lleva ganado y cuánto está a la
+  // espera de que le cobren al cliente. Aprobar una liquidación mueve plata
+  // hacia un recibo de sueldo. Y definir las reglas decide cuánto gana todo el
+  // mundo: es la capacidad más pesada de las tres.
+  | "incentives:view_own" //   ver la comisión propia y su detalle
+  | "incentives:view_branch" // ver la de su sucursal
+  | "incentives:view_all" //   ver la de todos
+  | "incentives:manage" //     crear planes, reglas y metas
+  | "incentives:settle"; //    calcular, aprobar, cerrar y liquidar un período
 
 const ADMIN_CAPABILITIES: Capability[] = [
   "dashboard:view",
@@ -93,6 +105,11 @@ const ADMIN_CAPABILITIES: Capability[] = [
   "staff:approve",
   "staff:adjust",
   "staff:transfer_legacy",
+  "incentives:view_own",
+  "incentives:view_branch",
+  "incentives:view_all",
+  "incentives:manage",
+  "incentives:settle",
 ];
 
 const ENCARGADO_CAPABILITIES: Capability[] = [
@@ -120,6 +137,12 @@ const ENCARGADO_CAPABILITIES: Capability[] = [
   "staff:view_own",
   "staff:view_branch",
   "staff:approve",
+  "incentives:view_own",
+  "incentives:view_branch",
+  // NO recibe `incentives:manage` ni `incentives:settle`. Definir las reglas
+  // decide cuánto gana uno mismo, y aprobar la liquidación la manda al recibo
+  // de sueldo. Las dos son del dueño; dárselas al encargado es ponerlo a firmar
+  // su propia comisión.
 ];
 
 const EMPLOYEE_CAPABILITIES: Capability[] = [
@@ -135,6 +158,9 @@ const EMPLOYEE_CAPABILITIES: Capability[] = [
   "stock:view_all_branches",
   "staff:consume",
   "staff:view_own",
+  // Transparencia: el vendedor tiene derecho a ver cuánto lleva ganado y cuánto
+  // está a la espera de que le cobren al cliente. Lo de los demás, no.
+  "incentives:view_own",
 ];
 
 const BY_ROLE: Record<string, Capability[]> = {
