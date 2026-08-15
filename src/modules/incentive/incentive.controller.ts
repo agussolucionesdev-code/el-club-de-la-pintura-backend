@@ -798,8 +798,9 @@ export const transitionPeriod = async (req: AuthRequest, res: Response) => {
       const desde = periodo.status as PeriodStatus;
       assertTransition(desde, to);
 
+      let sinLegajo: number[] = [];
       if (to === "APPROVED") {
-        await crearLiquidaciones(tx, periodo.id, authUser.id);
+        ({ sinLegajo } = await crearLiquidaciones(tx, periodo.id, authUser.id));
       }
       if (to === "PAID") {
         await imputarEnRecibos(tx, periodo.id, periodo.key, periodo.plan.cadence as Cadence);
@@ -815,11 +816,24 @@ export const transitionPeriod = async (req: AuthRequest, res: Response) => {
         },
       });
 
-      return { from: desde, to: actualizado.status, periodId };
+      return { from: desde, to: actualizado.status, periodId, sinLegajo };
     });
 
     logger.info(`[incentivos] período ${periodId}: ${resultado.from} → ${resultado.to}`);
-    return res.json({ message: `Período ${resultado.to.toLowerCase()}`, data: resultado });
+
+    // Si alguien quedó afuera por falta de legajo, se dice en el mensaje. Que
+    // sólo esté en el log equivale a que no exista: nadie mira los logs de un
+    // servidor mientras liquida sueldos.
+    const aviso =
+      resultado.sinLegajo.length > 0
+        ? ` — OJO: ${resultado.sinLegajo.length} persona(s) con comisión quedaron sin ` +
+          `liquidar porque no tienen legajo de empleado cargado. Cargáselo y volvé a aprobar.`
+        : "";
+
+    return res.json({
+      message: `Período ${resultado.to.toLowerCase()}${aviso}`,
+      data: resultado,
+    });
   } catch (error) {
     return manejarError(res, error, "transitionPeriod");
   }
@@ -839,6 +853,9 @@ const crearLiquidaciones = async (tx: PrismaTx, periodId: number, approvedById: 
     porUsuario.set(a.userId, lista);
   }
 
+  /** Quiénes tienen comisión pero no tienen legajo donde imputarla. */
+  const sinLegajo: number[] = [];
+
   for (const [userId, lista] of porUsuario) {
     const totales = settlementTotals(
       lista.map((a) => ({
@@ -850,18 +867,18 @@ const crearLiquidaciones = async (tx: PrismaTx, periodId: number, approvedById: 
     );
     if (totales.payable.isZero()) continue;
 
-    // Se verifica el legajo ACÁ y no al pagar.
+    // Sin legajo no hay recibo donde imputar la comisión. Pero eso NO puede
+    // frenar la liquidación de todos los demás.
     //
-    // Al pagar, el período ya pasó por LOCKED, y de LOCKED no se vuelve: una
-    // persona sin legajo dejaría la liquidación entera trabada sin salida. En
-    // la aprobación todavía se puede volver a REVIEWED, cargar el legajo que
-    // falta y seguir.
+    // Antes esto tiraba una excepción y abortaba la aprobación entera: una sola
+    // persona sin legajo dejaba a todo el equipo sin cobrar, en un negocio
+    // donde el alta de un legajo es justo el trámite que se olvida. Se liquida
+    // a quien se puede y se informa —fuerte— a quién no, que es la diferencia
+    // entre un sistema que ayuda y uno que castiga por un dato faltante.
     const legajo = await tx.employee.findFirst({ where: { userId } });
     if (!legajo) {
-      throw new IncentiveInvariantError(
-        `El usuario ${userId} tiene comisión para cobrar pero no tiene legajo de empleado. ` +
-          `Cargale el legajo antes de aprobar: sin legajo no hay recibo donde imputarla.`,
-      );
+      sinLegajo.push(userId);
+      continue;
     }
 
     await tx.incentiveSettlement.upsert({
@@ -876,6 +893,16 @@ const crearLiquidaciones = async (tx: PrismaTx, periodId: number, approvedById: 
       update: { totalAmount: totales.payable, approvedById, approvedAt: new Date() },
     });
   }
+
+  if (sinLegajo.length > 0) {
+    logger.warn(
+      `[incentivos] Período ${periodId}: ${sinLegajo.length} persona(s) con comisión ` +
+        `quedaron sin liquidar por falta de legajo (usuarios ${sinLegajo.join(", ")}). ` +
+        `Cargales el legajo y volvé a aprobar el período.`,
+    );
+  }
+
+  return { sinLegajo };
 };
 
 /**
