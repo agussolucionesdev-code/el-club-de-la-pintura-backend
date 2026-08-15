@@ -16,6 +16,7 @@ import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import cloudinary from "../../config/cloudinary";
+import { localDayRange } from "../../utils/date.utils";
 
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -59,21 +60,93 @@ export const getExpenses = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const expenses = await prisma.expense.findMany({
-      where:
-        authUser.role === "ADMIN"
-          ? undefined
-          : { branchId: { in: authUser.branchIds } },
-      orderBy: { createdAt: "desc" },
-      include: {
-        user: { select: { name: true } },
-        supplier: { select: { id: true, companyName: true } },
+    // ── Filtros, resueltos en el SERVIDOR ─────────────────────────────────
+    //
+    // Antes esta ruta devolvía TODOS los gastos de la historia, sin rango ni
+    // tope, y la pantalla filtraba en memoria. Hoy anda porque hay pocos; con
+    // dos sucursales cargando gastos todos los días, en un año son miles de
+    // filas viajando en cada carga —y, peor, los totales y los gráficos salen
+    // de lo que se alcanzó a bajar, no de lo que hay—.
+    //
+    // Es el mismo defecto que tenía el historial de ventas: un total que parece
+    // exacto y es parcial.
+    const { from, to, category, type, branchId } = req.query as Record<string, string | undefined>;
+
+    const desde = from ? localDayRange(from).from : null;
+    const hasta = to ? localDayRange(to).to : null;
+
+    const alcanceSucursal =
+      authUser.role === "ADMIN"
+        ? branchId
+          ? { branchId: Number(branchId) }
+          : {}
+        : {
+            branchId: branchId
+              ? // Un encargado que pide otra sucursal no recibe un error: recibe
+                // lo suyo. Pedir no es una ofensa.
+                authUser.branchIds.includes(Number(branchId))
+                ? Number(branchId)
+                : { in: authUser.branchIds }
+              : { in: authUser.branchIds },
+          };
+
+    const where: Prisma.ExpenseWhereInput = {
+      ...alcanceSucursal,
+      ...(desde || hasta
+        ? { createdAt: { ...(desde ? { gte: desde } : {}), ...(hasta ? { lte: hasta } : {}) } }
+        : {}),
+      ...(category && category !== "ALL" ? { category } : {}),
+      ...(type && type !== "ALL" ? { type } : {}),
+    };
+
+    /** Tope de filas. Los totales NO dependen de él: se agregan aparte. */
+    const LIMITE = 500;
+
+    const [expenses, total, resumen, porCategoria] = await Promise.all([
+      prisma.expense.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        take: LIMITE,
+        include: {
+          user: { select: { name: true } },
+          supplier: { select: { id: true, companyName: true } },
+        },
+      }),
+      prisma.expense.count({ where }),
+      // Los anulados quedan visibles en la lista —tachados— pero NUNCA suman
+      // plata. Por eso el total se agrega excluyéndolos.
+      prisma.expense.aggregate({
+        where: { ...where, voidedAt: null },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+      prisma.expense.groupBy({
+        by: ["category"],
+        where: { ...where, voidedAt: null },
+        _sum: { amount: true },
+        _count: { _all: true },
+      }),
+    ]);
+
+    res.status(200).json({
+      message: "Libro diario de egresos recuperado.",
+      data: expenses,
+      summary: {
+        /** Suma de TODO el rango filtrado, no de las filas devueltas. */
+        totalAmount: Number(resumen._sum.amount ?? 0),
+        activeCount: resumen._count._all,
+        totalCount: total,
+        /** `true` cuando hay más filas que el tope: la pantalla lo aclara. */
+        truncated: total > expenses.length,
+        byCategory: porCategoria
+          .map((c) => ({
+            category: c.category,
+            amount: Number(c._sum.amount ?? 0),
+            count: c._count._all,
+          }))
+          .sort((a, b) => b.amount - a.amount),
       },
     });
-
-    res
-      .status(200)
-      .json({ message: "Libro diario de egresos recuperado.", data: expenses });
   } catch (error) {
     res.status(500).json({ error: "Fallo al procesar el historial." });
   }
