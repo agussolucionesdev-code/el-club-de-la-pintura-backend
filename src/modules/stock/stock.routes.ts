@@ -10,6 +10,7 @@ import {
 import {
   getReorderSuggestions,
   getStockAlertCount,
+  getProductAvailability,
   getStockByBranch,
   getStockMovements,
   getStockTransfers,
@@ -49,6 +50,19 @@ router.get(
   authorizeRoles("ADMIN", "ENCARGADO"),
   getStockMovements,
 );
+
+/**
+ * Va ANTES de `/:branchId` a propósito.
+ *
+ * Son dos segmentos, así que hoy no colisionan — pero si alguien la mueve más
+ * abajo y en el futuro aparece una ruta comodín, `/availability/5` empezaría a
+ * resolverse como "la sucursal llamada availability". Arriba no puede pasar.
+ *
+ * Sin `authorizeRoles`: acá la autorización es por CAPACIDAD y la resuelve el
+ * controlador. Un empleado con `stock:view_all_branches` tiene que poder
+ * entrar, y un filtro por rol lo dejaría afuera.
+ */
+router.get("/availability/:productId", getProductAvailability);
 
 router.get(
   "/:branchId",

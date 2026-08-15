@@ -18,6 +18,7 @@
 import { Response } from "express";
 import { logger } from '../../config/logger';
 import prisma from "../../config/db";
+import { capabilitiesForRole } from "../../core/capabilities";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { parseLocalDate } from "../../utils/date.utils";
@@ -152,6 +153,106 @@ export const getStockByBranch = async (req: AuthRequest, res: Response) => {
     res.status(500).json({
       error: "Fallo crítico al cruzar el catálogo con el inventario físico.",
     });
+  }
+};
+
+/**
+ * GET /stock/availability/:productId
+ *
+ * Cuánto hay de UN producto, sucursal por sucursal.
+ *
+ * ── Por qué no alcanzaba con lo que ya había ────────────────────────────────
+ *
+ * `getStockByBranch` con `branchId=0` devuelve la SUMA de todas las sucursales:
+ * dice "entre las dos hay 5". Eso sirve para un reporte de inventario y no
+ * sirve para nada en el mostrador, donde la pregunta es otra: el cliente quiere
+ * un balde, acá no hay, y el cajero necesita saber si mandarlo a la otra
+ * sucursal o no. Un total consolidado no dice a dónde.
+ *
+ * ── Por qué un endpoint aparte y no un campo más en el catálogo ─────────────
+ *
+ * El POS carga los ~3.000 productos de una sola vez al abrir. Meterle el
+ * desglose por sucursal a cada uno multiplicaría ese payload por la cantidad de
+ * sucursales para un dato que se consulta de a un producto por vez, y sólo
+ * cuando falta stock. Se pide bajo demanda.
+ *
+ * ── Autorización ────────────────────────────────────────────────────────────
+ *
+ * Por CAPACIDAD, no por rol. `getStockByBranch` gatea con
+ * `authUser.role === "ADMIN"`, así que el empleado con
+ * `stock:view_all_branches` —la capacidad que existe justamente para esto—
+ * quedaba filtrado a sus propias sucursales y la capacidad no hacía nada.
+ *
+ * **Nunca costos.** Ver dónde hay mercadería es información de mostrador; el
+ * costo es otra cosa y tiene su propia capacidad.
+ */
+export const getProductAvailability = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) {
+      return res.status(401).json({ error: "No se pudo validar la identidad del usuario." });
+    }
+
+    const productId = Number(req.params["productId"]);
+    if (!Number.isInteger(productId) || productId <= 0) {
+      return res.status(400).json({ error: "Producto inválido." });
+    }
+
+    const capacidades = capabilitiesForRole(authUser.role);
+    if (!capacidades.has("stock:view")) {
+      return res.status(403).json({ error: "No tenés permiso para ver stock." });
+    }
+
+    // Sin la capacidad de ver otras sucursales, se ven sólo las propias. No se
+    // devuelve un error: se devuelve menos. Preguntar por un producto no es una
+    // ofensa, y la pantalla se adapta a lo que llega.
+    const alcance = capacidades.has("stock:view_all_branches")
+      ? {}
+      : { branchId: { in: authUser.branchIds } };
+
+    const producto = await prisma.product.findUnique({
+      where: { id: productId },
+      select: { id: true, name: true, sku: true },
+    });
+    if (!producto) {
+      return res.status(404).json({ error: "El producto no existe." });
+    }
+
+    const existencias = await prisma.stock.findMany({
+      where: { productId, ...alcance, branch: { isActive: true } },
+      select: {
+        quantity: true,
+        minStock: true,
+        criticalStock: true,
+        branch: { select: { id: true, name: true, location: true } },
+      },
+    });
+
+    const sucursales = existencias
+      .map((fila) => ({
+        branchId: fila.branch.id,
+        name: fila.branch.name,
+        location: fila.branch.location,
+        quantity: fila.quantity,
+        // Se manda el umbral para que la UI pueda decir "hay, pero justo" en
+        // vez de mandar a alguien a cruzar la ciudad por la última unidad.
+        minStock: fila.minStock,
+        criticalStock: fila.criticalStock,
+      }))
+      .sort((a, b) => b.quantity - a.quantity);
+
+    return res.status(200).json({
+      data: {
+        product: producto,
+        branches: sucursales,
+        total: sucursales.reduce((acc, s) => acc + s.quantity, 0),
+        /** `false` cuando el operador sólo ve las suyas: la UI lo aclara. */
+        showsAllBranches: capacidades.has("stock:view_all_branches"),
+      },
+    });
+  } catch (error: unknown) {
+    logger.error("Error en getProductAvailability:", error);
+    return res.status(500).json({ error: "No se pudo consultar la disponibilidad." });
   }
 };
 
