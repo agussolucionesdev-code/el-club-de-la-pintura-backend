@@ -28,6 +28,7 @@ import {
   computeStaffBalance,
   LedgerInvariantError,
 } from "../../utils/staffLedger.utils";
+import { CASH_IN } from "../../utils/cashMovement.utils";
 
 /** Tipos de asiento que son CRÉDITO. El signo lo decide el tipo, no quien carga. */
 const CREDIT_TYPES = new Set([
@@ -330,7 +331,10 @@ export const createStaffPayment = async (req: AuthRequest, res: Response) => {
       if (method === "CASH" && branchId !== null) {
         await tx.cashMovement.create({
           data: {
-            type: "INCOME",
+            // La constante, no el string. Acá decía "INCOME" —un valor que el
+            // módulo de caja no reconoce— así que esta plata entraba al cajón
+            // sin entrar al arqueo, y el turno cerraba con sobrante.
+            type: CASH_IN,
             amount,
             // Con el nombre adentro, el arqueo se puede leer sin abrir otra
             // pantalla: "Cobro a Fulano" dice todo lo que hace falta saber.

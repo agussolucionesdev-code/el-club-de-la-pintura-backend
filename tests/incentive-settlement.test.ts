@@ -387,7 +387,12 @@ describe("Incentivos", () => {
         },
       });
 
-      await crearVenta({ total: 40000, balance: 0, sellerId: vendedorId, unitCost: null });
+      const sinCosto = await crearVenta({
+        total: 40000,
+        balance: 0,
+        sellerId: vendedorId,
+        unitCost: null,
+      });
 
       const res = await request(app)
         .post("/api/incentive-periods/calculate")
@@ -404,9 +409,17 @@ describe("Incentivos", () => {
       // haría que este test falle por algo que pasó en otro archivo.
       expect(Number(res.body.data.unevaluableBase)).toBeGreaterThanOrEqual(40000);
 
+      // Se busca el asiento de NUESTRA venta, no "el primero que haya".
+      //
+      // El cálculo abarca las ventas de toda la empresa —correcto para el
+      // negocio—, así que bajo este plan también nacen asientos de las ventas
+      // que dejaron otras suites. Un `findFirst` sin `saleId` agarraba
+      // cualquiera y el test fallaba sólo en la corrida completa, que es la
+      // peor clase de test: el que miente cuando lo corrés solo.
       const asiento = await prisma.incentiveLedgerEntry.findFirst({
-        where: { period: { planId: conMargen.id } },
+        where: { period: { planId: conMargen.id }, saleId: sinCosto.id },
       });
+      expect(asiento).not.toBeNull();
       expect(asiento?.marginKnown).toBe(false);
       expect(asiento?.status).toBe("PROVISIONAL");
       expect(Number(asiento?.commissionAmount)).toBe(0);

@@ -62,7 +62,9 @@ const CLAVE = "Demo1234!";
   const ana = await upsertUser("demo.ana@local.test", "Ana Vendedora", "EMPLOYEE");
   const beto = await upsertUser("demo.beto@local.test", "Beto Vendedor", "EMPLOYEE");
 
-  for (const u of [ana, beto]) {
+  // El dueño también lleva legajo: las ventas de demo quedan a su nombre y, sin
+  // legajo, la aprobación de cualquier período de la empresa se traba.
+  for (const u of [ana, beto, duenio]) {
     const yaTiene = await prisma.employee.findUnique({ where: { userId: u.id } });
     if (!yaTiene) {
       await prisma.employee.create({

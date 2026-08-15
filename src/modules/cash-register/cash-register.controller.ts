@@ -20,6 +20,7 @@ import { createInternalReceipt } from "../internal-receipt/internal-receipt.serv
 import { localDayRange } from "../../utils/date.utils";
 import { isUniqueConstraintViolation } from "../../utils/stock.utils";
 import { resolveTerminal, TerminalResolutionError } from "../../utils/terminal.utils";
+import { sumCashMovements } from "../../utils/cashMovement.utils";
 
 interface CashRegisterShift {
   initialBalance: number;
@@ -109,16 +110,15 @@ const buildCashRegisterSummary = (shift: CashRegisterShift) => {
     0,
   );
 
-  // Manual cash movements (ingreso/retiro sin venta) — add IN, subtract OUT.
+  // Movimientos manuales (ingreso/retiro sin venta).
+  //
+  // La suma vive en `cashMovement.utils.ts` y NO descarta en silencio lo que no
+  // reconoce: un tipo mal escrito antes hacía desaparecer la plata del esperado
+  // sin dejar rastro, y una diferencia de caja sin causa visible termina
+  // recayendo sobre las personas antes que sobre el software.
   const movements = shift.cashMovements ?? [];
-  const totalCashIn = movements.reduce(
-    (acc, m) => (m.type === "IN" ? acc + m.amount : acc),
-    0,
-  );
-  const totalCashOut = movements.reduce(
-    (acc, m) => (m.type === "OUT" ? acc + m.amount : acc),
-    0,
-  );
+  const { totalIn: totalCashIn, totalOut: totalCashOut, unclassified } =
+    sumCashMovements(movements);
 
   const expectedBalance =
     shift.initialBalance +
@@ -143,6 +143,19 @@ const buildCashRegisterSummary = (shift: CashRegisterShift) => {
     paymentsCount: shift.payments.length,
     expensesCount: shift.expenses.length,
     movementsCount: movements.length,
+    /**
+     * Movimientos que el sistema no pudo clasificar.
+     *
+     * Viaja hasta la pantalla de cierre a propósito: si por un error de código
+     * queda plata fuera del esperado, el cajero tiene que ver POR QUÉ le da
+     * diferencia, en vez de contar tres veces buscando un error suyo que no
+     * existe. En condiciones normales esto es siempre cero.
+     */
+    unclassifiedMovements: {
+      count: unclassified.count,
+      total: roundMoney(unclassified.total),
+      types: unclassified.types,
+    },
   };
 };
 
