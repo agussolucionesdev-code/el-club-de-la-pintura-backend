@@ -36,6 +36,7 @@ import {
   MAX_PIN_ATTEMPTS,
   verifyPin,
 } from "../../utils/posPin.utils";
+import { issueLease } from "../../utils/offlineLease.utils";
 
 const esperar = (ms: number) =>
   ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
@@ -251,9 +252,48 @@ export const openOperatorSession = async (req: AuthRequest, res: Response) => {
       return res.status(500).json({ error: ctx.message });
     }
 
+    // El permiso offline se entrega al abrir la sesión y se renueva en cada
+    // contacto con el servidor. Es lo que le permite al POS seguir vendiendo
+    // sin internet con una atribución que después se puede verificar.
+    //
+    // Si no se puede firmar —falta el secreto— NO se corta la sesión: se abre
+    // igual y se avisa. Dejar la caja sin poder operar por una variable de
+    // entorno sería una pérdida real; lo que se pierde acá es la atribución
+    // verificable offline, que degrada pero no frena.
+    let offlineLease: { token: string; expiresAt: Date } | null = null;
+    try {
+      // `req.terminal` es el contexto resuelto de la cookie y no trae estos dos
+      // campos. Se leen de la fila para que el permiso quede atado a la versión
+      // de seguridad VIGENTE: si alguien revocó la terminal hace un segundo, el
+      // permiso nace ya inválido en vez de nacer bueno.
+      const fila = await prisma.terminal.findUnique({
+        where: { id: terminal.id },
+        select: { deviceSecretVersion: true, lastOfflineSequence: true },
+      });
+      if (!fila) throw new Error(`La terminal ${terminal.id} desapareció.`);
+
+      const emitido = issueLease({
+        t: terminal.id,
+        b: terminal.branchId,
+        o: objetivo.id,
+        s: resultado.id,
+        sv: fila.deviceSecretVersion,
+        seq: fila.lastOfflineSequence,
+      });
+      offlineLease = {
+        token: emitido.token,
+        expiresAt: new Date(emitido.payload.exp),
+      };
+    } catch (error) {
+      logger.error(
+        "[lease] No se pudo emitir el permiso offline; la sesión abre igual.",
+        error,
+      );
+    }
+
     res.status(201).json({
       message: `Hola ${objetivo.name}. Estás operando ${terminal.code}.`,
-      data: publicPosContext(ctx),
+      data: { ...publicPosContext(ctx), offlineLease },
     });
   } catch (error) {
     logger.error("Error al abrir sesión de operador:", error);

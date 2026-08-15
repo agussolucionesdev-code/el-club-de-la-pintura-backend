@@ -702,16 +702,43 @@ model AuditLog {
 }
 
 model SyncOperation {
-  id             String    @id @default(uuid())
-  idempotencyKey String    @unique
-  branchId       Int?
-  userId         Int?
-  type           String
-  status         String    @default("PENDING")
-  payload        Json
-  error          String?
-  createdAt      DateTime  @default(now())
-  processedAt    DateTime?
+  id             String @id @default(uuid())
+  idempotencyKey String @unique
+
+  /**
+   * El permiso offline firmado por el servidor que traía la operación.
+   * `null` en las que se encolaron antes de que esto existiera: se procesan una
+   * sola vez, marcadas, y fuera de incentivos.
+   */
+  leaseToken String?
+
+  /**
+   * Contador monotónico del dispositivo. Repetirlo es replay, no reintento.
+   */
+  sequence Int?
+
+  /**
+   * La atribución de esta operación NO se pudo verificar.
+   * Pasa cuando llegó después de vencido el permiso, o cuando venía sin
+   * permiso. La operación entra igual —mueve stock, factura y emite
+   * comprobante— pero queda a la espera de que alguien con autoridad confirme
+   * quién la hizo, y **no computa para comisiones**.
+   */
+  attributionUnverified Boolean @default(false)
+
+  /**
+   * Por qué se marcó o se rechazó. Se guarda para que la pantalla lo explique.
+   */
+  syncDecisionReason String?
+
+  branchId    Int?
+  userId      Int?
+  type        String
+  status      String    @default("PENDING")
+  payload     Json
+  error       String?
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
 
   @@index([branchId])
   @@index([userId])
@@ -907,7 +934,17 @@ enum TerminalStatus {
 }
 
 model Terminal {
-  id       Int    @id @default(autoincrement())
+  id Int @id @default(autoincrement())
+
+  /**
+   * Última secuencia offline ya procesada de esta terminal.
+   * Es la barrera anti-replay: una operación que declara una secuencia menor o
+   * igual a ésta ya se vio, así que reproducirla no vuelve a mover plata. Vive
+   * en la terminal y no en el dispositivo porque el dispositivo es justamente
+   * lo que no se puede creer.
+   */
+  lastOfflineSequence Int @default(0)
+
   /**
    * Código estable que el personal dice en voz alta: "893-CAJA-01".
    */

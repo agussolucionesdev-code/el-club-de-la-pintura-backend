@@ -26,6 +26,10 @@ import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { decrementStockOrThrow, InsufficientStockError } from "../../utils/stock.utils";
+import {
+  decideAcceptance,
+  type OperationClass,
+} from "../../utils/offlineLease.utils";
 
 interface IncomingSyncOperation {
   id?: string;
@@ -35,7 +39,28 @@ interface IncomingSyncOperation {
   method?: string;
   branchId?: number;
   payload?: unknown;
+  /** Permiso offline firmado por el servidor. Ver `offlineLease.utils.ts`. */
+  leaseToken?: string | null;
+  /** Contador monotónico del dispositivo, anti-replay. */
+  sequence?: number;
+  /**
+   * Cuándo dice el dispositivo que se creó la operación.
+   *
+   * Se guarda como dato informativo y **no participa de ninguna decisión**: el
+   * reloj de la máquina lo maneja quien está sentado ahí. Lo que decide es la
+   * hora de llegada, que la observa el servidor.
+   */
+  clientTimestamp?: string;
 }
+
+/** De qué clase es la operación, para contrastarla contra el alcance del permiso. */
+const clasificarOperacion = (descriptor: string): OperationClass => {
+  if (descriptor.startsWith("SALE")) return "SALE";
+  if (descriptor.startsWith("EXPENSE")) return "EXPENSE";
+  if (descriptor.startsWith("STOCK")) return "STOCK_ADJUST";
+  if (descriptor.startsWith("CUSTOMER")) return "CUSTOMER_CREATE";
+  return "ACCOUNT_PAYMENT";
+};
 
 const SYNC_STATUS_PROCESSING = "PROCESSING";
 const SYNC_STATUS_ACCEPTED = "ACCEPTED";
@@ -1063,6 +1088,73 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
           continue;
         }
 
+        // ── Permiso offline ──
+        //
+        // Decide en cuál de los tres niveles cae la operación. Lo único que la
+        // frena es una credencial rota; llegar tarde NO pierde la venta, sólo
+        // deja su atribución a la espera de una confirmación.
+        const terminalDelRequest = req.terminal;
+        const filaTerminal = terminalDelRequest
+          ? await prisma.terminal.findUnique({
+              where: { id: terminalDelRequest.id },
+              select: { deviceSecretVersion: true, lastOfflineSequence: true },
+            })
+          : null;
+
+        const decision = decideAcceptance({
+          token: operation.leaseToken ?? null,
+          // La hora del SERVIDOR. Es la única que el dispositivo no puede correr.
+          arrivedAt: new Date(),
+          currentSecurityVersion: filaTerminal?.deviceSecretVersion ?? -1,
+          operationClass: clasificarOperacion(descriptor),
+          sequence: operation.sequence ?? 0,
+          lastSequenceSeen: filaTerminal?.lastOfflineSequence ?? -1,
+        });
+
+        if (decision.tier === "REJECTED") {
+          await prisma.syncOperation.upsert({
+            where: { idempotencyKey: operationId },
+            update: {
+              branchId,
+              userId: authUser.id,
+              type: descriptor,
+              status: SYNC_STATUS_REJECTED,
+              payload: toJsonPayload(operation.payload),
+              leaseToken: operation.leaseToken ?? null,
+              sequence: operation.sequence ?? null,
+              syncDecisionReason: decision.reason,
+              error: `Permiso offline inválido: ${decision.reason}`,
+              processedAt: new Date(),
+            },
+            create: {
+              idempotencyKey: operationId,
+              branchId,
+              userId: authUser.id,
+              type: descriptor,
+              status: SYNC_STATUS_REJECTED,
+              payload: toJsonPayload(operation.payload),
+              leaseToken: operation.leaseToken ?? null,
+              sequence: operation.sequence ?? null,
+              syncDecisionReason: decision.reason,
+              error: `Permiso offline inválido: ${decision.reason}`,
+              processedAt: new Date(),
+            },
+          });
+
+          rejectedOperations.push({
+            id: operationId,
+            error:
+              decision.reason === "SESSION_REVOKED"
+                ? "La sesión de esa terminal fue revocada: la operación necesita revisión."
+                : decision.reason === "REPLAY"
+                  ? "Esta operación ya se había procesado."
+                  : "El permiso offline de la operación no es válido.",
+          });
+          continue;
+        }
+
+        const sinVerificar = decision.tier === "NEEDS_CONFIRMATION";
+
         await prisma.syncOperation.upsert({
           where: { idempotencyKey: operationId },
           update: {
@@ -1071,6 +1163,10 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
             type: descriptor,
             status: SYNC_STATUS_PROCESSING,
             payload: toJsonPayload(operation.payload),
+            leaseToken: operation.leaseToken ?? null,
+            sequence: operation.sequence ?? null,
+            attributionUnverified: sinVerificar,
+            syncDecisionReason: decision.reason,
             error: null,
             processedAt: null,
           },
@@ -1081,6 +1177,10 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
             type: descriptor,
             status: SYNC_STATUS_PROCESSING,
             payload: toJsonPayload(operation.payload),
+            leaseToken: operation.leaseToken ?? null,
+            sequence: operation.sequence ?? null,
+            attributionUnverified: sinVerificar,
+            syncDecisionReason: decision.reason,
           },
         });
 
@@ -1094,6 +1194,20 @@ export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
             processedAt: new Date(),
           },
         });
+
+        // La barrera anti-replay avanza DESPUÉS de que la operación entró, y
+        // sólo hacia adelante. Si se moviera antes de procesar, un fallo a mitad
+        // de camino dejaría la secuencia quemada y el reintento legítimo de esa
+        // misma operación se leería como replay.
+        if (terminalDelRequest && typeof operation.sequence === "number") {
+          await prisma.terminal.updateMany({
+            where: {
+              id: terminalDelRequest.id,
+              lastOfflineSequence: { lt: operation.sequence },
+            },
+            data: { lastOfflineSequence: operation.sequence },
+          });
+        }
 
         await recordSyncAudit(
           "sync.operation.accepted",
