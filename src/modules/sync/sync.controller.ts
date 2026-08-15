@@ -30,6 +30,7 @@ import {
   decideAcceptance,
   type OperationClass,
 } from "../../utils/offlineLease.utils";
+import { capabilitiesForRole } from "../../core/capabilities";
 
 interface IncomingSyncOperation {
   id?: string;
@@ -1012,6 +1013,142 @@ export const getSyncStatus = async (req: AuthRequest, res: Response) => {
  * @body deviceId    - Identifier of the sending device.
  * @body operations  - Array of `IncomingSyncOperation` objects.
  */
+/**
+ * GET /sync/pending-attribution
+ *
+ * Las operaciones que entraron pero cuya atribución no se pudo verificar.
+ *
+ * ── Por qué esta pantalla tiene que existir ─────────────────────────────────
+ *
+ * Sin ella, "queda a confirmar" sería un eufemismo para "se pierde en una
+ * columna que nadie mira". Y como el cierre de turno ya está bloqueado con
+ * operaciones pendientes, esto no se puede ignorar: la caja no cierra hasta que
+ * alguien las resuelva.
+ */
+export const listPendingAttribution = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "Sesión inválida." });
+
+    const capacidades = capabilitiesForRole(authUser.role);
+    // Confirmar una atribución decide a quién se le acredita una venta, y desde
+    // la Fase 8 eso es plata. No lo hace cualquiera.
+    if (!capacidades.has("sync:manage")) {
+      return res
+        .status(403)
+        .json({ error: "No tenés permiso para revisar atribuciones." });
+    }
+
+    const alcance =
+      authUser.role === "ADMIN" ? {} : { branchId: { in: authUser.branchIds } };
+
+    const pendientes = await prisma.syncOperation.findMany({
+      where: {
+        attributionUnverified: true,
+        attributionConfirmedAt: null,
+        status: SYNC_STATUS_ACCEPTED,
+        ...alcance,
+      },
+      orderBy: { processedAt: "desc" },
+      take: 200,
+    });
+
+    return res.json({
+      data: pendientes.map((op) => ({
+        id: op.id,
+        idempotencyKey: op.idempotencyKey,
+        type: op.type,
+        branchId: op.branchId,
+        userId: op.userId,
+        reason: op.syncDecisionReason,
+        sequence: op.sequence,
+        processedAt: op.processedAt,
+        payload: op.payload,
+      })),
+      summary: { count: pendientes.length },
+    });
+  } catch (error) {
+    logger.error("Error al listar atribuciones pendientes:", error);
+    return res
+      .status(500)
+      .json({ error: "No se pudieron obtener las operaciones a confirmar." });
+  }
+};
+
+/**
+ * POST /sync/pending-attribution/:id/confirm
+ *
+ * Alguien con autoridad se hace cargo de una atribución que el sistema no pudo
+ * verificar solo.
+ *
+ * Queda registrado QUIÉN confirmó: la operación no pasa a ser "verificada" —eso
+ * sería mentir, nadie puede probar quién la hizo— sino "confirmada a mano por
+ * Fulano". Es una diferencia que importa cuando dentro de seis meses alguien
+ * pregunte por qué esa venta le pagó comisión a quien le pagó.
+ */
+export const confirmAttribution = async (req: AuthRequest, res: Response) => {
+  try {
+    const authUser = getAuthUser(req);
+    if (!authUser) return res.status(401).json({ error: "Sesión inválida." });
+
+    if (!capabilitiesForRole(authUser.role).has("sync:manage")) {
+      return res
+        .status(403)
+        .json({ error: "No tenés permiso para confirmar atribuciones." });
+    }
+
+    const { id } = req.params as { id: string };
+    const { decision } = req.body as { decision: "CONFIRM" | "DISCARD" };
+
+    const operacion = await prisma.syncOperation.findUnique({ where: { id } });
+    if (!operacion) {
+      return res.status(404).json({ error: "La operación no existe." });
+    }
+    if (!operacion.attributionUnverified || operacion.attributionConfirmedAt) {
+      return res
+        .status(409)
+        .json({ error: "Esa operación ya fue resuelta o no requería confirmación." });
+    }
+
+    const actualizada = await prisma.syncOperation.update({
+      where: { id },
+      data: {
+        attributionConfirmedAt: new Date(),
+        attributionConfirmedById: authUser.id,
+        // Descartar NO borra la operación: ya movió stock y facturó. Sólo
+        // registra que su atribución no se acepta, así que no computa para
+        // comisiones. Deshacer el efecto económico es una anulación, que es
+        // otra operación con su propia auditoría.
+        syncDecisionReason:
+          decision === "DISCARD"
+            ? `${operacion.syncDecisionReason ?? "SIN_MOTIVO"}:ATRIBUCION_RECHAZADA`
+            : operacion.syncDecisionReason,
+      },
+    });
+
+    await recordSyncAudit(
+      decision === "DISCARD"
+        ? "sync.attribution.rejected"
+        : "sync.attribution.confirmed",
+      authUser,
+      id,
+      operacion.branchId,
+      { type: operacion.type, reason: operacion.syncDecisionReason, decision },
+    ).catch(() => undefined);
+
+    return res.json({
+      message:
+        decision === "DISCARD"
+          ? "Atribución rechazada: la operación no computa para comisiones."
+          : "Atribución confirmada bajo tu responsabilidad.",
+      data: { id: actualizada.id },
+    });
+  } catch (error) {
+    logger.error("Error al confirmar atribución:", error);
+    return res.status(500).json({ error: "No se pudo registrar la decisión." });
+  }
+};
+
 export const pushSyncOperations = async (req: AuthRequest, res: Response) => {
   try {
     const authUser = getAuthUser(req);

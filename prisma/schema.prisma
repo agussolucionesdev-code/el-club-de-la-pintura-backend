@@ -731,6 +731,16 @@ model SyncOperation {
    */
   syncDecisionReason String?
 
+  /**
+   * Cuándo alguien con autoridad se hizo cargo de esta atribución.
+   * La operación no pasa a "verificada" —nadie puede probar quién la hizo— sino
+   * a "confirmada a mano por Fulano". La diferencia importa cuando dentro de
+   * seis meses alguien pregunte por qué esa venta le pagó comisión a quien le
+   * pagó.
+   */
+  attributionConfirmedAt   DateTime?
+  attributionConfirmedById Int?
+
   branchId    Int?
   userId      Int?
   type        String
