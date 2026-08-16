@@ -17,6 +17,7 @@ import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import cloudinary from "../../config/cloudinary";
 import { localDayRange } from "../../utils/date.utils";
+import { assertCategoriaValida } from "./expenseCategory.controller";
 
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
   JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -190,6 +191,19 @@ export const registerExpense = async (req: AuthRequest, res: Response) => {
       !authUser.branchIds.includes(Number(branchId))
     ) {
       return res.status(403).json({ error: "No tienes acceso a esta sucursal." });
+    }
+
+    // La categoría tiene que existir y estar activa.
+    //
+    // Antes entraba cualquier texto, y por eso hoy conviven "LIMPIEZA",
+    // "Limpieza" y "LOGISTICA": para los gráficos son tres categorías distintas
+    // y el gasto queda partido en pedazos que deberían ser uno.
+    try {
+      await assertCategoriaValida(String(category ?? ""));
+    } catch (error) {
+      return res.status(400).json({
+        error: error instanceof Error ? error.message : "Categoría inválida.",
+      });
     }
 
     const transactionResult = await prisma.$transaction(async (tx) => {

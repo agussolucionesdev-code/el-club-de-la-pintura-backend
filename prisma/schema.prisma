@@ -1872,3 +1872,49 @@ model IncentiveSettlement {
   @@unique([periodId, userId])
   @@index([userId])
 }
+
+/// Categorías de gasto: la lista es un DATO, no una constante del frontend.
+///
+/// ── El problema que resuelve ────────────────────────────────────────────────
+///
+/// `Expense.category` es texto libre, y la pantalla tenía seis categorías con
+/// sus colores cableadas en un `Record` de TypeScript. Cualquier valor que no
+/// estuviera en ese mapa —y ya hay varios, cargados por scripts y por el seed—
+/// caía a gris, sin etiqueta, mostrando la clave cruda al usuario.
+///
+/// Peor: agregar una categoría exigía tocar código y desplegar. Para un negocio
+/// que necesita separar sus gastos como le sirve, eso no es una lista fija: es
+/// una lista ajena.
+///
+/// Ahora vive acá, con su color, y el ADMIN la administra desde la aplicación.
+model ExpenseCategory {
+  id Int @id @default(autoincrement())
+
+  /// Lo que se guarda en `Expense.category`. Estable: no cambia aunque el
+  /// nombre visible sí, para que el histórico no se rompa al renombrar.
+  key String @unique
+
+  /// Lo que ve la gente. Éste sí se puede editar.
+  label String
+
+  /// Color de la categoría, en hexadecimal. Vive con el dato y no en el
+  /// frontend, así una categoría nueva nace con su color en gráficos, barras,
+  /// tabla y export sin tocar una línea.
+  color String @default("#64748b")
+
+  /// Las que vinieron con el sistema no se borran: hay gastos históricos
+  /// apuntando a ellas y borrarlas dejaría el pasado sin nombre.
+  isSystem Boolean @default(false)
+
+  /// Se desactiva en vez de borrarse. Una categoría inactiva no se puede elegir
+  /// para un gasto nuevo, pero sigue nombrando y coloreando los viejos.
+  isActive Boolean @default(true)
+
+  sortOrder Int @default(100)
+
+  createdById Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+}

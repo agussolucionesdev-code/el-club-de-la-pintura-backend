@@ -19,10 +19,25 @@ import {
   deleteRecurring,
   runRecurring,
 } from "./expense.controller";
+import {
+  createExpenseCategory,
+  deleteExpenseCategory,
+  listExpenseCategories,
+  updateExpenseCategory,
+} from "./expenseCategory.controller";
 
 const router = Router();
 
 router.use(authenticateToken, authorizeRoles("ADMIN", "ENCARGADO"));
+
+// ── Categorías ────────────────────────────────────────────────────────────
+// Listar puede cualquiera que entre a Gastos: la pantalla las necesita para
+// nombrar y colorear. Crear, editar y borrar es sólo del dueño, y eso lo
+// resuelve el controlador.
+router.get("/categories", listExpenseCategories);
+router.post("/categories", createExpenseCategory);
+router.patch("/categories/:id", updateExpenseCategory);
+router.delete("/categories/:id", deleteExpenseCategory);
 
 router.get("/", getExpenses);
 router.get("/budgets", getBudgets);
