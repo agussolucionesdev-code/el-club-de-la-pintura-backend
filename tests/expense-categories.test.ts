@@ -110,8 +110,10 @@ describe("Categorías de gasto", () => {
       // Los colores son EXACTAMENTE los que tenía cableados el frontend: al
       // desplegar, nada cambia de aspecto.
       expect(porClave.get("LOGISTICS")).toMatchObject({ color: "#f59e0b", isSystem: true });
-      expect(porClave.get("SALARY")).toMatchObject({ color: "#10b981", isSystem: true });
+      expect(porClave.get("MAINTENANCE")).toMatchObject({ color: "#f43f5e", isSystem: true });
       expect(porClave.get("OTHER")).toMatchObject({ color: "#64748b", isSystem: true });
+      // Y las del rubro que se agregaron después.
+      expect(porClave.get("INSUMOS")).toMatchObject({ color: "#14b8a6", isSystem: true });
     });
 
     it("el encargado también la ve: la necesita para cargar y para leer", async () => {
@@ -170,11 +172,33 @@ describe("Categorías de gasto", () => {
     });
 
     it("no crea una gemela: si ya existe activa, avisa", async () => {
+      // "Fletes y logística" existe como LOGISTICS. Escribirlo generaría la
+      // clave FLETES_Y_LOGISTICA —distinta— y nacerían dos categorías que el
+      // usuario ve idénticas.
       const res = await request(app)
         .post("/api/expenses/categories")
         .set("Authorization", `Bearer ${adminToken}`)
-        .send({ label: "Sueldos", color: "#000000" });
+        .send({ label: "Fletes y logística", color: "#000000" });
       expect(res.status).toBe(409);
+    });
+
+    it("una categoría desactivada se REACTIVA en vez de duplicarse", async () => {
+      // "Sueldos" quedó desactivada al sacarla del módulo. Si el dueño la
+      // vuelve a escribir, lo que quiere es recuperarla, no tener dos.
+      const res = await request(app)
+        .post("/api/expenses/categories")
+        .set("Authorization", `Bearer ${adminToken}`)
+        .send({ label: "Sueldos", color: "#10b981" });
+
+      expect(res.status).toBe(200);
+      expect(res.body.message).toMatch(/se volvió a activar/u);
+      expect(res.body.data.key).toBe("SALARY");
+
+      // Se deja como estaba para no ensuciar el resto de la suite.
+      await prisma.expenseCategory.update({
+        where: { key: "SALARY" },
+        data: { isActive: false },
+      });
     });
   });
 
@@ -237,11 +261,51 @@ describe("Categorías de gasto", () => {
     });
 
     it("una categoría del sistema no se borra ni vacía", async () => {
-      const salary = await prisma.expenseCategory.findUnique({ where: { key: "SALARY" } });
+      const logistica = await prisma.expenseCategory.findUnique({
+        where: { key: "LOGISTICS" },
+      });
       const res = await request(app)
-        .delete(`/api/expenses/categories/${salary!.id}`)
+        .delete(`/api/expenses/categories/${logistica!.id}`)
         .set("Authorization", `Bearer ${adminToken}`);
       expect(res.status).toBe(409);
+    });
+  });
+
+  describe("qué NO vive en Gastos", () => {
+    it("pagos a proveedor y sueldos ya no se pueden cargar acá", async () => {
+      // Gastos registra lo que sale del cajón en la operación diaria. Un pago a
+      // proveedor tiene su lugar en Compras y un sueldo en Liquidaciones;
+      // tenerlos también acá invita a cargar la misma plata dos veces, y a
+      // partir del segundo mes nadie sabe cuál de los dos números es el bueno.
+      for (const key of ["SUPPLIER_PAYMENT", "SALARY"]) {
+        const res = await request(app)
+          .post("/api/expenses")
+          .set("Authorization", `Bearer ${adminToken}`)
+          .send({
+            amount: 1000,
+            reason: "No debería entrar",
+            category: key,
+            type: "VARIABLE",
+            branchId,
+            cashRegisterId: cajaId,
+          });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/desactivada/u);
+      }
+    });
+
+    it("siguen existiendo para no dejar sin nombre al histórico", async () => {
+      // Desactivadas, no borradas: si algún día se cargó un gasto con ellas,
+      // ese gasto conserva su etiqueta y su color.
+      const res = await request(app)
+        .get("/api/expenses/categories")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      const porClave = new Map(
+        (res.body.data as { key: string; isActive: boolean }[]).map((c) => [c.key, c]),
+      );
+      expect(porClave.get("SUPPLIER_PAYMENT")).toMatchObject({ isActive: false });
+      expect(porClave.get("SALARY")).toMatchObject({ isActive: false });
     });
   });
 

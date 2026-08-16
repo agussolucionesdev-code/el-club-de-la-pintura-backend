@@ -98,11 +98,23 @@ export const createExpenseCategory = async (req: AuthRequest, res: Response) => 
     // SUELDOS, distinta de la del sistema (SALARY), y nacerían dos categorías
     // que el usuario ve idénticas. Indistinguibles en pantalla y separadas en
     // el gráfico: exactamente el problema que esta lista vino a resolver.
-    const yaExiste = await prisma.expenseCategory.findFirst({
+    const coincidencias = await prisma.expenseCategory.findMany({
       where: {
         OR: [{ key }, { label: { equals: nombre, mode: "insensitive" } }],
       },
     });
+
+    // La activa gana sobre la inactiva, y a igualdad la más vieja.
+    //
+    // Un `findFirst` sin orden explícito devuelve cualquiera de las que
+    // matcheen, así que con dos coincidencias el resultado dependía del humor
+    // del planificador de Postgres: a veces 409, a veces reactivar. Un
+    // comportamiento no determinista sobre datos es un test que falla un día de
+    // cada diez y nadie sabe por qué.
+    const yaExiste =
+      coincidencias.find((c) => c.isActive) ??
+      coincidencias.sort((a, b) => a.id - b.id)[0];
+
     if (yaExiste) {
       // Si existe pero está inactiva, se reactiva en vez de crear una gemela:
       // dos categorías con el mismo nombre parten el histórico en dos.
