@@ -165,7 +165,7 @@ export const getExpenses = async (req: AuthRequest, res: Response) => {
  * @body amount         - Expense amount in ARS (must be > 0 and ≤ available cash).
  * @body reason         - Description of the expense.
  * @body category       - Expense category (e.g., "ALQUILER", "LIMPIEZA").
- * @body type           - `"FIJO"` or `"VARIABLE"`.
+ * @body type           - `"FIXED"` or `"VARIABLE"`.
  */
 export const registerExpense = async (req: AuthRequest, res: Response) => {
   try {
