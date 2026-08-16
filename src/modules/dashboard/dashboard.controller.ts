@@ -17,6 +17,7 @@
 import { Request, Response } from "express";
 import { logger } from '../../config/logger';
 import prisma from "../../config/db";
+import { activeReceivable } from "../../utils/staffLedger.utils";
 import * as ExcelJS from "exceljs";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { Prisma } from "@prisma/client";
@@ -172,6 +173,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
 
     const [
       saleTotals,
+      ventasTrasladadas,
       paymentGroups,
       expenseGroups,
       saleItems,
@@ -184,6 +186,26 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
         where: saleWhere,
         _sum: { totalAmount: true, balance: true },
         _count: { _all: true },
+      }),
+      /**
+       * Las ventas cuya deuda se movió al libro del personal.
+       *
+       * El agregado de arriba suma `balance` crudo, y `balance` se preserva al
+       * trasladar: sin este descuento, la misma deuda se cuenta dos veces —una
+       * como cuenta por cobrar y otra en el libro—.
+       *
+       * Se traen las filas en vez de agregarlas en SQL porque el descuento
+       * correcto es `min(trasladado_vigente, balance)`, y eso no se expresa con
+       * `_sum`. No es caro: el traslado es una operación administrativa
+       * excepcional, no algo que pase en el mostrador.
+       */
+      prisma.sale.findMany({
+        where: { ...saleWhere, transferredToStaffLedger: { gt: 0 } },
+        select: {
+          balance: true,
+          transferredToStaffLedger: true,
+          transferReversed: true,
+        },
       }),
       prisma.payment.groupBy({
         by: ["paymentMethod"],
@@ -263,7 +285,26 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response) => {
     ]);
 
     const totalBilled = Number(saleTotals._sum.totalAmount ?? 0);
-    const totalDebt = Number(saleTotals._sum.balance ?? 0);
+    /**
+     * La deuda que todavía es de CLIENTES.
+     *
+     * `balance` no se toca al trasladar una cuenta al libro del personal —sigue
+     * diciendo lo que la venta fue—, así que hay que descontar la parte
+     * trasladada o el KPI cuenta la misma plata dos veces.
+     */
+    const trasladadoVigente = ventasTrasladadas.reduce(
+      (suma, venta) =>
+        suma +
+        Math.min(
+          Number(venta.transferredToStaffLedger) - Number(venta.transferReversed),
+          Number(venta.balance),
+        ),
+      0,
+    );
+    const totalDebt = Math.max(
+      Number(saleTotals._sum.balance ?? 0) - trasladadoVigente,
+      0,
+    );
     const salesCount = saleTotals._count._all;
     const totalCollected = paymentGroups.reduce(
       (sum, group) => sum + Number(group._sum.amount ?? 0),
@@ -531,7 +572,10 @@ export const getFinancialSummary = async (req: Request, res: Response) => {
 
     sales.forEach((sale) => {
       totalBilled += sale.totalAmount;
-      totalDebt += sale.balance;
+      // Sólo lo que sigue siendo deuda de un CLIENTE: lo trasladado al libro
+      // del personal ya se contabiliza allá, y sumarlo acá sería contarlo dos
+      // veces en el mismo informe financiero.
+      totalDebt += Number(activeReceivable(sale));
 
       sale.items.forEach((item) => {
         const cost = item.unitCost ? item.unitCost : 0;
@@ -842,7 +886,13 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
     overdueThreshold.setDate(overdueThreshold.getDate() - 30);
 
     pendingSales.forEach((sale) => {
-      totalCapitalOnStreet += sale.balance;
+      // Lo trasladado al libro del personal no es capital en la calle: no hay
+      // un cliente a quien llamar por esa plata. Inflar este número lleva a
+      // decidir sobre una cartera que no existe.
+      const deudaDelCliente = Number(activeReceivable(sale));
+      if (deudaDelCliente <= 0) return;
+
+      totalCapitalOnStreet += deudaDelCliente;
 
       if (sale.createdAt < overdueThreshold) overdueInvoicesCount++;
 
@@ -857,7 +907,7 @@ export const getCreditRiskAnalytics = async (req: Request, res: Response) => {
         };
       }
 
-      debtorsMap[customerId].totalDebt += sale.balance;
+      debtorsMap[customerId].totalDebt += deudaDelCliente;
 
       if (sale.createdAt < debtorsMap[customerId].oldestInvoiceDate) {
         debtorsMap[customerId].oldestInvoiceDate = sale.createdAt;

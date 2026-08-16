@@ -27,6 +27,10 @@ import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { createInternalReceipt } from "../internal-receipt/internal-receipt.service";
 import { readSettings } from "../settings/settings.controller";
 import {
+  activeReceivable,
+  activeTransferred,
+} from "../../utils/staffLedger.utils";
+import {
   decrementStockOrThrow,
   isUniqueConstraintViolation,
 } from "../../utils/stock.utils";
@@ -1271,7 +1275,38 @@ export const getPendingAccounts = async (req: AuthRequest, res: Response) => {
       orderBy: { createdAt: "asc" },
     });
 
-    res.status(200).json({ message: "Radar actualizado.", data: pendingSales });
+    /**
+     * ⚠️ Lo trasladado al libro del personal ya NO es cuenta corriente.
+     *
+     * Al trasladar una cuenta interna vieja, `status` y `balance` se preservan a
+     * propósito —siguen diciendo lo que la venta fue— y la deuda pasa a vivir en
+     * el libro del personal. Si este radar suma `balance` crudo, esa deuda se
+     * cuenta DOS VECES: una acá y otra en el libro.
+     *
+     * Y es peor que un número inflado: `payment.controller` bloquea el cobro por
+     * la vía de cuenta corriente sobre una venta trasladada, así que la pantalla
+     * mostraría una deuda que no se puede cobrar desde donde se la muestra.
+     *
+     * Hoy la única venta trasladada en producción es de consumo interno, que ya
+     * se excluye arriba por `kind`, así que el defecto está latente y no activo.
+     * Deja de estarlo con el primer traslado legado real —que apunta justamente
+     * a ventas ORDINARIAS de clientes internos viejos—.
+     */
+    const conDeudaVigente = pendingSales
+      .map((venta) => ({
+        ...venta,
+        /** Lo que todavía se le puede reclamar al cliente por esta venta. */
+        deudaVigente: activeReceivable(venta),
+        /** Lo que se movió al libro del personal, para poder explicarlo. */
+        trasladadoAlPersonal: activeTransferred(venta),
+      }))
+      // Una venta trasladada por completo salió de la cuenta corriente: no se
+      // muestra como deudora porque ya no lo es.
+      .filter((venta) => venta.deudaVigente.greaterThan(0));
+
+    res
+      .status(200)
+      .json({ message: "Radar actualizado.", data: conDeudaVigente });
   } catch (error: unknown) {
     res.status(500).json({ error: "Fallo al consultar el radar de deudores." });
   }
@@ -1359,13 +1394,21 @@ export const exportPendingAccountsExcel = async (
       PARTIAL: "Pago parcial",
     };
 
-    pendingSales.forEach((sale) => {
+    // Lo trasladado al libro del personal ya no es cuenta corriente: si el
+    // Excel lo sumara, diría un número mayor que la pantalla y alguien lo
+    // mandaría por mail. Misma regla que el radar.
+    const conDeuda = pendingSales.filter((sale) =>
+      activeReceivable(sale).greaterThan(0),
+    );
+
+    conDeuda.forEach((sale) => {
       const ageDays = Math.floor(
         (today.getTime() - new Date(sale.createdAt).getTime()) /
           (1000 * 60 * 60 * 24),
       );
-      // sale.balance = outstanding amount (updated by the backend on each partial payment)
-      const balance = Number(sale.balance);
+      // Lo que todavía se le puede reclamar al cliente, no el saldo histórico
+      // de la venta.
+      const balance = Number(activeReceivable(sale));
 
       const row = sheet.addRow({
         date: new Date(sale.createdAt).toLocaleDateString("es-AR", {
@@ -1403,13 +1446,16 @@ export const exportPendingAccountsExcel = async (
     });
 
     // Summary totals at the bottom of the sheet
+    // Sobre `conDeuda`, no sobre `pendingSales`: el total tiene que ser la suma
+    // de las filas que están arriba. Un pie que suma filas que no se ven es el
+    // peor error posible en una planilla — parece exacto y nadie lo revisa.
     const lastRow = sheet.rowCount + 2;
-    sheet.getCell(`F${lastRow}`).value = pendingSales.reduce(
+    sheet.getCell(`F${lastRow}`).value = conDeuda.reduce(
       (acc, s) => acc + Number(s.totalAmount),
       0,
     );
-    sheet.getCell(`G${lastRow}`).value = pendingSales.reduce(
-      (acc, s) => acc + Number(s.balance),
+    sheet.getCell(`G${lastRow}`).value = conDeuda.reduce(
+      (acc, s) => acc + Number(activeReceivable(s)),
       0,
     );
     sheet.getCell(`F${lastRow}`).numFmt = '"$"#,##0.00';

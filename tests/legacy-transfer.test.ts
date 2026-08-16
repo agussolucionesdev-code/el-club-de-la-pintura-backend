@@ -291,6 +291,52 @@ describe("Traslado de cuentas legado", () => {
       expect(res.status).toBeGreaterThanOrEqual(400);
       expect(res.body.error).toMatch(/libro del personal/u);
     });
+
+    it("🔒 sale del radar de deudores: la deuda no se cuenta dos veces", async () => {
+      // El complemento del test de arriba, y el que faltaba. Cobrarla estaba
+      // bloqueado, pero el radar la seguía MOSTRANDO con su saldo entero:
+      // aparecía una deuda que el propio sistema no dejaba cobrar desde ahí, y
+      // el total de la cartera sumaba plata que ya vivía en el libro.
+      const res = await request(app)
+        .get(`/api/sales/pending/${branchId}`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      const idsEnRadar = (res.body.data as { id: number }[]).map((v) => v.id);
+      for (const idTrasladada of ventasLegado) {
+        expect(idsEnRadar).not.toContain(idTrasladada);
+      }
+    });
+
+    it("🔒 el KPI de deuda del panel tampoco la cuenta", async () => {
+      // Misma plata, otra pantalla. Si el panel y el radar no coinciden, uno de
+      // los dos miente y nadie sabe cuál.
+      const res = await request(app)
+        .get("/api/dashboard/summary")
+        .query({ branchId, range: "all" })
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+
+      const sumaCruda = await prisma.sale.aggregate({
+        where: { branchId },
+        _sum: { balance: true },
+      });
+      const trasladado = await prisma.sale.aggregate({
+        where: { branchId, transferredToStaffLedger: { gt: 0 } },
+        _sum: { transferredToStaffLedger: true, transferReversed: true },
+      });
+      const vigenteTrasladado =
+        Number(trasladado._sum.transferredToStaffLedger ?? 0) -
+        Number(trasladado._sum.transferReversed ?? 0);
+
+      // Hay algo trasladado — si no, este test no probaría nada.
+      expect(vigenteTrasladado).toBeGreaterThan(0);
+      expect(Number(res.body.kpis.totalDebt)).toBeCloseTo(
+        Number(sumaCruda._sum.balance ?? 0) - vigenteTrasladado,
+        2,
+      );
+    });
   });
 
   describe("🔒 revertir y re-trasladar", () => {
