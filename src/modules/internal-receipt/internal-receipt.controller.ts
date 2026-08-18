@@ -13,6 +13,7 @@
  */
 import { Response } from "express";
 import PDFDocument from "pdfkit";
+import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
@@ -338,6 +339,10 @@ export const getInternalReceipts = async (req: AuthRequest, res: Response) => {
         ? req.query.receiptType
         : undefined;
     const take = Math.min(Number(req.query.limit || 100), 500);
+    const cursor =
+      typeof req.query.cursor === "string" && req.query.cursor
+        ? req.query.cursor
+        : undefined;
 
     // Optional ISO date range — dateTo is inclusive (covers the whole day)
     const dateFrom =
@@ -358,15 +363,85 @@ export const getInternalReceipts = async (req: AuthRequest, res: Response) => {
           }
         : {};
 
+    const where = {
+      ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
+      ...(receiptType ? { receiptType } : {}),
+      ...createdAtWhere,
+    };
+
     const receipts = await prisma.internalReceipt.findMany({
-      where: {
-        ...(branchWhere === undefined ? {} : { branchId: branchWhere }),
-        ...(receiptType ? { receiptType } : {}),
-        ...createdAtWhere,
-      },
+      where,
       orderBy: { createdAt: "desc" },
-      take,
+      // Se pide UNO de más para saber si hay página siguiente sin contar dos
+      // veces: si vuelven `take + 1`, es que falta.
+      take: take + 1,
+      ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
     });
+
+    const hayMas = receipts.length > take;
+    if (hayMas) receipts.pop();
+
+    /**
+     * El total del período, calculado sobre TODO el filtro.
+     *
+     * La pantalla mostraba la suma de las filas que habían llegado —topeadas
+     * en 500— rotulada "monto trazado". Ese es el error más caro de todos,
+     * porque el número parece exacto y nadie lo revisa: con dos sucursales
+     * generando un comprobante por venta, el tope se pasa en semanas y a partir
+     * de ahí el total miente sin avisar.
+     *
+     * El monto vive dentro del `payload`, en una de cuatro claves según el tipo
+     * de comprobante, así que se suma en SQL con la MISMA regla de prioridad
+     * que usa la pantalla. Si las dos reglas se separan, los números dejan de
+     * coincidir y nadie sabe cuál creer.
+     *
+     * Los STOCK_TRANSFER se excluyen del monto: su `quantity` son unidades, no
+     * pesos, y sumarlas al dinero sería mezclar peras con plata.
+     */
+    // Las mismas condiciones que el `where` de Prisma, como fragmentos SQL
+    // PARAMETRIZADOS. Se arman una sola vez y se reusan: una condición escrita
+    // dos veces es una condición que en algún momento deja de coincidir, y
+    // entonces el total describe un filtro distinto al de la lista.
+    const sucursales =
+      branchWhere === undefined
+        ? Prisma.sql`TRUE`
+        : typeof branchWhere === "number"
+          ? Prisma.sql`"branchId" = ${branchWhere}`
+          : Prisma.sql`"branchId" IN (${Prisma.join(branchWhere.in)})`;
+    const tipo = receiptType
+      ? Prisma.sql`"receiptType" = ${receiptType}`
+      : Prisma.sql`TRUE`;
+    const desde =
+      dateFrom && !isNaN(dateFrom.getTime())
+        ? Prisma.sql`"createdAt" >= ${dateFrom}`
+        : Prisma.sql`TRUE`;
+    const hasta =
+      dateTo && !isNaN(dateTo.getTime())
+        ? Prisma.sql`"createdAt" <= ${dateTo}`
+        : Prisma.sql`TRUE`;
+
+    const [totales, porTipo] = await Promise.all([
+      prisma.$queryRaw<{ total: number; cantidad: bigint }[]>`
+        SELECT
+          COALESCE(SUM(
+            CASE WHEN "receiptType" = 'STOCK_TRANSFER' THEN 0 ELSE COALESCE(
+              (payload->>'totalAmount')::numeric,
+              (payload->>'amount')::numeric,
+              (payload->>'estimatedTotal')::numeric,
+              (payload->>'actualBalance')::numeric,
+              0
+            ) END
+          ), 0)::float AS total,
+          COUNT(*) AS cantidad
+        FROM "InternalReceipt"
+        WHERE ${sucursales} AND ${tipo} AND ${desde} AND ${hasta}
+      `,
+      prisma.internalReceipt.groupBy({
+        by: ["receiptType"],
+        where,
+        _count: { _all: true },
+      }),
+    ]);
 
     // InternalReceipt stores createdBy as a plain int (no relation) — resolve
     // operator names in one query so the UI can show "Facundo" instead of "#2".
@@ -384,6 +459,20 @@ export const getInternalReceipts = async (req: AuthRequest, res: Response) => {
     res.status(200).json({
       message: "Comprobantes internos recuperados.",
       data: receiptsWithCreator,
+      // Describe TODO lo que matchea el filtro, no lo que entró en la página.
+      summary: {
+        totalAmount: Number(totales[0]?.total ?? 0),
+        count: Number(totales[0]?.cantidad ?? 0),
+        byType: porTipo.map((t) => ({
+          receiptType: t.receiptType,
+          count: t._count._all,
+        })),
+      },
+      pageInfo: {
+        hasNextPage: hayMas,
+        nextCursor: hayMas ? (receipts[receipts.length - 1]?.id ?? null) : null,
+        pageSize: take,
+      },
     });
   } catch (error: unknown) {
     const errorMsg =
