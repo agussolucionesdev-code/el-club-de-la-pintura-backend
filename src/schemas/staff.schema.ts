@@ -111,12 +111,37 @@ export const createStaffAdjustmentSchema = z.object({
   }),
 });
 
+/**
+ * Los tipos de asiento, tal como los guarda la base.
+ *
+ * Se declara acá y no se repite: una lista de tipos duplicada entre el schema
+ * y el controlador es una lista que en algún momento deja de coincidir.
+ */
+export const TIPOS_DE_ASIENTO = [
+  "OPENING_BALANCE",
+  "CONSUMPTION",
+  "ADJUSTMENT_DEBIT",
+  "PAYMENT",
+  "PAYROLL_DEDUCTION",
+  "RETURN_CREDIT",
+  "TRANSFER_REVERSAL",
+  "ADJUSTMENT_CREDIT",
+] as const;
+
 export const listStaffLedgerSchema = z.object({
   params: z.object({ id: z.coerce.number().int().positive() }),
   query: z.object({
     from: z.string().optional(),
     to: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
+    /**
+     * Filtrar por tipo de movimiento. `CARGOS` y `PAGOS` son atajos por lo que
+     * la gente realmente pregunta —"mostrame sólo lo que me cobraron"— y no
+     * por el nombre técnico del asiento.
+     */
+    tipo: z
+      .enum(["TODOS", "CARGOS", "PAGOS", ...TIPOS_DE_ASIENTO])
+      .optional(),
   }),
 });
 

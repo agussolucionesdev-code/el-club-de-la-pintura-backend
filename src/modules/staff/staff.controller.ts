@@ -173,9 +173,36 @@ export const getStaffLedger = async (req: AuthRequest, res: Response) => {
     const desde = req.query.from ? new Date(String(req.query.from)) : null;
     const hasta = req.query.to ? new Date(String(req.query.to)) : null;
 
+    /**
+     * Qué movimientos mostrar.
+     *
+     * "Cargos" y "Pagos" no son tipos de la base: son las dos preguntas que la
+     * gente hace de verdad —"qué me cobraron" y "qué pagué"—, y se traducen a
+     * los tipos que corresponden. Filtrar por el nombre técnico del asiento
+     * sería obligar al usuario a aprenderse el esquema.
+     */
+    const tipo = String(req.query.tipo ?? "TODOS");
+    const CARGOS = ["OPENING_BALANCE", "CONSUMPTION", "ADJUSTMENT_DEBIT"];
+    const PAGOS = [
+      "PAYMENT",
+      "PAYROLL_DEDUCTION",
+      "RETURN_CREDIT",
+      "TRANSFER_REVERSAL",
+      "ADJUSTMENT_CREDIT",
+    ];
+    const filtroDeTipo =
+      tipo === "TODOS"
+        ? {}
+        : tipo === "CARGOS"
+          ? { type: { in: CARGOS as never[] } }
+          : tipo === "PAGOS"
+            ? { type: { in: PAGOS as never[] } }
+            : { type: tipo as never };
+
     const asientos = await prisma.staffLedgerEntry.findMany({
       where: {
         staffAccountId: id,
+        ...filtroDeTipo,
         ...(desde || hasta
           ? {
               createdAt: {
@@ -196,6 +223,146 @@ export const getStaffLedger = async (req: AuthRequest, res: Response) => {
       select: { debit: true, credit: true },
     });
 
+    /**
+     * Quién registró cada asiento.
+     *
+     * `createdById` estaba en la base desde el principio y no viajaba en la
+     * respuesta. Un libro donde no se sabe quién anotó cada cosa no es
+     * auditable: es una lista de números que alguien puso ahí.
+     */
+    const autores = await prisma.user.findMany({
+      where: { id: { in: [...new Set(asientos.map((a) => a.createdById))] } },
+      select: { id: true, name: true },
+    });
+    const nombrePorId = new Map(autores.map((u) => [u.id, u.name]));
+
+    /**
+     * El detalle de lo que originó el asiento.
+     *
+     * Un cargo que dice "Se llevó mercadería · $12.000" no se puede discutir:
+     * para reclamar o para reconocer hay que saber QUÉ se llevó. El vínculo ya
+     * existía (`sourceType` + `sourceId`), pero nadie lo resolvía, así que el
+     * dato estaba guardado y era invisible.
+     *
+     * Se resuelve en DOS consultas para toda la página, no una por fila: con
+     * doscientos movimientos, lo segundo son doscientos viajes a la base para
+     * pintar una tabla.
+     */
+    const idsConsumo = asientos
+      .filter((a) => a.sourceType === "InternalConsumption" && a.sourceId)
+      .map((a) => a.sourceId as number);
+    const idsPago = asientos
+      .filter((a) => a.sourceType === "StaffPaymentSettlement" && a.sourceId)
+      .map((a) => a.sourceId as number);
+
+    const [consumos, pagos] = await Promise.all([
+      idsConsumo.length
+        ? prisma.internalConsumption.findMany({
+            where: { id: { in: idsConsumo } },
+            select: {
+              id: true,
+              kind: true,
+              purpose: true,
+              pricePolicy: true,
+              branchId: true,
+              // `InternalConsumptionItem` no tiene relación con Product:
+              // guarda el id suelto. Los nombres se resuelven abajo, en una
+              // sola consulta para todos los productos de la página.
+              items: {
+                select: {
+                  productId: true,
+                  quantity: true,
+                  unitPrice: true,
+                  subtotal: true,
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      idsPago.length
+        ? prisma.staffPaymentSettlement.findMany({
+            where: { id: { in: idsPago } },
+            select: {
+              id: true,
+              method: true,
+              reference: true,
+              cashRegisterId: true,
+              branchId: true,
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const consumoPorId = new Map(consumos.map((c) => [c.id, c] as const));
+    const pagoPorId = new Map(pagos.map((p) => [p.id, p] as const));
+
+    // Nombres de productos y sucursales, en dos consultas para toda la página.
+    const idsProducto = [
+      ...new Set(consumos.flatMap((c) => c.items.map((i) => i.productId))),
+    ];
+    const idsSucursal = [
+      ...new Set(
+        [...pagos.map((p) => p.branchId), ...consumos.map((c) => c.branchId)].filter(
+          (b): b is number => !!b,
+        ),
+      ),
+    ];
+    const [productos, sucursales] = await Promise.all([
+      idsProducto.length
+        ? prisma.product.findMany({
+            where: { id: { in: idsProducto } },
+            select: { id: true, name: true, sku: true },
+          })
+        : Promise.resolve([]),
+      idsSucursal.length
+        ? prisma.branch.findMany({
+            where: { id: { in: idsSucursal } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+    ]);
+    const productoPorId = new Map(productos.map((p) => [p.id, p] as const));
+    const sucursalPorId = new Map(sucursales.map((b) => [b.id, b.name] as const));
+
+    /** El detalle que corresponde a este asiento, o `null` si no tiene. */
+    const detalleDe = (a: (typeof asientos)[number]) => {
+      if (a.sourceType === "InternalConsumption" && a.sourceId) {
+        const c = consumoPorId.get(a.sourceId);
+        if (!c) return null;
+        return {
+          clase: "CONSUMO" as const,
+          sucursal: c.branchId ? (sucursalPorId.get(c.branchId) ?? null) : null,
+          politicaDePrecio: c.pricePolicy,
+          proposito: c.purpose,
+          items: c.items.map((i) => {
+            const prod = productoPorId.get(i.productId);
+            return {
+              productoId: i.productId,
+              // Si el producto se borró del catálogo, se muestra el id crudo:
+              // feo, pero honesto. Un guion escondería que ahí hubo algo.
+              nombre: prod?.name ?? `Producto #${i.productId}`,
+              sku: prod?.sku ?? null,
+              cantidad: i.quantity,
+              precioUnitario: i.unitPrice.toNumber(),
+              subtotal: i.subtotal.toNumber(),
+            };
+          }),
+        };
+      }
+      if (a.sourceType === "StaffPaymentSettlement" && a.sourceId) {
+        const p = pagoPorId.get(a.sourceId);
+        if (!p) return null;
+        return {
+          clase: "PAGO" as const,
+          metodo: p.method,
+          referencia: p.reference,
+          sucursal: p.branchId ? (sucursalPorId.get(p.branchId) ?? null) : null,
+          turno: p.cashRegisterId,
+        };
+      }
+      return null;
+    };
+
     res.json({
       data: {
         account: {
@@ -215,6 +382,10 @@ export const getStaffLedger = async (req: AuthRequest, res: Response) => {
           // Que se vea qué asiento corrige a cuál: es la diferencia entre un
           // libro auditable y una lista de números.
           reversalOfId: a.reversalOfId,
+          /** Quién lo registró. Sin esto el libro no es auditable. */
+          registradoPor: nombrePorId.get(a.createdById) ?? null,
+          /** Qué se llevó, o cómo pagó. `null` si el asiento no tiene origen. */
+          detalle: detalleDe(a),
           createdAt: a.createdAt,
         })),
       },

@@ -536,4 +536,81 @@ describe("Cuentas del personal", () => {
       expect(res.status).toBe(403);
     });
   });
+  describe("el extracto se puede discutir", () => {
+    it("dice QUÉ se llevó, no sólo cuánto", async () => {
+      // Un cargo que dice "Se llevó mercadería · $12.000" no se puede ni
+      // reclamar ni reconocer: para eso hay que saber qué mercadería. El
+      // vínculo ya existía en la base y nadie lo resolvía.
+      await consumo(adminToken, {
+        kind: "EMPLOYEE_PERSONAL",
+        staffUserId: empleadoId,
+        branchId,
+        cashRegisterId,
+        items: [{ productId, quantity: 2 }],
+      });
+
+      const cuenta = await prisma.staffAccount.findUnique({
+        where: { userId: empleadoId },
+      });
+      const res = await request(app)
+        .get(`/api/staff-accounts/${cuenta!.id}/ledger`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      const cargo = res.body.data.entries.find(
+        (e: { type: string }) => e.type === "CONSUMPTION",
+      );
+      expect(cargo).toBeDefined();
+      expect(cargo.detalle).not.toBeNull();
+      expect(cargo.detalle.clase).toBe("CONSUMO");
+      expect(cargo.detalle.items.length).toBeGreaterThan(0);
+      // El nombre del producto, no su id.
+      expect(typeof cargo.detalle.items[0].nombre).toBe("string");
+      expect(cargo.detalle.items[0].nombre.length).toBeGreaterThan(0);
+      expect(cargo.detalle.items[0].cantidad).toBe(2);
+    });
+
+    it("dice QUIÉN registró cada movimiento", async () => {
+      const cuenta = await prisma.staffAccount.findUnique({
+        where: { userId: empleadoId },
+      });
+      const res = await request(app)
+        .get(`/api/staff-accounts/${cuenta!.id}/ledger`)
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.entries.length).toBeGreaterThan(0);
+      for (const asiento of res.body.data.entries) {
+        // Sin autor, el libro es una lista de números que alguien puso ahí.
+        expect(asiento.registradoPor).toBeTruthy();
+      }
+    });
+
+    it("filtrar por CARGOS no cambia el saldo que la persona debe", async () => {
+      const cuenta = await prisma.staffAccount.findUnique({
+        where: { userId: empleadoId },
+      });
+
+      const todo = await request(app)
+        .get(`/api/staff-accounts/${cuenta!.id}/ledger`)
+        .set("Authorization", `Bearer ${adminToken}`);
+      const soloCargos = await request(app)
+        .get(`/api/staff-accounts/${cuenta!.id}/ledger`)
+        .query({ tipo: "CARGOS" })
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(soloCargos.status).toBe(200);
+      // El filtro es una lente sobre la lista, no sobre la deuda: si el saldo
+      // cambiara al filtrar, el número dejaría de ser lo que se debe.
+      expect(soloCargos.body.data.account.balance).toBe(
+        todo.body.data.account.balance,
+      );
+      expect(soloCargos.body.data.entries.length).toBeLessThanOrEqual(
+        todo.body.data.entries.length,
+      );
+      for (const a of soloCargos.body.data.entries) {
+        expect(a.debit).toBeGreaterThan(0);
+      }
+    });
+  });
 });
