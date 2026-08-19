@@ -19,6 +19,10 @@ import { logger } from '../../config/logger';
 import { Request, Response } from "express";
 import prisma, { PrismaTx } from "../../config/db";
 import { Prisma } from "@prisma/client";
+import {
+  leerPaginacion,
+  metadatosDePagina,
+} from "../../utils/pagination.utils";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 // Processing and storage utility imports
 import cloudinary from "../../config/cloudinary";
@@ -150,11 +154,14 @@ const applyCatalogStockSnapshot = async (
  */
 export const getProducts = async (req: Request, res: Response) => {
   try {
-    const { page = 1, limit = 10, search, category, brand } = req.query;
+    const { search, category, brand } = req.query;
 
-    const pageNumber = Number(page);
-    const pageSize = Number(limit);
-    const skip = (pageNumber - 1) * pageSize;
+    // El tamaño de página se lee sin creerle al cliente: sin techo, un
+    // `limit=999999` traía el catálogo entero —19.325 productos con sus
+    // relaciones— en una sola consulta; y `limit=abc` daba `take: NaN`, que
+    // revienta con un error que no explica nada.
+    const paginacion = leerPaginacion(req.query);
+    const { page: pageNumber, take: pageSize, skip } = paginacion;
 
     // Strong typing prevents injection vectors
     const whereClause: Prisma.ProductWhereInput = { isActive: true };
@@ -188,7 +195,7 @@ export const getProducts = async (req: Request, res: Response) => {
       }),
     ]);
 
-    const totalPages = Math.ceil(totalRecords / pageSize);
+
 
     // List views only need the thumbnail — full gallery loads via GET /products/:id.
     // Trimming extra images keeps large catalogs from producing multi-MB payloads.
@@ -198,7 +205,10 @@ export const getProducts = async (req: Request, res: Response) => {
     }));
 
     res.status(200).json({
-      metadata: { totalRecords, totalPages, currentPage: pageNumber, pageSize },
+      // `truncated` es lo que permite que la pantalla DIGA que está viendo una
+      // parte. Una lista cortada que se ve igual que una completa es la raíz
+      // de casi todos los números equivocados que aparecieron en el proyecto.
+      metadata: metadatosDePagina(totalRecords, paginacion),
       data: slimProducts,
     });
   } catch (error) {
