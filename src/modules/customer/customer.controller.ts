@@ -11,6 +11,11 @@ import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import PDFDocument from "pdfkit";
 import prisma from "../../config/db";
+import {
+  leerPaginacion,
+  metadatosDePagina,
+} from "../../utils/pagination.utils";
+import { activeReceivable } from "../../utils/staffLedger.utils";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 
 const toJsonPayload = (value: unknown): Prisma.InputJsonValue =>
@@ -49,7 +54,11 @@ const auditCustomerAction = async (
 export const getCustomers = async (req: AuthRequest, res: Response) => {
   try {
     const search = req.query.search ? String(req.query.search).trim() : "";
-    const limit = req.query.limit ? Math.min(200, Math.max(1, Number(req.query.limit))) : undefined;
+    // El clamp estaba hecho a mano y `limit=abc` daba `NaN`, que al ser falsy
+    // degradaba a "sin tope": la consulta traía TODOS los clientes activos sin
+    // que nadie lo pidiera. El helper resuelve techo, basura y aviso de corte
+    // de una sola forma para todas las listas.
+    const paginacion = leerPaginacion(req.query);
 
     const searchFilter = search
       ? {
@@ -69,22 +78,47 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
       ? { type: { not: String(req.query.excludeType) } }
       : {};
 
+    const donde = { isActive: true, ...searchFilter, ...typeFilter, ...excludeFilter };
+    const totalRegistros = await prisma.customer.count({ where: donde });
+
     const customers = await prisma.customer.findMany({
       where: { isActive: true, ...searchFilter, ...typeFilter, ...excludeFilter },
       orderBy: { name: "asc" },
-      ...(limit ? { take: limit } : {}),
+      take: paginacion.take,
+      skip: paginacion.skip,
       // Include outstanding balance summary for directory display
       include: {
         sales: {
           where: { status: { in: ["PENDING", "PARTIAL"] } },
-          select: { balance: true },
+          // Los campos del traslado hacen falta para no contar dos veces: ver
+          // el comentario de `activeDebt` más abajo.
+          select: {
+            balance: true,
+            transferredToStaffLedger: true,
+            transferReversed: true,
+          },
         },
       },
     });
 
     // Compute outstanding debt and strip the raw sales array from the response
     const directory = customers.map((c) => {
-      const activeDebt = c.sales.reduce((sum, sale) => sum + sale.balance, 0);
+      /**
+       * Lo que este cliente debe DE VERDAD.
+       *
+       * Sumar `balance` crudo cuenta dos veces la deuda que ya se trasladó al
+       * libro del personal: `status` y `balance` se preservan al trasladar —la
+       * venta sigue diciendo lo que fue— y la deuda pasó a vivir en el libro.
+       *
+       * Medido en producción antes de arreglarlo: el directorio mostraba que
+       * "agus" debía $28.600 cuando su deuda como cliente era $0. Es el mismo
+       * defecto que ya se corrigió en el radar de deudores y en el panel; acá
+       * había quedado.
+       */
+      const activeDebt = c.sales.reduce(
+        (sum, sale) => sum + Number(activeReceivable(sale)),
+        0,
+      );
       return {
         ...c,
         sales: undefined,
@@ -95,6 +129,9 @@ export const getCustomers = async (req: AuthRequest, res: Response) => {
     res.status(200).json({
       message: "Directorio de clientes recuperado con éxito.",
       data: directory,
+      // Para que la pantalla pueda decir "mostrando N de M" en vez de dejar
+      // creer que ve el directorio entero.
+      metadata: metadatosDePagina(totalRegistros, paginacion),
     });
   } catch (error: unknown) {
     res
@@ -329,7 +366,13 @@ export const getCustomerStatement = async (
       orderBy: { createdAt: "asc" },
     });
 
-    const totalDebt = pendingSales.reduce((sum, s) => sum + s.balance, 0);
+    // Lo trasladado al libro del personal no se le reclama al cliente. Un
+    // estado de cuenta que lo incluya le está pidiendo plata que ya no debe —y
+    // este documento se le entrega en mano.
+    const totalDebt = pendingSales.reduce(
+      (sum, s) => sum + Number(activeReceivable(s)),
+      0,
+    );
 
     const formatMoney = (n: number) =>
       `$${n.toLocaleString("es-AR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;

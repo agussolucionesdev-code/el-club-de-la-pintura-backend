@@ -55,17 +55,25 @@ const parseSupplierId = (value: unknown) => {
 export const getSuppliers = async (req: AuthRequest, res: Response) => {
   try {
     const limit = parseLimit(req.query.limit);
-    const suppliers = await prisma.supplier.findMany({
-      where: { isActive: true },
-      orderBy: { companyName: "asc" },
-      take: limit,
-    });
+    const [totalRegistros, suppliers] = await prisma.$transaction([
+      prisma.supplier.count({ where: { isActive: true } }),
+      prisma.supplier.findMany({
+        where: { isActive: true },
+        orderBy: { companyName: "asc" },
+        take: limit,
+      }),
+    ]);
 
     res.status(200).json({
       data: suppliers,
       meta: {
         count: suppliers.length,
         limit,
+        // Cuántos hay en total y si la lista quedó corta. `count` es lo que
+        // entró en esta respuesta y no alcanza para saberlo: una lista cortada
+        // se ve igual que una completa.
+        totalRecords: totalRegistros,
+        truncated: suppliers.length < totalRegistros,
       },
     });
   } catch (error) {

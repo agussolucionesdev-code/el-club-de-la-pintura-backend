@@ -14,6 +14,7 @@
 import { Response } from "express";
 import { logger } from "../../config/logger";
 import prisma from "../../config/db";
+import { activeReceivable } from "../../utils/staffLedger.utils";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
 import { readSettings } from "../settings/settings.controller";
 
@@ -129,7 +130,16 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
           creditLimit: true,
           // Every open sale of theirs, branch included: the money owed here is
           // one question, whether they blew their credit limit is another.
-          sales: { where: { status: OPEN }, select: { balance: true, branchId: true } },
+          sales: {
+            where: { status: OPEN },
+            select: {
+              balance: true,
+              branchId: true,
+              // Sin estos dos no se puede descontar lo ya trasladado al libro.
+              transferredToStaffLedger: true,
+              transferReversed: true,
+            },
+          },
         },
       });
 
@@ -148,7 +158,9 @@ export const getAlertsSummary = async (req: AuthRequest, res: Response) => {
         let branchDebt = 0;
         let customerDebt = 0;
         for (const s of c.sales) {
-          const amount = Number(s.balance);
+          // Lo trasladado al libro del personal ya no es deuda de un cliente:
+          // alertar por eso manda a alguien a reclamar plata que no se debe.
+          const amount = Number(activeReceivable(s));
           customerDebt += amount;
           if (inScope(s.branchId)) branchDebt += amount;
         }

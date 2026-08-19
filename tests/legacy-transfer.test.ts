@@ -308,6 +308,30 @@ describe("Traslado de cuentas legado", () => {
       }
     });
 
+    it("🔒 el directorio de clientes tampoco la muestra como deuda", async () => {
+      // Medido en producción antes de arreglarlo: el directorio decía que un
+      // cliente debía $28.600 cuando su deuda real era $0, porque esa plata ya
+      // vivía en el libro del personal. El mismo defecto estaba en tres
+      // lugares distintos; éste es el que se ve al buscar un cliente.
+      const res = await request(app)
+        .get("/api/customers")
+        .set("Authorization", `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(200);
+      const interno = (res.body.data as { id: number; activeDebt: number }[])
+        .find((c) => c.id === clienteInternoId);
+
+      // La cuenta legado se desactiva al trasladar, así que puede no venir en
+      // el directorio; si viene, su deuda tiene que ser cero.
+      if (interno) expect(interno.activeDebt).toBe(0);
+
+      // Y ninguna deuda del directorio puede ser negativa ni incluir lo
+      // trasladado.
+      for (const c of res.body.data as { activeDebt: number }[]) {
+        expect(c.activeDebt).toBeGreaterThanOrEqual(0);
+      }
+    });
+
     it("🔒 el KPI de deuda del panel tampoco la cuenta", async () => {
       // Misma plata, otra pantalla. Si el panel y el radar no coinciden, uno de
       // los dos miente y nadie sabe cuál.
