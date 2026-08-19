@@ -31,8 +31,32 @@ on:
 jobs:
   dump:
     runs-on: ubuntu-latest
+    # Un respaldo de esta base tarda menos de un minuto. Sin tope, una corrida
+    # colgada sigue hasta el máximo de GitHub —seis horas— y se come la cuota
+    # gratis del mes. Verificado el 19/08/2026: había una trabada hacía 2h43m.
+    timeout-minutes: 15
 
     steps:
+      # Se comprueba ANTES de instalar nada: si falta el secreto, no tiene
+      # sentido bajar 40 MB de paquetes para después abortar.
+      - name: Comprobar que el secreto existe
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error title=No hay respaldo::Falta el secreto PRODUCTION_DATABASE_URL. Mientras no exista, ESTE RESPALDO FALLA TODOS LOS DÍAS y la base no tiene ninguna copia."
+            echo ""
+            echo "Cómo resolverlo, una sola vez:"
+            echo "  1. GitHub → este repo → Settings → Secrets and variables → Actions"
+            echo "  2. New repository secret"
+            echo "  3. Nombre: PRODUCTION_DATABASE_URL"
+            echo "  4. Valor: la cadena de conexión de Neon (la misma del .env)"
+            echo ""
+            echo "Mientras tanto, respaldo a mano desde tu máquina:  npm run respaldo"
+            exit 1
+          fi
+          echo "✓ El secreto está configurado."
+
       - name: Instalar el cliente de PostgreSQL 16
         # La versión importa: `pg_dump` se niega a volcar una base de versión
         # MAYOR que la suya. Neon corre 16, así que 16 o más nuevo.

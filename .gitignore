@@ -5,3 +5,4 @@ dist/
 .env.test
 .env.test.local
 /src/generated/prisma
+respaldos/
