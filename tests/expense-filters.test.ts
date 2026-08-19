@@ -32,11 +32,22 @@ describe("Gastos: filtros y totales", () => {
   let cajaA = 0;
   let cajaB = 0;
 
-  /** Fecha ISO (YYYY-MM-DD) de hace N días, en hora local. */
+  /**
+   * Fecha ISO (YYYY-MM-DD) de hace N días, en hora LOCAL.
+   *
+   * Decía "en hora local" y hacía lo contrario: `toISOString()` pasa a UTC, y
+   * en cualquier huso al oeste de Greenwich eso corre el día. El resultado era
+   * un test que pasaba de día y fallaba de noche — los gastos se creaban con la
+   * fecha de hoy y se filtraban por la de mañana, así que el total daba 0 sin
+   * que nada estuviera roto.
+   *
+   * Es la misma trampa que el código de la app ya resuelve así.
+   */
   const haceDias = (n: number) => {
     const d = new Date();
     d.setDate(d.getDate() - n);
-    return d.toISOString().slice(0, 10);
+    const local = new Date(d.getTime() - d.getTimezoneOffset() * 60_000);
+    return local.toISOString().slice(0, 10);
   };
 
   const gasto = async (opts: {

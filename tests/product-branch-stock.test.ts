@@ -199,6 +199,29 @@ describe("Catalogo multi-sucursal sin stock hardcodeado", () => {
     expect(product?.isActive).toBe(true);
   });
 
+  it("🔒 rechaza el vaciado si el catálogo cambió mientras tanto", async () => {
+    // La guarda de concurrencia. Alguien abre el modal viendo 40 productos,
+    // se toma un café, un compañero da de alta 3 más, y al confirmar se
+    // archivarían 43 sin que nadie lo haya visto. Con el conteo esperado, el
+    // servidor frena y pide releer la pantalla.
+    const activos = await prisma.product.count({ where: { isActive: true } });
+
+    const response = await request(app)
+      .delete("/api/products/delete-all")
+      .set("Authorization", `Bearer ${adminToken}`)
+      .send({ confirmationPhrase: "VACIAR", expectedActiveCount: activos + 7 });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toMatch(/cambió|actualiz/i);
+
+    // Y NADA se archivó.
+    const sigueActivo = await prisma.product.findUnique({
+      where: { id: productId },
+    });
+    expect(sigueActivo?.isActive).toBe(true);
+    expect(await prisma.product.count({ where: { isActive: true } })).toBe(activos);
+  });
+
   it("importa lista creando proveedores sin CUIT ni email ficticios", async () => {
     const response = await request(app)
       .post("/api/products/import")
