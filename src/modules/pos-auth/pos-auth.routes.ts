@@ -21,9 +21,12 @@ import {
 } from "./posPin.controller";
 import {
   closeCurrentOperatorSession,
+  closeOneOperatorSession,
   getCurrentOperatorSession,
+  listOpenOperatorSessions,
   listTerminalOperators,
   openOperatorSession,
+  resumeOperatorSession,
 } from "./posSession.controller";
 
 const router = Router();
@@ -143,6 +146,29 @@ router.post(
   "/pos/operator-sessions/current/close",
   authenticateToken,
   closeCurrentOperatorSession,
+);
+
+// ── Pestañas por operador (modo TERMINAL_COMPARTIDA) ──
+//
+// La ruta literal va ANTES que la del parámetro: si no, "/open" se resolvería
+// como una sesión con id "open".
+router.get(
+  "/pos/operator-sessions/open",
+  authenticateToken,
+  listOpenOperatorSessions,
+);
+
+router.post(
+  "/pos/operator-sessions/:id/resume",
+  authenticateToken,
+  secretoRateLimiter,
+  resumeOperatorSession,
+);
+
+router.post(
+  "/pos/operator-sessions/:id/close",
+  authenticateToken,
+  closeOneOperatorSession,
 );
 
 export default router;

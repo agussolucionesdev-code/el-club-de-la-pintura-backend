@@ -22,6 +22,7 @@
 import { Response } from "express";
 
 import prisma from "../../config/db";
+import { readSettings } from "../settings/settings.controller";
 import { logger } from "../../config/logger";
 import {
   PosContextError,
@@ -199,12 +200,32 @@ export const openOperatorSession = async (req: AuthRequest, res: Response) => {
 
     // ── PIN correcto: se abre la sesión ──
     const resultado = await prisma.$transaction(async (tx) => {
-      // La anterior se cierra sí o sí: el índice parcial de la base no admite
-      // dos activas en la misma terminal, y además queremos el registro de
-      // hasta cuándo estuvo cada uno.
+      /**
+       * Qué pasa con la sesión que estaba abierta.
+       *
+       * El índice parcial de la base no admite dos ACTIVAS en la misma
+       * terminal, así que la anterior tiene que dejar de serlo. Pero adónde va
+       * depende del modo de trabajo:
+       *
+       *   SESION_POR_USUARIO   se CIERRA. Cada quien en su computadora; que
+       *     alguien más entre significa que el anterior terminó.
+       *
+       *   TERMINAL_COMPARTIDA  se BLOQUEA. Es una caja donde varios se
+       *     alternan: el anterior sigue teniendo su pestaña y su carrito
+       *     esperándolo. Cerrarla lo obligaría a empezar de cero cada vez que
+       *     un compañero cobra algo, que es exactamente la fricción que este
+       *     modo viene a sacar.
+       *
+       * En los dos casos la atribución sigue siendo inequívoca, porque activa
+       * hay una sola.
+       */
+      const modo = (await readSettings()).posModoOperacion;
       await tx.posOperatorSession.updateMany({
         where: { terminalId: terminal.id, status: "ACTIVE" },
-        data: { status: "CLOSED", endedAt: new Date() },
+        data:
+          modo === "TERMINAL_COMPARTIDA"
+            ? { status: "LOCKED" }
+            : { status: "CLOSED", endedAt: new Date() },
       });
 
       await tx.posPinCredential.update({
@@ -375,5 +396,211 @@ export const closeCurrentOperatorSession = async (req: AuthRequest, res: Respons
   } catch (error) {
     logger.error("Error al cerrar la sesión de operador:", error);
     res.status(500).json({ error: "No se pudo cerrar la sesión de operador." });
+  }
+};
+
+/**
+ * GET /pos/operator-sessions/open — las pestañas abiertas de esta caja.
+ *
+ * Devuelve la sesión ACTIVA y todas las BLOQUEADAS de la terminal. Cada una es
+ * una pestaña: alguien que está vendiendo o que dejó su carrito a medio armar
+ * y va a volver.
+ *
+ * Sólo tiene sentido en modo TERMINAL_COMPARTIDA. En el otro modo devuelve como
+ * mucho la propia, porque no hay pestañas que mostrar.
+ */
+export const listOpenOperatorSessions = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const terminal = req.terminal;
+    if (!terminal) {
+      return res.status(428).json({
+        error: "Esta computadora no está enrolada como terminal.",
+        code: "TERMINAL_NOT_ENROLLED",
+      });
+    }
+
+    const ajustes = await readSettings();
+
+    const sesiones = await prisma.posOperatorSession.findMany({
+      where: { terminalId: terminal.id, status: { in: ["ACTIVE", "LOCKED"] } },
+      orderBy: { startedAt: "asc" },
+      select: {
+        id: true,
+        status: true,
+        startedAt: true,
+        origin: true,
+        user: { select: { id: true, name: true, role: true } },
+      },
+    });
+
+    res.json({
+      data: sesiones,
+      /**
+       * El modo viaja con la respuesta a propósito.
+       *
+       * La pantalla necesita saber si dibuja pestañas o no, y preguntárselo a
+       * otro endpoint abriría una ventana donde una cosa dice A y la otra B.
+       */
+      modo: ajustes.posModoOperacion,
+      exigePin: ajustes.posPinAlCambiarDePestana,
+    });
+  } catch (error) {
+    logger.error("Error al listar las sesiones abiertas:", error);
+    res.status(500).json({ error: "No se pudieron listar las pestañas." });
+  }
+};
+
+/**
+ * POST /pos/operator-sessions/:id/resume — volver a una pestaña.
+ *
+ * Bloquea la que estaba activa y activa la pedida. Nunca hay dos activas: la
+ * base no lo admite y la atribución de cada venta depende de que no las haya.
+ *
+ * El PIN se exige o no según la configuración. Con `posPinAlCambiarDePestana`
+ * encendido —el valor por defecto— volver a la pestaña de otro pide su código,
+ * porque si no cualquiera que pase por la caja puede vender a su nombre.
+ */
+export const resumeOperatorSession = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const terminal = req.terminal;
+    if (!terminal) {
+      return res.status(428).json({
+        error: "Esta computadora no está enrolada como terminal.",
+        code: "TERMINAL_NOT_ENROLLED",
+      });
+    }
+
+    const ajustes = await readSettings();
+    if (ajustes.posModoOperacion !== "TERMINAL_COMPARTIDA") {
+      return res.status(409).json({
+        error:
+          "Las pestañas por operador están apagadas. Se activan desde Configuración.",
+        code: "MODO_NO_HABILITADO",
+      });
+    }
+
+    const sesionId = Number(req.params.id);
+    const objetivo = await prisma.posOperatorSession.findUnique({
+      where: { id: sesionId },
+      include: { user: { select: { id: true, name: true, role: true } } },
+    });
+
+    // Que la sesión sea DE ESTA terminal se verifica siempre: sin esto, mandar
+    // un id de otra caja activaría una sesión ajena en esta computadora.
+    if (!objetivo || objetivo.terminalId !== terminal.id) {
+      return res.status(404).json({ error: "Esa pestaña no es de esta caja." });
+    }
+    if (objetivo.status === "CLOSED") {
+      return res.status(409).json({
+        error: "Esa pestaña ya se cerró. Identificate de nuevo para abrir otra.",
+        code: "SESION_CERRADA",
+      });
+    }
+
+    if (ajustes.posPinAlCambiarDePestana) {
+      const pin = String((req.body ?? {}).pin ?? "");
+      const credencial = await prisma.posPinCredential.findUnique({
+        where: { userId: objetivo.userId },
+      });
+      if (!credencial || !(await verifyPin(credencial.pinHash, pin))) {
+        return res.status(401).json({
+          error: "Código incorrecto.",
+          code: "BAD_PIN",
+        });
+      }
+    }
+
+    const sesion = await prisma.$transaction(async (tx) => {
+      await tx.posOperatorSession.updateMany({
+        where: { terminalId: terminal.id, status: "ACTIVE" },
+        data: { status: "LOCKED" },
+      });
+      return tx.posOperatorSession.update({
+        where: { id: objetivo.id },
+        data: { status: "ACTIVE" },
+        include: { user: { select: { id: true, name: true, role: true } } },
+      });
+    });
+
+    await prisma.auditLog
+      .create({
+        data: {
+          actorUserId: getAuthUser(req)?.id ?? 0,
+          branchId: terminal.branchId,
+          action: "POS_OPERATOR_SESSION_RESUMED",
+          entityType: "PosOperatorSession",
+          entityId: String(sesion.id),
+          metadata: {
+            terminalCode: terminal.code,
+            operador: sesion.user.name,
+            conPin: ajustes.posPinAlCambiarDePestana,
+          },
+        },
+      })
+      .catch(() => undefined);
+
+    res.json({ message: `Volviste a la caja de ${sesion.user.name}.`, data: sesion });
+  } catch (error) {
+    logger.error("Error al volver a la pestaña:", error);
+    res.status(500).json({ error: "No se pudo volver a esa pestaña." });
+  }
+};
+
+/**
+ * POST /pos/operator-sessions/:id/close — cerrar UNA pestaña.
+ *
+ * Distinto de cerrar la caja: acá se termina el turno de una persona y las
+ * demás pestañas siguen abiertas.
+ */
+export const closeOneOperatorSession = async (
+  req: AuthRequest,
+  res: Response,
+) => {
+  try {
+    const terminal = req.terminal;
+    if (!terminal) {
+      return res.status(428).json({
+        error: "Esta computadora no está enrolada como terminal.",
+        code: "TERMINAL_NOT_ENROLLED",
+      });
+    }
+
+    const sesionId = Number(req.params.id);
+    const objetivo = await prisma.posOperatorSession.findUnique({
+      where: { id: sesionId },
+      include: { user: { select: { name: true } } },
+    });
+    if (!objetivo || objetivo.terminalId !== terminal.id) {
+      return res.status(404).json({ error: "Esa pestaña no es de esta caja." });
+    }
+
+    await prisma.posOperatorSession.update({
+      where: { id: objetivo.id },
+      data: { status: "CLOSED", endedAt: new Date() },
+    });
+
+    await prisma.auditLog
+      .create({
+        data: {
+          actorUserId: getAuthUser(req)?.id ?? 0,
+          branchId: terminal.branchId,
+          action: "POS_OPERATOR_SESSION_CLOSED",
+          entityType: "PosOperatorSession",
+          entityId: String(objetivo.id),
+          metadata: { terminalCode: terminal.code, operador: objetivo.user.name },
+        },
+      })
+      .catch(() => undefined);
+
+    res.json({ message: `Se cerró la pestaña de ${objetivo.user.name}.` });
+  } catch (error) {
+    logger.error("Error al cerrar la pestaña:", error);
+    res.status(500).json({ error: "No se pudo cerrar esa pestaña." });
   }
 };

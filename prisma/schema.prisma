@@ -124,6 +124,26 @@ model AppSetting {
   alertAccountsMinDebt Int     @default(0) // badge only past this total debt ($)
   alertPayrollEnabled  Boolean @default(true)
 
+  /**
+   * Cómo trabaja el POS. Dos modos, y el dueño elige:
+   *
+   *   SESION_POR_USUARIO   cada quien en su computadora con su sesión.
+   *   TERMINAL_COMPARTIDA  una caja central, varias personas en pestañas.
+   *
+   * Por defecto el primero: una migración no debe cambiarle el modo de
+   * trabajo a nadie.
+   */
+  posModoOperacion String @default("SESION_POR_USUARIO")
+
+  /**
+   * Si volver a la pestaña de otro exige reingresar su código.
+   *
+   * Encendido por defecto: sin esto, cualquiera que pase por la caja puede
+   * tocar la pestaña de un compañero y vender a su nombre —y la comisión se
+   * calcula por vendedor.
+   */
+  posPinAlCambiarDePestana Boolean @default(true)
+
   // @default(now()) declara lo que la base YA tiene. No es cosmético: el DDL de
   // arranque (app.ts, ensureAppSettingTable) hace
   // `INSERT INTO "AppSetting" ("id") VALUES (1)` sin pasar updatedAt, y depende

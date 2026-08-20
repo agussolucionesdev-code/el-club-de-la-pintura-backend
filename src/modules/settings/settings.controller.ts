@@ -24,7 +24,23 @@ export interface AppSettings {
   alertAccountsEnabled: boolean;
   alertAccountsMinDebt: number;
   alertPayrollEnabled: boolean;
+  /** Cómo trabaja el POS: cada quien en su compu, o una caja compartida. */
+  posModoOperacion: PosModoOperacion;
+  /** Si volver a la pestaña de otro exige reingresar su código. */
+  posPinAlCambiarDePestana: boolean;
 }
+
+/**
+ * Los dos modos de trabajo del POS.
+ *
+ * `SESION_POR_USUARIO` es como funcionó siempre: cada quien en su computadora.
+ * `TERMINAL_COMPARTIDA` habilita la caja central con pestañas por operador.
+ */
+export type PosModoOperacion = "SESION_POR_USUARIO" | "TERMINAL_COMPARTIDA";
+
+/** Devuelve un modo válido, sin creerle a lo que haya en la columna. */
+export const asModo = (v: unknown): PosModoOperacion =>
+  v === "TERMINAL_COMPARTIDA" ? "TERMINAL_COMPARTIDA" : "SESION_POR_USUARIO";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   discountCodeVisibleToEncargado: true,
@@ -35,6 +51,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   alertAccountsEnabled: true,
   alertAccountsMinDebt: 0,
   alertPayrollEnabled: true,
+  posModoOperacion: "SESION_POR_USUARIO",
+  posPinAlCambiarDePestana: true,
 };
 
 /**
@@ -53,7 +71,11 @@ export const readSettings = async (): Promise<AppSettings> => {
     const row =
       (await prisma.appSetting.findUnique({ where: { id: 1 } })) ??
       (await prisma.appSetting.create({ data: { id: 1 } }));
-    return { ...row, discountCodeMode: asMode(row.discountCodeMode) };
+    return {
+      ...row,
+      discountCodeMode: asMode(row.discountCodeMode),
+      posModoOperacion: asModo((row as { posModoOperacion?: unknown }).posModoOperacion),
+    };
   } catch (err) {
     logger.warn("No se pudo leer AppSetting; usando valores por defecto:", err);
     return DEFAULT_SETTINGS;
@@ -106,6 +128,18 @@ export const updateSettings = async (req: AuthRequest, res: Response) => {
         typeof b.alertPayrollEnabled === "boolean"
           ? b.alertPayrollEnabled
           : current.alertPayrollEnabled,
+      // El modo se acepta sólo si es uno de los dos que existen. Un valor
+      // desconocido deja el actual: cambiarle el modo de trabajo al local por
+      // un error de tipeo sería peor que ignorar el pedido.
+      posModoOperacion:
+        b.posModoOperacion === "TERMINAL_COMPARTIDA" ||
+        b.posModoOperacion === "SESION_POR_USUARIO"
+          ? b.posModoOperacion
+          : current.posModoOperacion,
+      posPinAlCambiarDePestana:
+        typeof b.posPinAlCambiarDePestana === "boolean"
+          ? b.posPinAlCambiarDePestana
+          : current.posPinAlCambiarDePestana,
     };
 
     const saved = await prisma.appSetting.upsert({
