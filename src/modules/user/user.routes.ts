@@ -1,6 +1,6 @@
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
-import { authenticateToken } from "../../middlewares/auth.middleware";
+import { authenticateToken, requireFullAuth } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import {
@@ -52,13 +52,22 @@ router.delete("/me/avatar", authenticateToken, deleteMyAvatar);
 
 router.use(authenticateToken, authorizeRoles("ADMIN"));
 
+/**
+ * Las LECTURAS de acá abajo salen con sesión de código: la pantalla de Personal
+ * tiene que poder abrirse desde el mostrador. Las ESCRITURAS llevan
+ *  una por una, porque alta, baja, cambio de rol y
+ * restablecimiento de contraseña son las acciones con las que alguien se haría
+ * dueño del sistema — y seis dígitos tipeados frente a un cliente no son prueba
+ * suficiente para eso.
+ */
+
 router.get("/", retrieveWorkforceDirectory);
 router.get("/roles", retrieveRoleCatalog);
-router.delete("/roles", deleteAllOperationalRoleUsers);
-router.delete("/roles/:role/users", deleteUsersByRole);
-router.post("/", validate(onboardEmployeeSchema), onboardEmployee);
-router.put("/:id", validate(modifyEmployeeSchema), modifyEmployeeProfile);
-router.delete("/:id", terminateEmployee);
-router.patch("/:id/password", validate(resetPasswordSchema), resetEmployeePassword);
+router.delete("/roles", requireFullAuth, deleteAllOperationalRoleUsers);
+router.delete("/roles/:role/users", requireFullAuth, deleteUsersByRole);
+router.post("/", requireFullAuth, validate(onboardEmployeeSchema), onboardEmployee);
+router.put("/:id", requireFullAuth, validate(modifyEmployeeSchema), modifyEmployeeProfile);
+router.delete("/:id", requireFullAuth, terminateEmployee);
+router.patch("/:id/password", requireFullAuth, validate(resetPasswordSchema), resetEmployeePassword);
 
 export default router;

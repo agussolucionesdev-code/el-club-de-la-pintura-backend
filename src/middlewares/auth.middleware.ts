@@ -2,10 +2,17 @@
 import { logger } from "../config/logger";
 import jwt, { JwtPayload } from "jsonwebtoken";
 
+import type { AuthLevel } from "../utils/session.utils";
+
 export interface AuthenticatedUser {
   id: number;
   role: string;
   branchIds: number[];
+  /**
+   * Cómo se probó esta identidad: con contraseña, o con el código de seis
+   * dígitos de una terminal del mostrador. Ver `requireFullAuth`.
+   */
+  authLevel: AuthLevel;
 }
 
 export interface AuthRequest extends Request {
@@ -33,7 +40,17 @@ const parseAuthenticatedUser = (
     return null;
   }
 
-  return { id, role, branchIds };
+  /**
+   * Los tokens emitidos ANTES de que existiera el acceso por código no traen
+   * este campo. Se los toma como `PASSWORD`, que es literalmente cómo se
+   * emitieron: en ese momento la contraseña era la única puerta.
+   *
+   * Tomarlos como `PIN` habría dejado a todo el mundo que ya tenía sesión
+   * abierta sin poder administrar nada hasta que su token venciera.
+   */
+  const authLevel: AuthLevel = decoded.authLevel === "PIN" ? "PIN" : "PASSWORD";
+
+  return { id, role, branchIds, authLevel };
 };
 
 export const getAuthUser = (
@@ -91,4 +108,50 @@ export const authenticateToken = (
       error: "Sesión inválida o expirada. Por favor, reingresá al sistema.",
     });
   }
+};
+
+/**
+ * Exige que la sesión se haya abierto con CONTRASEÑA, no con el código del
+ * mostrador.
+ *
+ * ── Por qué hace falta ──────────────────────────────────────────────────────
+ *
+ * El acceso por código existe para que el mostrador no pierda tiempo: se marcan
+ * seis dígitos y se vende. Pero el dueño también atiende, y su código le abre
+ * una sesión con rol ADMIN. Sin este guardián, seis dígitos tipeados en una
+ * computadora que está sobre el mostrador —a la vista de cualquiera que espere
+ * su turno— alcanzarían para borrar usuarios, cambiar precios masivamente o
+ * restablecer la contraseña de otro.
+ *
+ * Un PIN corto es razonable para autorizar una venta. No lo es para
+ * administrar el sistema. Para eso se entra con la cuenta.
+ *
+ * Devuelve 403 y no 401 a propósito: la sesión es válida, lo que falta es
+ * jerarquía de prueba. Un 401 haría que el interceptor del front la cerrara,
+ * que es exactamente lo contrario de lo que se quiere — la persona no perdió la
+ * sesión, sólo necesita volver a identificarse para ESTA acción.
+ */
+export const requireFullAuth = (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction,
+): void => {
+  const user = getAuthUser(req);
+
+  if (!user) {
+    res.status(401).json({ error: "Sesión inválida." });
+    return;
+  }
+
+  if (user.authLevel !== "PASSWORD") {
+    res.status(403).json({
+      error:
+        "Esta acción necesita que entres con tu email y contraseña. " +
+        "El código de la terminal alcanza para vender, no para administrar el sistema.",
+      code: "PASSWORD_REQUIRED",
+    });
+    return;
+  }
+
+  next();
 };

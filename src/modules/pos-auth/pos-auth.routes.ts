@@ -10,7 +10,12 @@ import {
   resetOtherPosPinSchema,
   revealPosPinSchema,
   setPosPinSchema,
+  terminalPinLoginSchema,
 } from "../../schemas/posPin.schema";
+import {
+  getTerminalAccess,
+  loginWithTerminalPin,
+} from "./terminalLogin.controller";
 import {
   activatePin,
   disableMyPin,
@@ -63,8 +68,56 @@ const secretoRateLimiter = rateLimit({
   },
 });
 
+/**
+ * Límite del ingreso por código, aparte y más estricto.
+ *
+ * Es el endpoint más atacable de la aplicación: acepta un secreto de seis
+ * dígitos sin sesión previa. Tiene tres cercos encima, y cada uno tapa un
+ * agujero distinto del anterior:
+ *
+ *   1. La credencial de terminal — sin ella el controlador ni mira el código.
+ *   2. El bloqueo por usuario (5 fallos → 15 min), que frena insistir sobre
+ *      una persona.
+ *   3. Esto: por ORIGEN, que frena repartir los intentos entre muchas personas
+ *      para no gatillar el bloqueo de ninguna.
+ *
+ * 20 en 10 minutos deja lugar de sobra a una caja con cuatro personas que se
+ * equivocan un par de veces cada una, y no alcanza para recorrer nada.
+ */
+const ingresoPorCodigoRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Los intentos exitosos no gastan cupo: un mostrador con mucho movimiento
+  // cambia de operador seguido y no tiene por qué quedarse afuera por trabajar.
+  skipSuccessfulRequests: true,
+  message: {
+    error:
+      "Demasiados intentos desde esta computadora. Esperá unos minutos o entrá con tu contraseña.",
+    code: "TOO_MANY_ATTEMPTS",
+  },
+});
+
 // ══════════════════════════════════════════════════════════════════════════
-// ACTIVACIÓN — la única ruta sin sesión iniciada
+// INGRESO POR CÓDIGO DESDE UNA TERMINAL — sin sesión previa
+// ══════════════════════════════════════════════════════════════════════════
+//
+// La pantalla de inicio de sesión pregunta primero si esta computadora es una
+// caja. Si no lo es, no ofrece el acceso por código y muestra el formulario de
+// contraseña: no hay nada que elegir.
+
+router.get("/auth/terminal-access", getTerminalAccess);
+
+router.post(
+  "/auth/terminal-access/login",
+  ingresoPorCodigoRateLimiter,
+  validate(terminalPinLoginSchema, { assignParsed: true }),
+  loginWithTerminalPin,
+);
+
+// ══════════════════════════════════════════════════════════════════════════
+// ACTIVACIÓN — la única ruta de PIN sin sesión iniciada
 // ══════════════════════════════════════════════════════════════════════════
 //
 // Quien recibe la credencial de activación puede estar parado frente a la

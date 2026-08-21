@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-import { authenticateToken } from "../../middlewares/auth.middleware";
+import { authenticateToken, requireFullAuth } from "../../middlewares/auth.middleware";
 import { authorizeRoles } from "../../middlewares/role.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import {
@@ -48,7 +48,7 @@ router.patch(
   updateTerminal,
 );
 
-router.post("/:id/enrollment", authorizeRoles("ADMIN"), issueEnrollmentToken);
-router.post("/:id/revoke", authorizeRoles("ADMIN"), revokeTerminalDevice);
+router.post("/:id/enrollment", authorizeRoles("ADMIN"), requireFullAuth, issueEnrollmentToken);
+router.post("/:id/revoke", authorizeRoles("ADMIN"), requireFullAuth, revokeTerminalDevice);
 
 export default router;

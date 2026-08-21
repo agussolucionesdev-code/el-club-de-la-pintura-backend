@@ -102,3 +102,25 @@ export const openOperatorSessionSchema = z.object({
     pin,
   }),
 });
+
+/**
+ * Entrar al sistema con el código de la terminal.
+ *
+ * Usa `pin` y NO `pinSeguro`: acá no se está eligiendo un código, se está
+ * verificando uno que ya existe. Rechazar "123456" en la validación de forma
+ * le confirmaría a quien prueba a ciegas que ese no puede ser el de nadie —
+ * información gratis para el atacante y ninguna para el mostrador.
+ *
+ * La terminal no viaja en el cuerpo: se prueba con la credencial de dispositivo
+ * (ver `terminal.middleware.ts`). Un `terminalId` declarado por el navegador es
+ * una afirmación sin respaldo.
+ */
+export const terminalPinLoginSchema = z.object({
+  body: z.object({
+    userId: z.coerce
+      .number()
+      .int()
+      .positive("Elegí de la lista quién va a entrar."),
+    pin,
+  }),
+});

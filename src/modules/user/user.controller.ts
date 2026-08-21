@@ -25,6 +25,7 @@ import jwt from "jsonwebtoken";
 import { Prisma } from "@prisma/client";
 import prisma from "../../config/db";
 import { AuthRequest, getAuthUser } from "../../middlewares/auth.middleware";
+import { emitirSesion, limpiarSesion } from "../../utils/session.utils";
 
 const VALID_ROLES = ["ADMIN", "ENCARGADO", "EMPLOYEE"] as const;
 type ManagedRole = (typeof VALID_ROLES)[number];
@@ -128,45 +129,15 @@ export const authenticateUser = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Credenciales invalidas." });
     }
 
-    if (!process.env.JWT_SECRET) {
-      throw new Error("Clave de firma JWT_SECRET no configurada.");
-    }
-
-    const userBranchIds = user.branches.map((branch) => branch.id);
-    const token = jwt.sign(
-      { id: user.id, role: user.role, branchIds: userBranchIds },
-      process.env.JWT_SECRET,
-      {
-        expiresIn: (process.env.JWT_EXPIRES_IN ||
-          "24h") as jwt.SignOptions["expiresIn"],
-      },
-    );
-
-    const isProduction = process.env.NODE_ENV === "production";
-    // Use 'none' for cross-origin deployments (Vercel frontend + Render backend).
-    // Use 'lax' for same-domain deployments. Controlled via COOKIE_SAME_SITE env var.
-    const sameSite = (process.env.COOKIE_SAME_SITE as "none" | "lax" | "strict") ?? "lax";
-
-    res.cookie("club_token", token, {
-      httpOnly: true,
-      secure: isProduction || sameSite === "none",
-      sameSite,
-      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-    });
-
-    // Rotate XSRF-TOKEN on login so the client's Axios picks up a fresh one
-    attachCsrfToken(req, res);
+    // La firma del token, la cookie y la rotación de CSRF viven en un solo
+    // lugar (`session.utils`), compartido con el ingreso por código de la
+    // terminal. Dos copias de esto derivan: alguien ajusta el `sameSite` en
+    // una y una de las dos puertas deja de funcionar en producción.
+    const sessionUser = emitirSesion(req, res, user, "PASSWORD");
 
     res.status(200).json({
       message: "Inicio de sesion exitoso.",
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        avatarUrl: user.avatarUrl,
-        branches: user.branches,
-      },
+      user: sessionUser,
     });
   } catch (error) {
     logger.error("Error en autenticacion:", error);
@@ -209,7 +180,17 @@ export const getCurrentUserProfile = async (req: AuthRequest, res: Response) => 
       return res.status(404).json({ error: "Usuario no encontrado." });
     }
 
-    res.status(200).json({ data: user });
+    /**
+     * El nivel sale del TOKEN, no de la base: la base sabe quién es la persona,
+     * no cómo probó serlo en esta sesión.
+     *
+     * Va acá porque esta ruta es la que rehidrata el perfil al recargar la
+     * página. Sin esto, después de un F5 la interfaz creía que una sesión
+     * abierta con código era una sesión con contraseña, y dejaba de avisar por
+     * anticipado qué no iba a poder hacer — hasta que la persona chocaba con un
+     * 403 sin entender por qué.
+     */
+    res.status(200).json({ data: { ...user, authLevel: authUser.authLevel } });
   } catch (error) {
     logger.error("Error al recuperar el perfil actual:", error);
     res.status(500).json({ error: "Fallo al recuperar la sesion actual." });
@@ -816,11 +797,10 @@ export const deleteUsersByRole = async (req: AuthRequest, res: Response) => {
  * Clears the HttpOnly session cookie. Safe to call even when already logged out.
  */
 export const logoutUser = (_req: Request, res: Response) => {
-  res.clearCookie("club_token", {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production" || process.env.COOKIE_SAME_SITE === "none",
-    sameSite: (process.env.COOKIE_SAME_SITE as "none" | "lax" | "strict") ?? "lax",
-  });
+  // Se borra con los MISMOS atributos con que se creó. Si no coinciden, el
+  // navegador ignora el borrado y la sesión sigue viva: el clásico "cerré
+  // sesión y seguía adentro". Por eso ambas mitades salen del mismo helper.
+  limpiarSesion(res);
   res.status(200).json({ message: "Sesion cerrada correctamente." });
 };
 
