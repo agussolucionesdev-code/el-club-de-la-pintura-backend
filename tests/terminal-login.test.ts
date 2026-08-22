@@ -308,7 +308,15 @@ describe("Ingreso con código desde una terminal", () => {
     expect(JSON.stringify(registro?.metadata)).not.toContain("000002");
 
     await limpiarIntentos(duenoId);
-  }, 20_000);
+    /**
+     * 60 segundos, y no es holgura de más: este test EJERCITA la demora
+     * progresiva, que es una función de seguridad cuyo propósito es tardar.
+     * Los cinco intentos suman unos 16 s de espera deliberada, más el costo de
+     * Argon2 en cada uno. Con 20 s pasaba en una máquina ociosa y fallaba
+     * cuando había algo más corriendo — un test que falla por el reloj y no por
+     * el código enseña a ignorar los rojos.
+     */
+  }, 60_000);
 
   // ══════════════════════════════════════════════════════════════════════
   // Lo más importante: hasta dónde llega una sesión abierta con código
